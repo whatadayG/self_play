@@ -1,0 +1,9 @@
+interaction:
+  - class_name: interactions.matching_interaction.MatchingInteraction
+    config:
+      name: matching
+      max_turns: 12
+      require_proposal: true
+      accept_on_full_proposal: true
+      # Which player the policy controls: "player-1" or "player-2"
+      policy_player: player-1 

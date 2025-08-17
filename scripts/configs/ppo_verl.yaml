@@ -1,0 +1,84 @@
+algorithm:
+  adv_estimator: grpo
+  gamma: 1.0
+  lam: 0.95
+  use_kl_in_reward: false
+
+# training batch controls number of prompts; total responses = train_batch_size * rollout.n
+data:
+  train_batch_size: 128  # increased for 2 GPUs
+  max_prompt_length: 1024
+  max_response_length: 256
+  filter_overlong_prompts: false
+  truncation: error
+  return_raw_chat: true
+
+actor_rollout_ref:
+  model:
+    path: ${env:POLICY_MODEL,Qwen/Qwen2-7B-Instruct}
+    enable_gradient_checkpointing: true
+    use_remove_padding: true
+    # LoRA/PEFT settings
+    lora_rank: 34
+    lora_alpha: 64
+    target_modules: [q_proj, k_proj, v_proj, o_proj]
+    exclude_modules: []
+  actor:
+    optim:
+      lr: 1.0e-6
+    ppo_mini_batch_size: 128  # increased for 2 GPUs
+    ppo_micro_batch_size_per_gpu: 4  # increased for better GPU utilization
+    ppo_epochs: 1
+    clip_ratio: 0.2
+    loss_agg_mode: token-mean
+    use_kl_loss: true
+    kl_loss_coef: 0.001
+    kl_loss_type: kl
+  rollout:
+    name: sglang
+    # multi-turn enabled
+    multi_turn:
+      enable: true
+      interaction_config_path: ${env:INTERACTION_CFG,RL-matching/configs/matching_interaction.yaml}
+      tool_config_path: null
+    prompt_length: 1024
+    response_length: 256
+    temperature: 1.0
+    top_k: -1
+    top_p: 1.0
+    do_sample: true
+    n: 8  # increased group sampling for better GRPO performance
+  ref:
+    model:
+      path: ${env:REF_MODEL,Qwen/Qwen2-7B-Instruct}
+
+critic:
+  # GRPO is critic-less; keep path for compatibility but it won't be trained
+  model:
+    path: ${env:CRITIC_MODEL,Qwen/Qwen2-7B-Instruct}
+    enable_gradient_checkpointing: true
+    use_remove_padding: true
+    lora_rank: 34
+    lora_alpha: 64
+    target_modules: [q_proj, k_proj, v_proj, o_proj]
+  optim:
+    lr: 1.0e-5
+  ppo_micro_batch_size_per_gpu: 4  # increased for better GPU utilization
+
+reward_model:
+  enable: false
+
+reward_manager:
+  name: matching
+  num_examine: 0
+
+trainer:
+  project_name: verl_matching
+  experiment_name: grpo_multiturn_lora
+  logger: [console]
+  n_gpus_per_node: 2  # using both GPUs
+  nnodes: 1
+  save_freq: 1
+  test_freq: 1
+  total_epochs: 1
+  use_legacy_worker_impl: auto 

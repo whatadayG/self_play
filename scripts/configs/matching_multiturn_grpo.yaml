@@ -1,0 +1,44 @@
+hydra:
+  searchpath:
+    - file:///home/nickatomlin/georgiazhou/new_dialop/verl/verl/trainer/config
+
+defaults:
+  - ppo_trainer
+  - _self_
+
+data:
+  max_prompt_length: 1024
+  max_response_length: 256
+  train_batch_size: 8
+  return_raw_chat: True
+  reward_fn_key: reward_model
+
+actor_rollout_ref:
+  hybrid_engine: True
+  model:
+    path: Qwen/Qwen2-7B-Instruct
+    enable_gradient_checkpointing: true
+    lora_rank: 34
+    lora_alpha: 64
+    target_modules: ["q_proj", "k_proj", "v_proj", "o_proj"]
+  actor:
+    ppo_micro_batch_size_per_gpu: 2
+    ppo_mini_batch_size: 8
+  rollout:
+    name: sglang
+    multi_turn:
+      enable: True
+      interaction_config_path: /home/nickatomlin/georgiazhou/new_dialop/RL-matching/configs/matching_interaction.yaml
+
+algorithm:
+  adv_estimator: grpo
+
+trainer:
+  project_name: verl_matching
+  experiment_name: grpo_multiturn_lora
+  total_epochs: 1
+  n_gpus_per_node: 1
+
+custom_reward_function:
+  path: /home/nickatomlin/georgiazhou/new_dialop/RL-matching/verl_hooks/matching_reward_fn.py
+  name: compute_score_matching
