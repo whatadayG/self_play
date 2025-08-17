@@ -1,0 +1,7 @@
+[submodule "verl"]
+	path = verl
+	url = https://github.com/volcengine/verl
+[submodule "dialop"]
+	path = dialop
+	url = https://github.com/whatadayG/dialop.git
+	branch = all_my_stuff
