@@ -301,7 +301,11 @@ class OptimizationEnv(DialogueEnv):
         proposal_lines = [line.strip() for line in proposal_lines]
         proposal_lines = [line for line in proposal_lines if line]
         # Validate header line
-        if proposal_lines[0] != "Proposal:":
+        header_line = proposal_lines[0]
+        if header_line.strip().startswith("Proposal:"):
+            # Normalize header to exactly 'Proposal:' and discard any trailing content on the same line
+            proposal_lines[0] = "Proposal:"
+        else:
             raise GameError(
                 "Your proposal after [propose] <anything you want to say to your partner> must start with 'Proposal:' (capital P, trailing colon)."
             )

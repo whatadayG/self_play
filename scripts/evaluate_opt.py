@@ -32,9 +32,20 @@ from dialop.players import (
     DryRunPlayer,
     OutOfContextError
 )
+try:
+    from dialop.local_model_player import LocalModelPlayer, LocalModelPlayerVLLM
+except ImportError:
+    LocalModelPlayer = None
+    LocalModelPlayerVLLM = None
+
+try:
+    from dialop.hf_model_player import HFModelPlayer
+except ImportError:
+    HFModelPlayer = None
 from dialop.utils import Logger, retry, count_words
 from dialop.simple.simple_api_tracker import OpenAITracker
 from dialop.simple.cost_tracker import CostTracker
+from dialop.sglang_model_player import SglangModelPlayer
 
 PROJECT_ROOT = Path(__file__).parent
 
@@ -453,6 +464,7 @@ def run(
                         if hasattr(players[current_player], 'model_kwargs'):  # LLMPlayer
                             resp = players[current_player].respond(t=t, propose=True)
                         else:  # DryRunPlayer
+                            players[current_player].prompt += "System: Remember, you must include '[message]' or '[propose]' or '[accept]' or '[reject]' tags in your response."
                             resp = players[current_player].respond()
                     else:
                         if hasattr(players[current_player], 'model_kwargs'):  # LLMPlayer
@@ -471,6 +483,7 @@ def run(
                     obss, resample = env.step(resp, propose=True, user_think=True)
                 else:
                     obss, resample = env.step(resp, user_think=True)
+                    print(f"obss: {obss}")
 
                 #import pdb; pdb.set_trace()
                 
@@ -484,11 +497,11 @@ def run(
                 if not resample:
                     if 'Error' in obss['player-1'] or 'Error' in obss['player-2']:
                         import pdb; pdb.set_trace()
-                        turn_data = {
-                            "speaker": current_player,
-                            "player-1": obss['player-1'],
-                            "player-2": obss['player-2'],
-                        }
+                    turn_data = {
+                        "speaker": current_player,
+                        "player-1": obss['player-1'],
+                        "player-2": obss['player-2'],
+                    }
                     conversations_save.append(turn_data)
                     break
                 
@@ -496,6 +509,9 @@ def run(
                 refresh_count += 1
                 
                 players[current_player].observe(obss[current_player])
+                #import pdb; pdb.set_trace()
+                #import pdb; pdb.set_trace()
+                #import pdb; pdb.set_trace()
                 
                 # Log the response
                 #log.log(
@@ -609,10 +625,13 @@ def main(
     agent_model_id: Optional[str]="gpt-4.1",
     dry_run: Optional[bool]=False,
     use_word_limit: Optional[bool]=False,
-    track_costs: Optional[bool]=True,
+    track_costs: Optional[bool]=False,
     threshold: Optional[float]=0.5,
+    temperature: Optional[float]=0.2,
     load_game_state: Optional[str]="/home/nickatomlin/georgiazhou/new_dialop/RL-matching/dialop/data/optimization.jsonl",
     auto_accept: Optional[bool]=False,
+    use_sglang: Optional[bool]=True,
+    sglang_url: Optional[str]="http://localhost:30000/v1",
 ):
     
     open( f"count_all_begin_runs_{exp_name}.txt", "a").write(
@@ -621,7 +640,7 @@ def main(
     
     game_cls = GAME_CLSS[game]
     EXP_DIR = RESDIR / game
-
+    
     # --------------------------------------------------
     # Determine the list of initial game states.
     # Priority order:
@@ -629,7 +648,7 @@ def main(
     #   2. Legacy on-disk datasets when --new-data is False
     #   3. Empty list => random generation (current default behaviour)
     # --------------------------------------------------
-
+    
     if load_game_state is not None:
         games = []
         with open(load_game_state) as f:
@@ -656,10 +675,10 @@ def main(
             games = [json.loads(line) for line in f]
     else:
         games = []
-
+    
     os.makedirs(EXP_DIR / exp_name, exist_ok=True)
     
-
+    
     # Create generator for eval mode.
     if mode == "selfplay":
         gen = selfplay(game_cls, games, samples_per_game, resume, end)
@@ -669,7 +688,7 @@ def main(
         gen = full_conversation_reproposal(game_cls, games, samples_per_game, resume, end)
     else:
         raise NotImplementedError()
-
+    
     def create_players():
         # Check if metadata contains mode information  
         current_mode = mode
@@ -697,7 +716,7 @@ def main(
             #     with open(FPATH / "prompts" / "planning_user_timed.txt") as f:
             #         user_prompt = f.read()
             # else:
-
+            
             with open(FPATH / "prompts" / "planning_agent.txt") as f:
                 agent_prompt = f.read()
             with open(FPATH / "prompts" / "planning_user.txt") as f:
@@ -709,10 +728,11 @@ def main(
                 user0_prompt = f.read()
             with open(FPATH / "prompts" / "mediation_user1.txt") as f:
                 user1_prompt = f.read()
-
+        
         if game_cls == OptimizationEnv:
             p1, p2 = "player-1", "player-2"
             p1_prompt, p2_prompt = matching_prompt, matching_prompt
+            optional1, optional2 = None, None  # No optional content for matching game
             ##optional1 = p1_prompt[
             ##    p1_prompt.index("EXAMPLE 1"):]
             ##optional1 = optional1[:optional1.index("EXAMPLE 2")]
@@ -727,18 +747,51 @@ def main(
             p1, p2, p3 = "user0", "user1", "agent"
             optional = agent_prompt[agent_prompt.index("User 0 Information"):]
             optional = optional[:optional.index("\n\n") + 2]
-
+        
         if dry_run:
             players = {p1: DryRunPlayer(p1_prompt, p1, console),
                        p2:  DryRunPlayer(p2_prompt, p2, console)}
         else:
-            # Create base players
-            player1 = LLMPlayer(p1_prompt, p1, console,
-                               #optional=optional1,
-                               model_kwargs={'model': agent_model_id})
-            player2 = LLMPlayer(p2_prompt, p2, console,
-                               #optional=optional2,
-                               model_kwargs={'model': user_model_id})
+            # Create base players - check if model is local or API-based
+            def create_player(prompt, role, model_id, optional=None):
+                # Check if this is a local model (Hugging Face style path)
+                if "/" in model_id and not model_id.startswith("gpt"):
+                    if use_sglang:
+                        print(f"Using SglangModelPlayer for {role} with model {model_id} at {sglang_url}")
+                        return SglangModelPlayer(
+                            prompt,
+                            role,
+                            console,
+                            model_path=model_id,
+                            optional=optional,
+                            sglang_url=sglang_url,
+                            temperature=temperature,
+                        )
+                    # Fallback to HF if requested not to use sglang
+                    if HFModelPlayer is not None:
+                        print(f"Using HFModelPlayer for {role} with model {model_id}")
+                        return HFModelPlayer(prompt, role, console,
+                                           model_path=model_id,
+                                           optional=optional,
+                                           temperature=temperature)
+                    elif LocalModelPlayerVLLM is not None:
+                        print(f"Using LocalModelPlayerVLLM for {role} with model {model_id}")
+                        return LocalModelPlayerVLLM(prompt, role, console,
+                                                   model_path=model_id,
+                                                   optional=optional)
+                    else:
+                        print(f"Warning: Local model players not available, falling back to API")
+                        return LLMPlayer(prompt, role, console,
+                                       optional=optional,
+                                       model_kwargs={'model': model_id})
+                else:
+                    # Use API-based player
+                    return LLMPlayer(prompt, role, console,
+                                   optional=optional,
+                                   model_kwargs={'model': model_id})
+            
+            player1 = create_player(p1_prompt, p1, agent_model_id, optional1)
+            player2 = create_player(p2_prompt, p2, user_model_id, optional2)
             
             # In full_conversation_reproposal mode, both players remain as LLMPlayer objects
             # The original proposer will naturally make the proposal, and the other will respond naturally
