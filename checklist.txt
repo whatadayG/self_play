@@ -1,0 +1,16 @@
+- get verl running on its own
+	[x] dependencies?
+		- was a little hard-- uv venv was fine, but needed exactly py3.10 (note py version breaks ABI for wheels)
+	- fix speed issues
+	- GRPO
+- figure out what to do about multiturn (i think nothing is needed, but look for an example reward fn?)
+	[x] note examples/sglang_multiturn
+	- try running qwen2.5-0.5b sglang multiturn example, find configs that work for sgland and not vllm
+- try with LoRA instead
+- see if you can port dialop env to match
+	(env wise there are two ways you could do this-- you could install both verl stuff and dialop stuff or you could just import both in central scripts or you could put dialop stuff in verl)
+		- refer to old repo in order to determine what's needed from dialop
+	- dummy reward function
+	- actual reward function
+- self-play
+

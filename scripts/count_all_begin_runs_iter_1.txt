@@ -1,0 +1,1 @@
+Running iter_1 with matching in full_conversation_reproposal mode; resume: 0, end: 2, samples_per_game: 1, user_model_id: Qwen/Qwen2.5-7B-Instruct, agent_model_id: Qwen/Qwen2.5-7B-Instruct, dry_run: False, use_word_limit: False, track_costs: True, load_game_state: /home/nickatomlin/georgiazhou/new_dialop/RL-matching/dialop/data/optimization.jsonl

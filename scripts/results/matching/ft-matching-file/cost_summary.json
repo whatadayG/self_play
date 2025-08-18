@@ -1,0 +1,15 @@
+{
+  "overall": {
+    "total_cost": 0.0,
+    "total_tokens": {
+      "input": 0,
+      "output": 0
+    },
+    "model_breakdown": {},
+    "timestamp": "2025-08-13T01:05:23.237347"
+  },
+  "experiments": {},
+  "files_processed": 0,
+  "total_files_found": 0,
+  "generated_at": "2025-08-13T01:05:23.237358"
+}

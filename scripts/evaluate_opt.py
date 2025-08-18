@@ -45,16 +45,18 @@ DATADIR = PROJECT_ROOT / "data"
 GAME_CLSS = {
     "matching": OptimizationEnv,
 }
-def save_itinerary_data(game_cls, conversations, player1_agent, player2_user, id, reward_normalized=None, output_path="output_itinerary.jsonl"):
+def save_itinerary_data(game_cls, conversations, player1_agent, player2_user, id, reward_normalized=None, output_path="output_itinerary.jsonl", env=None):
     """
     Save conversation and itinerary data to a JSONL file similar to itinerary.jsonl.
     
     Args:
         conversations: List of conversation messages
-        events: List of events/places in the itinerary
-        preferences: User preferences for the trip
-        scores: Optional scoring information
+        player1_agent: Player 1 data
+        player2_user: Player 2 data
+        id: Game ID
+        reward_normalized: Normalized reward (0-1)
         output_path: Path to save the JSONL file
+        env: Game environment to extract full game state
     """
     
     # Process events to ensure they're serializable
@@ -63,24 +65,32 @@ def save_itinerary_data(game_cls, conversations, player1_agent, player2_user, id
     else:
         # Handle other cases (like domain knowledge string)
         processed_player1_agent = player1_agent
+    
     if game_cls == OptimizationEnv:
-
+        # Get the full game info including action_log
+        game_info = env.game.get_game_info() if env else {}
+        
         entry = {
             "conversations": conversations,
             "player_1_data": processed_player1_agent,
             "player_2_data": player2_user,
             "id": id,
             "reward_normalized": reward_normalized,
+            "game_info": game_info,  # Full game state with action_log
+            "action_log": game_info.get("action_log", []),  # Explicit action log for easy access
+            "proposal_reward": game_info.get("proposal_reward", 0),
+            "best_assignment_reward": game_info.get("best_assignment_reward", 0),
             "random_seed": random.randint(1, 10000)  # Add random seed for debugging
         }
-    elif game_cls == OptimizationEnv:
+    else:
+        # Keep backward compatibility for other game types
         entry = {
             "conversations": conversations,
             "player_1_data": processed_player1_agent,
             "player_2_data": player2_user,
             "id": id,
             "reward_normalized": reward_normalized,
-            "random_seed": random.randint(1, 10000)  # Add random seed for debugging
+            "random_seed": random.randint(1, 10000)
         }
     
     # Write to JSONL file
@@ -361,8 +371,8 @@ def run(
     #import pdb; pdb.set_trace() !!!! !domain_knowlege is wrong- the same always somehow 
     # Matching-only env loop
     if True:
-            player_1_data = obss["player-1"]
-            player_2_data = obss["player-2"]
+        player_1_data = obss["player-1"]
+        player_2_data = obss["player-2"]
 
         conversations_save = []
  
@@ -505,22 +515,22 @@ def run(
     for pname in players:
         players[pname].observe(obss[pname])
     open( f"count_all_end_runs_before_filter_{exp_name}.txt", "a").write(f"Running {exp_name}\n")
-        if game_cls == OptimizationEnv:
+    if game_cls == OptimizationEnv:
         # Log the normalized reward using the same key as in evaluate.py
-            reward_norm = "score_norm"
+        reward_norm = "score_norm"
         open( f"reward_normalized_{game_cls}_{exp_name}.txt", "a").write(
             f"{reward_norm}: {obss['info'][reward_norm]}\n"
         )
     
     
-        try:
-            # Apply the same threshold check as in evaluate.py
-            if obss['info'][reward_norm] > threshold:
-                    save_itinerary_data(game_cls, conversations_save, player_1_data, player_2_data, metadata, reward_normalized = obss['info'][reward_norm], output_path=f"output_{game_cls}_{exp_name}.jsonl")
-                # here the metadata is the fname
-        except:
-            open( f"count_all_end_runs_no_normalization_{exp_name}.txt", "a").write(f"Running {exp_name}\n obss: {obss}")
-            pass
+    try:
+        # Apply the same threshold check as in evaluate.py
+        if obss['info'][reward_norm] > threshold:
+            save_itinerary_data(game_cls, conversations_save, player_1_data, player_2_data, metadata, reward_normalized = obss['info'][reward_norm], output_path=f"output_{game_cls}_{exp_name}.jsonl", env=env)
+            # here the metadata is the fname
+    except:
+        open( f"count_all_end_runs_no_normalization_{exp_name}.txt", "a").write(f"Running {exp_name}\n obss: {obss}")
+        pass
     log.flush()
     for pname, player in players.items():
         log.flush_key(pname, title=f"{pname} Log")
@@ -721,15 +731,6 @@ def main(
         if dry_run:
             players = {p1: DryRunPlayer(p1_prompt, p1, console),
                        p2:  DryRunPlayer(p2_prompt, p2, console)}
-        elif game_cls == OptimizationEnv:
-            players = {p1: LLMPlayer(user0_prompt, p1, console,
-                                     model_kwargs={}),
-                       p2:  LLMPlayer(user1_prompt, p2, console,
-                                      model_kwargs={}),
-                       p3:  LLMPlayer(agent_prompt, p3, console,
-                                      prefix="\nYou to",
-                                      optional=optional,
-                                      model_kwargs={})}
         else:
             # Create base players
             player1 = LLMPlayer(p1_prompt, p1, console,
@@ -749,9 +750,9 @@ def main(
 
     def create_env():
         print("Initializing envs...")
-            env = OptimizationEnv()
-            if use_word_limit:
-                env = ForceProposal(env, ["player-1", "player-2"])
+        env = OptimizationEnv()
+        if use_word_limit:
+            env = ForceProposal(env, ["player-1", "player-2"])
         return env
 
     if dry_run:

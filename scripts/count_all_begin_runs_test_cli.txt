@@ -1,0 +1,1 @@
+Running test_cli with matching in selfplay mode; resume: 0, end: 1, samples_per_game: 1, user_model_id: gpt-3.5-turbo, agent_model_id: gpt-3.5-turbo, dry_run: True, use_word_limit: False, track_costs: True, load_game_state: /home/nickatomlin/georgiazhou/new_dialop/RL-matching/dialop/data/optimization.jsonl
