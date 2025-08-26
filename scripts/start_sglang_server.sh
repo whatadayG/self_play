@@ -3,10 +3,18 @@
 
 set -x
 
-MODEL_PATH=${MODEL_PATH:-"Qwen/Qwen2.5-7B-Instruct"}
+# Optionally activate a specific virtualenv for the SGLang server
+if [ -n "$VENV_PATH" ]; then
+  echo "Activating venv at $VENV_PATH for SGLang server..."
+  # shellcheck disable=SC1091
+  source "$VENV_PATH/bin/activate"
+fi
+
+MODEL_PATH=${MODEL_PATH:-"/home/nickatomlin/georgiazhou/self_play/save_points/global_step_200_merged"}
 PORT=${PORT:-8000}
-TP_SIZE=${TP_SIZE:-1}  # Tensor parallel size
-GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.8}
+TP_SIZE=${TP_SIZE:-2}  # Tensor parallel size
+GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.9}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-"2,3"}
 
 echo "Starting SGLang server..."
 echo "Model: $MODEL_PATH"
@@ -16,36 +24,29 @@ echo "TP Size: $TP_SIZE"
 # Kill any existing server on the port
 lsof -ti:$PORT | xargs kill -9 2>/dev/null || true
 
+# Optional torch.compile
+if [ "${ENABLE_TORCH_COMPILE:-0}" != "0" ]; then
+    COMPILE_FLAG="--enable-torch-compile"
+else
+    COMPILE_FLAG=""
+fi
+
 # Start SGLang server
 python -m sglang.launch_server \
     --model-path "$MODEL_PATH" \
     --port $PORT \
-    --host 0.0.0.0 \
+    --host 127.0.0.1 \
     --tp $TP_SIZE \
     --trust-remote-code \
     --mem-fraction-static $GPU_MEMORY_UTILIZATION \
     --dtype bfloat16 \
-    --enable-torch-compile \
+    $COMPILE_FLAG \
     &
 
 # Store the PID
 SERVER_PID=$!
 echo "Server PID: $SERVER_PID"
 
-# Wait for server to start
-echo "Waiting for server to be ready..."
-for i in {1..60}; do
-    if curl -s http://localhost:$PORT/health > /dev/null; then
-        echo "Server is ready!"
-        break
-    fi
-    echo "Waiting... ($i/60)"
-    sleep 2
-done
-
-# Test the server
-echo "Testing server..."
-curl -s http://localhost:$PORT/v1/models | jq .
 
 echo ""
 echo "SGLang server is running at http://localhost:$PORT"
