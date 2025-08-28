@@ -1,0 +1,91 @@
+Starting minimal GRPO training...
+Train data: /home/nickatomlin/data/dialop_selfplay_init/train_small.parquet
+Test data: /home/nickatomlin/data/dialop_selfplay_init/test_small.parquet
+Model: gpt2
+Rollout: verl.workers.rollout.dialop_selfplay_rollout.DialopSelfPlayRollout
+Batch size: 2
+GPUs: 2
+[36m(TaskRunner pid=735145)[0m TaskRunner hostname: nlp3, PID: 735145
+[36m(TaskRunner pid=735145)[0m {'actor_rollout_ref': {'actor': {'entropy_coeff': 0.01,
+[36m(TaskRunner pid=735145)[0m                                  'fsdp_config': {'model_dtype': 'bfloat16',
+[36m(TaskRunner pid=735145)[0m                                                  'optimizer_offload': False,
+[36m(TaskRunner pid=735145)[0m                                                  'param_offload': False},
+[36m(TaskRunner pid=735145)[0m                                  'kl_loss_coef': 0.001,
+[36m(TaskRunner pid=735145)[0m                                  'kl_loss_type': 'low_var_kl',
+[36m(TaskRunner pid=735145)[0m                                  'optim': {'lr': 1e-06},
+[36m(TaskRunner pid=735145)[0m                                  'ppo_micro_batch_size_per_gpu': 1,
+[36m(TaskRunner pid=735145)[0m                                  'ppo_mini_batch_size': 2,
+[36m(TaskRunner pid=735145)[0m                                  'strategy': 'fsdp',
+[36m(TaskRunner pid=735145)[0m                                  'use_kl_loss': True},
+[36m(TaskRunner pid=735145)[0m                        'hybrid_engine': True,
+[36m(TaskRunner pid=735145)[0m                        'model': {'enable_activation_offloading': True,
+[36m(TaskRunner pid=735145)[0m                                  'enable_gradient_checkpointing': True,
+[36m(TaskRunner pid=735145)[0m                                  'enable_gradient_offloading': False,
+[36m(TaskRunner pid=735145)[0m                                  'path': 'gpt2',
+[36m(TaskRunner pid=735145)[0m                                  'use_remove_padding': True},
+[36m(TaskRunner pid=735145)[0m                        'ref': {'fsdp_config': {'param_offload': False},
+[36m(TaskRunner pid=735145)[0m                                'log_prob_micro_batch_size_per_gpu': 1},
+[36m(TaskRunner pid=735145)[0m                        'rollout': {'_target_': 'verl.workers.rollout.dialop_selfplay_rollout.DialopSelfPlayRollout',
+[36m(TaskRunner pid=735145)[0m                                    'dtype': 'bfloat16',
+[36m(TaskRunner pid=735145)[0m                                    'gpu_memory_utilization': 0.5,
+[36m(TaskRunner pid=735145)[0m                                    'log_prob_micro_batch_size_per_gpu': 1,
+[36m(TaskRunner pid=735145)[0m                                    'max_new_tokens': 256,
+[36m(TaskRunner pid=735145)[0m                                    'mode': 'sync',
+[36m(TaskRunner pid=735145)[0m                                    'n': 1,
+[36m(TaskRunner pid=735145)[0m                                    'name': 'sglang',
+[36m(TaskRunner pid=735145)[0m                                    'prompt_length': 2048,
+[36m(TaskRunner pid=735145)[0m                                    'response_length': 256,
+[36m(TaskRunner pid=735145)[0m                                    'temperature': 0.7,
+[36m(TaskRunner pid=735145)[0m                                    'tensor_model_parallel_size': 1,
+[36m(TaskRunner pid=735145)[0m                                    'top_k': -1,
+[36m(TaskRunner pid=735145)[0m                                    'top_p': 0.9}},
+[36m(TaskRunner pid=735145)[0m  'algorithm': {'adv_estimator': 'grpo',
+[36m(TaskRunner pid=735145)[0m                'norm_adv_by_std_in_grpo': True,
+[36m(TaskRunner pid=735145)[0m                'use_kl_in_reward': False},
+[36m(TaskRunner pid=735145)[0m  'critic': {'fsdp_config': {'optimizer_offload': False, 'param_offload': False},
+[36m(TaskRunner pid=735145)[0m             'model': {'path': 'gpt2'},
+[36m(TaskRunner pid=735145)[0m             'optim': {'lr': 1e-06},
+[36m(TaskRunner pid=735145)[0m             'ppo_micro_batch_size_per_gpu': 1,
+[36m(TaskRunner pid=735145)[0m             'strategy': 'fsdp'},
+[36m(TaskRunner pid=735145)[0m  'data': {'max_prompt_length': 2048,
+[36m(TaskRunner pid=735145)[0m           'max_response_length': 512,
+[36m(TaskRunner pid=735145)[0m           'return_raw_chat': True,
+[36m(TaskRunner pid=735145)[0m           'train_batch_size': 2,
+[36m(TaskRunner pid=735145)[0m           'train_files': ['/home/nickatomlin/data/dialop_selfplay_init/train_small.parquet'],
+[36m(TaskRunner pid=735145)[0m           'val_batch_size': 2,
+[36m(TaskRunner pid=735145)[0m           'val_files': ['/home/nickatomlin/data/dialop_selfplay_init/test_small.parquet']},
+[36m(TaskRunner pid=735145)[0m  'ray_init': {'address': None, 'num_cpus': None, 'num_gpus': None},
+[36m(TaskRunner pid=735145)[0m  'reward_model': {'type': 'dialop_selfplay'},
+[36m(TaskRunner pid=735145)[0m  'trainer': {'critic_warmup': 0,
+[36m(TaskRunner pid=735145)[0m              'default_hdfs_dir': '/tmp/dialop_test_output',
+[36m(TaskRunner pid=735145)[0m              'experiment_name': 'minimal_integration',
+[36m(TaskRunner pid=735145)[0m              'logger': ['console'],
+[36m(TaskRunner pid=735145)[0m              'n_gpus_per_node': 2,
+[36m(TaskRunner pid=735145)[0m              'nnodes': 1,
+[36m(TaskRunner pid=735145)[0m              'project_name': 'dialop_test',
+[36m(TaskRunner pid=735145)[0m              'save_freq': -1,
+[36m(TaskRunner pid=735145)[0m              'test_freq': -1,
+[36m(TaskRunner pid=735145)[0m              'total_epochs': 1}}
+
+✗ Error: [36mray::TaskRunner.run()[39m (pid=735145, ip=128.32.162.192, actor_id=6560d5bb1d920a8c873bfece01000000, repr=<verl.trainer.main_ppo.TaskRunner object at 0x7779696491e0>)
+  File "/home/nickatomlin/georgiazhou/self_play/verl/verl/trainer/main_ppo.py", line 192, in run
+    if config.reward_model.enable:
+  File "/home/nickatomlin/georgiazhou/self_play/test_venv/lib/python3.10/site-packages/omegaconf/dictconfig.py", line 355, in __getattr__
+    self._format_and_raise(
+  File "/home/nickatomlin/georgiazhou/self_play/test_venv/lib/python3.10/site-packages/omegaconf/base.py", line 231, in _format_and_raise
+    format_and_raise(
+  File "/home/nickatomlin/georgiazhou/self_play/test_venv/lib/python3.10/site-packages/omegaconf/_utils.py", line 899, in format_and_raise
+    _raise(ex, cause)
+  File "/home/nickatomlin/georgiazhou/self_play/test_venv/lib/python3.10/site-packages/omegaconf/_utils.py", line 797, in _raise
+    raise ex.with_traceback(sys.exc_info()[2])  # set env var OC_CAUSE=1 for full trace
+  File "/home/nickatomlin/georgiazhou/self_play/test_venv/lib/python3.10/site-packages/omegaconf/dictconfig.py", line 351, in __getattr__
+    return self._get_impl(
+  File "/home/nickatomlin/georgiazhou/self_play/test_venv/lib/python3.10/site-packages/omegaconf/dictconfig.py", line 442, in _get_impl
+    node = self._get_child(
+  File "/home/nickatomlin/georgiazhou/self_play/test_venv/lib/python3.10/site-packages/omegaconf/basecontainer.py", line 73, in _get_child
+    child = self._get_node(
+  File "/home/nickatomlin/georgiazhou/self_play/test_venv/lib/python3.10/site-packages/omegaconf/dictconfig.py", line 480, in _get_node
+    raise ConfigKeyError(f"Missing key {key!s}")
+omegaconf.errors.ConfigAttributeError: Missing key enable
+    full_key: reward_model.enable
+    object_type=dict
