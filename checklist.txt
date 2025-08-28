@@ -1,3 +1,41 @@
+[x] create SFT checkpoint
+    [x] merge checkpoints with `python -m verl.model_merger merge       --backend fsdp       --local_dir save_points/global_step_500       --target_dir save_points/global_step_500_merged`
+[x] run sglang server
+- generate data (scripts/generate_rollouts.sh)
+
+
+
+
+
+
+discrepancies:
+- model params not printed when using sglang model
+    - could not grep for print line under scripts/
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+- SFT
+	- inspect data (verify multiturn, split into train/val)
+	- set certain args, mostly to reflect that multiturn
+	- get new scripts
+
+
+
+
 - get verl running on its own
 	[x] dependencies?
 		- was a little hard-- uv venv was fine, but needed exactly py3.10 (note py version breaks ABI for wheels)
