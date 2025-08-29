@@ -83,7 +83,7 @@ def generate_realistic_example():
     model.eval()
     
     # Load data from parquet file
-    df = pd.read_parquet("train.parquet")
+    df = pd.read_parquet("data/train.parquet")
     # Select 5 unique games
     unique_games = df['game_id'].unique()[:5]
     
