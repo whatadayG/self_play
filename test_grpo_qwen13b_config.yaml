@@ -1,0 +1,94 @@
+hydra:
+  searchpath:
+    - file://verl/trainer/config
+
+defaults:
+  - ppo_trainer
+  - _self_
+
+# Data configuration for 13B model
+data:
+  max_prompt_length: 2048  # Dialop prompts with tables can be long
+  max_response_length: 1024  # Allow complete negotiations
+  train_batch_size: 16  # 4 per GPU for 13B model
+  val_batch_size: 8
+  return_raw_chat: True
+  train_files: ["/home/nickatomlin/georgiazhou/self_play/data/train.parquet"]
+  val_files: ["/home/nickatomlin/georgiazhou/self_play/data/train.parquet"]
+  reward_fn_key: reward_model
+
+# Algorithm configuration
+algorithm:
+  adv_estimator: grpo
+  norm_adv_by_std_in_grpo: True
+  use_kl_in_reward: False
+
+# Actor/Rollout/Reference configuration
+actor_rollout_ref:
+  hybrid_engine: True
+  
+  # Model configuration for 13B
+  model:
+    path: /home/nickatomlin/georgiazhou/self_play/old/save_points/global_step_1000_merged
+    trust_remote_code: True
+    enable_gradient_checkpointing: True  # Essential for 13B
+    use_remove_padding: True
+  
+  # Actor training configuration
+  actor:
+    optim:
+      lr: 5e-7  # Conservative for fine-tuned 13B
+    ppo_mini_batch_size: 16
+    ppo_micro_batch_size_per_gpu: 1  # Small to fit 13B model
+    use_kl_loss: True
+    gradient_accumulation_steps: 4  # Effective micro batch = 4
+    fsdp_config:
+      model_dtype: bfloat16
+      param_offload: False  # A6000 has enough memory
+  
+  # Rollout configuration - Custom dialop rollout
+  rollout:
+    _target_: verl.workers.rollout.dialop_selfplay_rollout.DialopSelfPlayRollout
+    name: sglang
+    gpu_memory_utilization: 0.85  # Use most of 48GB
+    tensor_model_parallel_size: 1
+    log_prob_micro_batch_size_per_gpu: 2
+    trust_remote_code: True
+    
+    # Generation parameters
+    temperature: 0.7
+    top_p: 0.9
+    max_new_tokens: 512
+  
+  # Reference model configuration
+  ref:
+    log_prob_micro_batch_size_per_gpu: 2
+
+# Reward configuration
+reward_model:
+  reward_manager: dialop_selfplay
+  enable: False  # dialop_selfplay doesn't use separate model
+  micro_batch_size_per_gpu: 2
+
+# Critic configuration for 13B
+critic:
+  model:
+    path: /home/nickatomlin/georgiazhou/self_play/old/save_points/global_step_1000_merged
+    trust_remote_code: True
+    enable_gradient_checkpointing: True
+  ppo_micro_batch_size_per_gpu: 1
+  optim:
+    lr: 1e-6
+
+# Trainer configuration
+trainer:
+  critic_warmup: 50  # Some warmup for stability
+  logger: ["console", "wandb"]
+  project_name: 'dialop_qwen13b'
+  experiment_name: 'qwen13b_grpo_test'
+  n_gpus_per_node: 4
+  nnodes: 1
+  save_freq: 100
+  test_freq: 50
+  val_before_train: True
+  total_epochs: 3  # Reasonable for testing
