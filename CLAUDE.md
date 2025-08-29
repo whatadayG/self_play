@@ -1,5 +1,9 @@
 # CLAUDE.md - Dialop Self-Play GRPO Implementation
 
+The current plan can be found at PLAN.md:
+
+@PLAN.md
+
 ## Project Overview
 
 This project implements GRPO (Group Relative Policy Optimization) training for LLMs using self-play on dialop conversation games. Two instances of the same model engage in cooperative dialogue games, and both receive gradients based on their joint performance.
