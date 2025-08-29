@@ -24,6 +24,10 @@ Key features:
 - Generate complete dialop games
 - Output format compatible with `RLHFDataset`
 
+## Note: Replacement
+This design was superseded by that in CUSTOM_ROLLOUT_IMPLEMENTATION.md, which is more integrated:
+@CUSTOM_ROLLOUT_IMPLEMENTATION.md
+
 ### 2. **Data Processing Pipeline**
 Will create proper token sequences with:
 - **Input IDs**: Full conversation from one player's perspective
