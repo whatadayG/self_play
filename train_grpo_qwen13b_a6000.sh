@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Training script for dialop self-play GRPO with Qwen2.5-13B fine-tune
+# Training script for dialop self-play GRPO with Qwen2.5-7B fine-tune
 # Optimized for 4x NVIDIA RTX A6000 (48GB each)
 
 set -e
@@ -9,15 +9,24 @@ PROJECT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 DATA_DIR="${PROJECT_DIR}/data"
 MODEL_PATH="${PROJECT_DIR}/old/save_points/global_step_1000_merged"
 
+# Clean up any existing Ray state to prevent hanging
+ray stop --force 2>/dev/null || true
+rm -rf /tmp/ray/session_latest 2>/dev/null || true
+
 # Use GPUs 4,5,6,7
 export CUDA_VISIBLE_DEVICES="4,5,6,7"
 export PYTHONPATH="$PROJECT_DIR:$PROJECT_DIR/dialop:$PROJECT_DIR/verl:$PYTHONPATH"
+
+# NCCL settings to prevent hanging at initialization
+export NCCL_P2P_DISABLE=1  # Disable P2P if having communication issues
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1  # Better error reporting
+export NCCL_TIMEOUT=300  # 5 minute timeout for NCCL operations
 
 # Output directory with timestamp
 OUTPUT_DIR="$PROJECT_DIR/test_output/qwen13b_grpo_a6000_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$OUTPUT_DIR"
 
-echo "Dialop Self-Play GRPO Training - Qwen2.5-13B Fine-tune"
+echo "Dialop Self-Play GRPO Training - Qwen2.5-7B Fine-tune"
 echo "======================================================"
 echo "GPUs: $CUDA_VISIBLE_DEVICES (4x NVIDIA RTX A6000)"
 echo "Model: $MODEL_PATH"
@@ -45,7 +54,7 @@ source test_venv/bin/activate
 
 cd verl
 
-# Create config file with realistic parameters for 13B model on 4xA6000
+# Create config file with realistic parameters for 7B model on 4xA6000
 CONFIG_PATH="$OUTPUT_DIR/training_config.yaml"
 cat > "$CONFIG_PATH" << EOF
 hydra:
@@ -60,7 +69,7 @@ defaults:
 data:
   max_prompt_length: 2048  # Dialop prompts can be long
   max_response_length: 1024  # Allow room for complete negotiations
-  train_batch_size: 32  # 8 per GPU for 13B model
+  train_batch_size: 32  # 8 per GPU for 7B model
   val_batch_size: 16
   return_raw_chat: True
   train_files: ["$DATA_DIR/train.parquet"]
@@ -82,9 +91,10 @@ actor_rollout_ref:
   model:
     path: $MODEL_PATH
     use_remove_padding: True
-    enable_gradient_checkpointing: True  # Essential for 13B model
+    enable_gradient_checkpointing: True  # Still useful for 7B model
     enable_activation_offloading: False  # Keep off for A6000s
     trust_remote_code: True
+    use_torch_compile: False  # Disable torch compile to avoid cache issues
     
   # Actor training configuration
   actor:
@@ -93,12 +103,13 @@ actor_rollout_ref:
       weight_decay: 0.01
       warmup_steps: 50
     ppo_mini_batch_size: 32
-    ppo_micro_batch_size_per_gpu: 2  # Conservative for 13B model
+    ppo_micro_batch_size_per_gpu: 4  # Can be higher for 7B model
     use_kl_loss: True
     kl_loss_coef: 0.01
     kl_loss_type: low_var_kl
     entropy_coeff: 0.01
     gradient_accumulation_steps: 4  # Effective batch = 2 * 4 * 4 = 32
+    use_torch_compile: False  # Disable to avoid cache issues
     fsdp_config:
       param_offload: False  # A6000s have enough memory
       optimizer_offload: False
@@ -110,8 +121,8 @@ actor_rollout_ref:
     _target_: verl.workers.rollout.dialop_selfplay_rollout.DialopSelfPlayRollout
     name: sglang
     
-    # Memory optimization for 13B model
-    gpu_memory_utilization: 0.85  # Use most of the 48GB
+    # Memory optimization for 7B model
+    gpu_memory_utilization: 0.75  # Conservative to avoid OOM
     tensor_model_parallel_size: 1  # Keep at 1 for FSDP efficiency
     pipeline_model_parallel_size: 1
     log_prob_micro_batch_size_per_gpu: 4
@@ -125,13 +136,14 @@ actor_rollout_ref:
     # SGLang server optimization
     mem_fraction_static: 0.85
     dtype: float16  # Use fp16 for inference
-    disable_flashinfer: False
-    enable_flashinfer: True
+    disable_flashinfer: True
+    enable_flashinfer: False
     tokenizer_mode: auto
   
   # Reference model configuration
   ref:
     log_prob_micro_batch_size_per_gpu: 4
+    use_torch_compile: False  # Disable to avoid cache issues
     fsdp_config:
       param_offload: False
       model_dtype: bfloat16
@@ -145,14 +157,14 @@ reward_model:
 # Trainer configuration (no critic for GRPO)
 trainer:
   logger: ["console", "wandb"]
-  project_name: 'dialop_selfplay_qwen13b'
-  experiment_name: 'qwen13b_grpo_4xa6000'
+  project_name: 'dialop_selfplay_qwen7b'
+  experiment_name: 'qwen7b_grpo_4xa6000'
   n_gpus_per_node: 4
   nnodes: 1
   save_freq: 100  # Save every 100 steps
   test_freq: 50   # Test every 50 steps
   val_before_train: True
-  total_epochs: 5  # Reasonable for fine-tuning
+  total_epochs: 1  # since there are 16000 input sequences
   grad_clip: 1.0  # Gradient clipping for stability
   
   # Ray configuration for 4 GPUs
@@ -171,7 +183,7 @@ python -m verl.trainer.main_ppo \
     --config-name="training_config" \
     trainer.default_local_dir="$OUTPUT_DIR" \
     trainer.default_hdfs_dir=null \
-    trainer.experiment_name="qwen13b_grpo_$(date +%Y%m%d_%H%M%S)" \
+    trainer.experiment_name="qwen7b_grpo_$(date +%Y%m%d_%H%M%S)" \
     2>&1 | tee "$OUTPUT_DIR/training.log"
 
 echo ""
