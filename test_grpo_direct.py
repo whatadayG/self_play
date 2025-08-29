@@ -32,7 +32,7 @@ def test_minimal_grpo():
             "val_batch_size": 2,
             "return_raw_chat": True,
             "reward_fn_key": "rewards",
-            "prompt_key": "prompt",  # Tell it which field is the prompt
+            "prompt_key": "messages",  # Tell it which field contains the chat messages
             "train_files": [f"{data_dir}/train_chat_format.parquet"],
             "val_files": [f"{data_dir}/test_chat_format.parquet"],
         },
@@ -51,6 +51,7 @@ def test_minimal_grpo():
                 "enable_gradient_checkpointing": True,
                 "enable_activation_offloading": True,
                 "enable_gradient_offloading": False,
+                "custom_chat_template": "{% for message in messages %}{{ message.content }}\n{% endfor %}",
             },
             "actor": {
                 "strategy": "fsdp",
