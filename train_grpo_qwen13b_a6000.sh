@@ -47,7 +47,7 @@ cd verl
 
 # Create config file with realistic parameters for 13B model on 4xA6000
 CONFIG_PATH="$OUTPUT_DIR/training_config.yaml"
-cat > "$CONFIG_PATH" << 'EOF'
+cat > "$CONFIG_PATH" << EOF
 hydra:
   searchpath:
     - file://verl/trainer/config
@@ -63,8 +63,8 @@ data:
   train_batch_size: 32  # 8 per GPU for 13B model
   val_batch_size: 16
   return_raw_chat: True
-  train_files: ["${data.train_path}"]
-  val_files: ["${data.val_path}"]
+  train_files: ["$DATA_DIR/train.parquet"]
+  val_files: ["$DATA_DIR/test.parquet"]
   reward_fn_key: reward_model
 
 # Algorithm configuration
@@ -80,7 +80,7 @@ actor_rollout_ref:
   
   # Model configuration
   model:
-    path: ${model.path}
+    path: $MODEL_PATH
     use_remove_padding: True
     enable_gradient_checkpointing: True  # Essential for 13B model
     enable_activation_offloading: False  # Keep off for A6000s
@@ -142,24 +142,8 @@ reward_model:
   enable: False
   micro_batch_size_per_gpu: 4
 
-# Critic configuration
-critic:
-  model:
-    path: ${model.path}
-    enable_gradient_checkpointing: True
-    trust_remote_code: True
-  ppo_micro_batch_size_per_gpu: 2
-  optim:
-    lr: 1e-6
-    weight_decay: 0.01
-  fsdp_config:
-    param_offload: False
-    optimizer_offload: False
-    model_dtype: bfloat16
-
-# Trainer configuration
+# Trainer configuration (no critic for GRPO)
 trainer:
-  critic_warmup: 100  # Warmup critic for stability
   logger: ["console", "wandb"]
   project_name: 'dialop_selfplay_qwen13b'
   experiment_name: 'qwen13b_grpo_4xa6000'
@@ -185,9 +169,6 @@ echo ""
 python -m verl.trainer.main_ppo \
     --config-path="$OUTPUT_DIR" \
     --config-name="training_config" \
-    model.path="$MODEL_PATH" \
-    data.train_path="$DATA_DIR/train.parquet" \
-    data.val_path="$DATA_DIR/train.parquet" \
     trainer.default_local_dir="$OUTPUT_DIR" \
     trainer.default_hdfs_dir=null \
     trainer.experiment_name="qwen13b_grpo_$(date +%Y%m%d_%H%M%S)" \
@@ -205,7 +186,7 @@ if grep -q "Training completed" "$OUTPUT_DIR/training.log"; then
     # Show final metrics
     echo ""
     echo "Final metrics:"
-    grep -E "(actor_loss|critic_loss|reward_mean|kl_divergence)" "$OUTPUT_DIR/training.log" | tail -20
+    grep -E "(actor_loss|reward_mean|kl_divergence)" "$OUTPUT_DIR/training.log" | tail -20
 else
     echo "⚠ Training may not have completed successfully"
     echo "Check the log for errors"
