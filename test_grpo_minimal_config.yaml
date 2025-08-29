@@ -1,0 +1,85 @@
+hydra:
+  searchpath:
+    - file://verl/trainer/config
+
+defaults:
+  - ppo_trainer
+  - _self_
+
+# Minimal data configuration for testing
+data:
+  max_prompt_length: 1024
+  max_response_length: 512
+  train_batch_size: 8
+  val_batch_size: 8
+  return_raw_chat: True
+  train_files: ["/home/nickatomlin/georgiazhou/self_play/data/train.parquet"]
+  val_files: ["/home/nickatomlin/georgiazhou/self_play/data/train.parquet"]
+  reward_fn_key: reward_model  # Tell reward manager where to find rewards
+
+# Algorithm configuration
+algorithm:
+  adv_estimator: grpo
+  norm_adv_by_std_in_grpo: True
+  use_kl_in_reward: False
+
+# Actor/Rollout/Reference configuration
+actor_rollout_ref:
+  hybrid_engine: True
+  
+  # Model configuration
+  model:
+    path: Qwen/Qwen2.5-0.5B-Instruct
+  
+  # Actor training configuration
+  actor:
+    optim:
+      lr: 1e-6
+    ppo_mini_batch_size: 4
+    ppo_micro_batch_size_per_gpu: 2
+    use_kl_loss: True
+  
+  # Rollout configuration - Using custom rollout worker
+  rollout:
+    # Use our custom rollout worker
+    _target_: verl.workers.rollout.dialop_selfplay_rollout.DialopSelfPlayRollout
+    
+    # SGLang configuration
+    name: sglang
+    gpu_memory_utilization: 0.5
+    tensor_model_parallel_size: 1
+    log_prob_micro_batch_size_per_gpu: 2
+    
+    # Generation parameters
+    temperature: 0.7
+    top_p: 0.9
+    max_new_tokens: 256
+  
+  # Reference model configuration
+  ref:
+    log_prob_micro_batch_size_per_gpu: 2
+
+# Reward configuration
+reward_model:
+  reward_manager: dialop_selfplay
+  enable: False  # Disable reward model since dialop_selfplay doesn't use a separate model
+  micro_batch_size_per_gpu: 2
+
+# Critic configuration
+critic:
+  model:
+    path: Qwen/Qwen2.5-0.5B-Instruct
+  ppo_micro_batch_size_per_gpu: 2
+
+# Trainer configuration
+trainer:
+  critic_warmup: 0
+  logger: ["console"]
+  project_name: 'dialop_test'
+  experiment_name: 'minimal_gradient_test'
+  n_gpus_per_node: 2
+  nnodes: 1
+  save_freq: -1  # Don't save checkpoints
+  test_freq: -1  # Don't test during training
+  val_before_train: False
+  total_epochs: 1
