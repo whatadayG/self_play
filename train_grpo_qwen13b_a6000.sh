@@ -122,10 +122,10 @@ actor_rollout_ref:
     name: sglang
     
     # Memory optimization for 7B model
-    gpu_memory_utilization: 0.75  # Conservative to avoid OOM
+    gpu_memory_utilization: 0.6  # Conservative to avoid OOM
     tensor_model_parallel_size: 1  # Keep at 1 for FSDP efficiency
     pipeline_model_parallel_size: 1
-    log_prob_micro_batch_size_per_gpu: 4
+    log_prob_micro_batch_size_per_gpu: 1
     
     # Generation parameters
     temperature: 0.7
@@ -142,7 +142,7 @@ actor_rollout_ref:
   
   # Reference model configuration
   ref:
-    log_prob_micro_batch_size_per_gpu: 4
+    log_prob_micro_batch_size_per_gpu: 1
     use_torch_compile: False  # Disable to avoid cache issues
     fsdp_config:
       param_offload: False
