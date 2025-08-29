@@ -6,7 +6,6 @@ This script runs the core rollout logic and outputs the two training datapoints
 with tensors decoded back to string format.
 """
 
-import asyncio
 import json
 import os
 import sys
@@ -70,7 +69,7 @@ class RealModelConfig:
     response_length = 512
 
 
-async def generate_realistic_example():
+def generate_realistic_example():
     """Generate example using the actual trained model."""
     
     model_path = "/home/nickatomlin/georgiazhou/self_play/old/save_points/global_step_1000_merged"
@@ -84,7 +83,7 @@ async def generate_realistic_example():
     model.eval()
     
     # Load data from parquet file
-    df = pd.read_parquet("test_small.parquet")
+    df = pd.read_parquet("train.parquet")
     # Select 5 unique games
     unique_games = df['game_id'].unique()[:5]
     
@@ -101,7 +100,7 @@ async def generate_realistic_example():
         rollout.processing_class = RealModelProcessingClass(model_path)
         
         # Use real model for generation
-        async def model_generate_response(messages, obs, player):
+        def model_generate_response(messages, obs, player):
             """Generate response using the actual model."""
             # Apply chat template
             prompt = rollout.processing_class.apply_chat_template(
@@ -169,13 +168,13 @@ async def generate_realistic_example():
     )
     
     # Run generate_sequences
-    output = await rollout.generate_sequences(input_data)
+    output = rollout.generate_sequences(input_data)
     
     
     # Save outputs to 5 separate JSON files (one per game)
     all_outputs = []
     
-    for game_idx in range(5):
+    for game_idx in range(1):
         # Extract data for both players of this game
         game_output_data = {
             "model_path": model_path,
@@ -234,4 +233,4 @@ async def generate_realistic_example():
 
 if __name__ == "__main__":
     # Run generation
-    asyncio.run(generate_realistic_example())
+    generate_realistic_example()
