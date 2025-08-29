@@ -14,6 +14,7 @@ from pathlib import Path
 
 import torch
 import numpy as np
+import pandas as pd
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from tensordict import TensorDict
 
@@ -82,6 +83,11 @@ async def generate_realistic_example():
     )
     model.eval()
     
+    # Load data from parquet file
+    df = pd.read_parquet("test_small.parquet")
+    # Select 5 unique games
+    unique_games = df['game_id'].unique()[:5]
+    
     # Create rollout with real model
     from unittest.mock import patch
     with patch('verl.workers.rollout.dialop_selfplay_rollout.SGLangRollout.__init__'):
@@ -131,17 +137,34 @@ async def generate_realistic_example():
             
         rollout._generate_player_response = model_generate_response
     
-    # Create input for both players of the same game
-    batch_size = 2
+    # Create input for 5 games (10 datapoints total, 2 per game)
+    batch_size = 10
+    
+    # Prepare data from parquet file
+    game_states = []
+    player_indices = []
+    game_ids = []
+    prompts = []
+    
+    for game_idx, game_id in enumerate(unique_games):
+        game_data = df[df['game_id'] == game_id]
+        # Add both players from the same game
+        for player_idx in [0, 1]:
+            player_data = game_data[game_data['player_index'] == player_idx].iloc[0]
+            game_states.append(player_data['game_state'])
+            player_indices.append(player_idx)
+            game_ids.append(int(game_id))
+            prompts.append(player_data['prompt'])
+    
     input_data = DataProto(
         batch=TensorDict({
             "dummy": torch.zeros(batch_size, 1)
         }, batch_size=[batch_size]),
         non_tensor_batch={
-            "game_state": np.array([json.dumps(None), json.dumps(None)]),
-            "player_index": np.array([0, 1]),  # Both players
-            "game_id": np.array([1, 1]),  # Same game!
-            "prompt": np.array([""] * 2)
+            "game_state": np.array(game_states),
+            "player_index": np.array(player_indices),
+            "game_id": np.array(game_ids),
+            "prompt": np.array(prompts)
         }
     )
     
@@ -149,55 +172,64 @@ async def generate_realistic_example():
     output = await rollout.generate_sequences(input_data)
     
     
-    # Extract and decode the training datapoints
-    output_data = {
-        "model_path": model_path,
-        "generation_params": rollout.sampling_params,
-        "training_datapoints": []
-    }
+    # Save outputs to 5 separate JSON files (one per game)
+    all_outputs = []
     
-    # Process each player's perspective
-    for i in range(2):
-        seq = output.batch["input_ids"][i]
-        mask = output.batch["attention_mask"][i]
-        rewards = output.batch["rewards"][i]
-        
-        # Get valid sequence length
-        valid_length = int(mask.sum().item())
-        valid_seq = seq[:valid_length]
-        
-        # Get reward position
-        nonzero_rewards = torch.nonzero(rewards).squeeze()
-        if nonzero_rewards.numel() > 0:
-            reward_pos = nonzero_rewards[-1].item() if nonzero_rewards.dim() > 0 else nonzero_rewards.item()
-            reward_val = rewards[reward_pos].item()
-        else:
-            reward_pos = -1
-            reward_val = 0.0
-        
-        # Decode the full sequence to string
-        decoded_sequence = rollout.processing_class.tokenizer.decode(valid_seq, skip_special_tokens=False)
-        
-        # Create datapoint
-        datapoint = {
-            "player_index": i,
-            "sequence_length": valid_length,
-            "decoded_sequence": decoded_sequence,
-            "reward_position": reward_pos,
-            "reward_value": reward_val,
-            "normalized_reward": output.non_tensor_batch["reward_model"][i]["normalized_reward"],
-            "attention_mask": mask[:valid_length].tolist(),
-            "game_completed": output.non_tensor_batch["game_info"][i].get("completed", False)
+    for game_idx in range(5):
+        # Extract data for both players of this game
+        game_output_data = {
+            "model_path": model_path,
+            "generation_params": rollout.sampling_params,
+            "game_id": int(unique_games[game_idx]),
+            "training_datapoints": []
         }
         
-        output_data["training_datapoints"].append(datapoint)
+        # Process both players for this game
+        for player_offset in range(2):
+            i = game_idx * 2 + player_offset  # Index in the batch
+            seq = output.batch["input_ids"][i]
+            mask = output.batch["attention_mask"][i]
+            rewards = output.batch["rewards"][i]
+            
+            # Get valid sequence length
+            valid_length = int(mask.sum().item())
+            valid_seq = seq[:valid_length]
+            
+            # Get reward position
+            nonzero_rewards = torch.nonzero(rewards).squeeze()
+            if nonzero_rewards.numel() > 0:
+                reward_pos = nonzero_rewards[-1].item() if nonzero_rewards.dim() > 0 else nonzero_rewards.item()
+                reward_val = rewards[reward_pos].item()
+            else:
+                reward_pos = -1
+                reward_val = 0.0
+            
+            # Decode the full sequence to string
+            decoded_sequence = rollout.processing_class.tokenizer.decode(valid_seq, skip_special_tokens=False)
+            
+            # Create datapoint
+            datapoint = {
+                "player_index": player_offset,
+                "sequence_length": valid_length,
+                "decoded_sequence": decoded_sequence,
+                "reward_position": reward_pos,
+                "reward_value": reward_val,
+                "normalized_reward": output.non_tensor_batch["reward_model"][i]["normalized_reward"],
+                "attention_mask": mask[:valid_length].tolist(),
+                "game_completed": output.non_tensor_batch["game_info"][i].get("completed", False)
+            }
+            
+            game_output_data["training_datapoints"].append(datapoint)
+        
+        # Save to separate JSON file
+        json_file = f"realistic_dialop_example_{game_idx + 1}.json"
+        with open(json_file, "w") as f:
+            json.dump(game_output_data, f, indent=2)
+        
+        all_outputs.append(game_output_data)
+        print(f"Saved game {game_idx + 1} to {json_file}")
     
-    # Save only JSON version
-    json_file = "realistic_dialop_example.json"
-    with open(json_file, "w") as f:
-        json.dump(output_data, f, indent=2)
-    
-    return output_data
+    return all_outputs
 
 
 if __name__ == "__main__":
