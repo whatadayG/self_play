@@ -17,6 +17,9 @@ rm -rf /tmp/ray/session_latest 2>/dev/null || true
 export CUDA_VISIBLE_DEVICES="4,5,6,7"
 export PYTHONPATH="$PROJECT_DIR:$PROJECT_DIR/dialop:$PROJECT_DIR/verl:$PYTHONPATH"
 
+# Enable debug logging from verl
+export VERL_LOGGING_LEVEL="INFO"
+
 # NCCL settings to prevent hanging at initialization
 export NCCL_P2P_DISABLE=1  # Disable P2P if having communication issues
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1  # Better error reporting
@@ -69,6 +72,7 @@ defaults:
 data:
   max_prompt_length: 2048  # Dialop prompts can be long
   max_response_length: 1024  # Allow room for complete negotiations
+  truncation: 'error'
   train_batch_size: 32  # 8 per GPU for 7B model
   val_batch_size: 16
   return_raw_chat: True
@@ -118,8 +122,7 @@ actor_rollout_ref:
   
   # Rollout configuration
   rollout:
-    _target_: verl.workers.rollout.dialop_selfplay_rollout.DialopSelfPlayRollout
-    name: sglang
+    name: dialop
     
     # Memory optimization for 7B model
     gpu_memory_utilization: 0.6  # Conservative to avoid OOM
