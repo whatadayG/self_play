@@ -29,6 +29,9 @@ export NCCL_TIMEOUT=300  # 5 minute timeout for NCCL operations
 OUTPUT_DIR="$PROJECT_DIR/test_output/qwen13b_grpo_a6000_$(date +%Y%m%d_%H%M%S)"
 mkdir -p "$OUTPUT_DIR"
 
+# Set output directory for rollout logs
+export VERL_OUTPUT_DIR="$OUTPUT_DIR"
+
 echo "Dialop Self-Play GRPO Training - Qwen2.5-7B Fine-tune"
 echo "======================================================"
 echo "GPUs: $CUDA_VISIBLE_DEVICES (4x NVIDIA RTX A6000)"
@@ -71,10 +74,10 @@ defaults:
 # Data configuration
 data:
   max_prompt_length: 2048  # Dialop prompts can be long
-  max_response_length: 1024  # Allow room for complete negotiations
+  max_response_length: 30700 # near max with 32768 positional embeddings
   truncation: 'error'
-  train_batch_size: 32  # 8 per GPU for 7B model
-  val_batch_size: 16
+  train_batch_size: 4 # TODO: bring this back up to a larger number; it's been shrank for fast iteration purposes
+  val_batch_size: 4
   return_raw_chat: True
   train_files: ["$DATA_DIR/train.parquet"]
   val_files: ["$DATA_DIR/test.parquet"]
@@ -98,6 +101,9 @@ actor_rollout_ref:
     enable_gradient_checkpointing: True  # Still useful for 7B model
     enable_activation_offloading: False  # Keep off for A6000s
     trust_remote_code: True
+    use_fused_kernels: True
+    fused_kernel_options:
+        impl_backend: triton  # Use triton backend for fused kernels
     use_torch_compile: False  # Disable torch compile to avoid cache issues
     
   # Actor training configuration
@@ -106,13 +112,13 @@ actor_rollout_ref:
       lr: 5e-7  # Conservative LR for fine-tuned model
       weight_decay: 0.01
       warmup_steps: 50
-    ppo_mini_batch_size: 32
-    ppo_micro_batch_size_per_gpu: 4  # Can be higher for 7B model
+    ppo_mini_batch_size: 4 # TODO: set back to 32 or higher
+    ppo_micro_batch_size_per_gpu: 1  # TODO: set back to 4 or a higher number
     use_kl_loss: True
     kl_loss_coef: 0.01
     kl_loss_type: low_var_kl
     entropy_coeff: 0.01
-    gradient_accumulation_steps: 4  # Effective batch = 2 * 4 * 4 = 32
+    gradient_accumulation_steps: # TODO: set back to 4
     use_torch_compile: False  # Disable to avoid cache issues
     fsdp_config:
       param_offload: False  # A6000s have enough memory
@@ -133,11 +139,11 @@ actor_rollout_ref:
     # Generation parameters
     temperature: 0.7
     top_p: 0.9
-    max_new_tokens: 512
+    max_new_tokens: 4096
     repetition_penalty: 1.02  # Slight penalty to reduce repetition
     
     # SGLang server optimization
-    mem_fraction_static: 0.85
+    mem_fraction_static: 0.4
     dtype: float16  # Use fp16 for inference
     disable_flashinfer: True
     enable_flashinfer: False
@@ -164,9 +170,9 @@ trainer:
   experiment_name: 'qwen7b_grpo_4xa6000'
   n_gpus_per_node: 4
   nnodes: 1
-  save_freq: 100  # Save every 100 steps
-  test_freq: 50   # Test every 50 steps
-  val_before_train: True
+  save_freq: 10  # Save every 100 steps
+  test_freq: 10   # Test every 50 steps
+  val_before_train: False
   total_epochs: 1  # since there are 16000 input sequences
   grad_clip: 1.0  # Gradient clipping for stability
   
