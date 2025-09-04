@@ -88,9 +88,16 @@ def generate_realistic_example():
     unique_games = df['game_id'].unique()[:5]
     
     # Create rollout with real model
-    from unittest.mock import patch
-    with patch('verl.workers.rollout.dialop_selfplay_rollout.SGLangRollout.__init__'):
-        rollout = DialopSelfPlayRollout()
+    from unittest.mock import patch, MagicMock
+    
+    # Mock the parent class initialization
+    def mock_init(self, *args, **kwargs):
+        # Set required attributes that parent would set
+        self.config = kwargs.get('config', MagicMock())
+        pass
+    
+    with patch('verl.workers.rollout.sglang_rollout.SGLangRollout.__init__', mock_init):
+        rollout = DialopSelfPlayRollout(config=RealModelConfig())
         rollout.config = RealModelConfig()
         rollout.sampling_params = {
             "temperature": 0.7,
@@ -98,43 +105,54 @@ def generate_realistic_example():
             "max_new_tokens": 256
         }
         rollout.processing_class = RealModelProcessingClass(model_path)
+        rollout._games_logged = 0
+        rollout._failed_games_logged = 0
+        rollout.output_dir = "."
         
-        # Use real model for generation
-        def model_generate_response(messages, obs, player):
-            """Generate response using the actual model."""
-            # Apply chat template
-            prompt = rollout.processing_class.apply_chat_template(
-                messages + [{"role": "user", "content": obs}],
-                tokenize=False,
-                add_generation_prompt=True
+        # Load game instructions
+        from pathlib import Path
+        instructions_path = Path(__file__).parent / "dialop" / "dialop" / "envs" / "data" / "optimization.txt"
+        if instructions_path.exists():
+            rollout.game_instructions = instructions_path.read_text().strip()
+        else:
+            rollout.game_instructions = "You are playing a cooperative game."
+        
+    # Use real model for generation
+    def model_generate_response(messages, obs, player):
+        """Generate response using the actual model."""
+        # Apply chat template
+        prompt = rollout.processing_class.apply_chat_template(
+            messages + [{"role": "user", "content": obs}],
+            tokenize=False,
+            add_generation_prompt=True
+        )
+        
+        # Tokenize
+        inputs = rollout.processing_class.tokenizer(
+            prompt,
+            return_tensors="pt",
+            truncation=True,
+            max_length=rollout.config.max_model_len
+        ).to(model.device)
+        
+        # Generate with model
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=rollout.sampling_params["max_new_tokens"],
+                temperature=rollout.sampling_params["temperature"],
+                top_p=rollout.sampling_params["top_p"],
+                do_sample=True,
+                pad_token_id=rollout.processing_class.tokenizer.pad_token_id,
             )
-            
-            # Tokenize
-            inputs = rollout.processing_class.tokenizer(
-                prompt,
-                return_tensors="pt",
-                truncation=True,
-                max_length=rollout.config.max_model_len
-            ).to(model.device)
-            
-            # Generate with model
-            with torch.no_grad():
-                outputs = model.generate(
-                    **inputs,
-                    max_new_tokens=rollout.sampling_params["max_new_tokens"],
-                    temperature=rollout.sampling_params["temperature"],
-                    top_p=rollout.sampling_params["top_p"],
-                    do_sample=True,
-                    pad_token_id=rollout.processing_class.tokenizer.pad_token_id,
-                )
-            
-            # Extract only the generated part
-            generated_ids = outputs[0][len(inputs.input_ids[0]):]
-            response = rollout.processing_class.tokenizer.decode(generated_ids, skip_special_tokens=True)
-            
-            return response
-            
-        rollout._generate_player_response = model_generate_response
+        
+        # Extract only the generated part
+        generated_ids = outputs[0][len(inputs.input_ids[0]):]
+        response = rollout.processing_class.tokenizer.decode(generated_ids, skip_special_tokens=True)
+        
+        return response
+        
+    rollout._generate_player_response = model_generate_response
     
     # Create input for 5 games (10 datapoints total, 2 per game)
     batch_size = 10
@@ -206,6 +224,15 @@ def generate_realistic_example():
             # Decode the full sequence to string
             decoded_sequence = rollout.processing_class.tokenizer.decode(valid_seq, skip_special_tokens=False)
             
+            # Get response mask and decode tokens where gradient flows
+            response_mask = output.batch["response_mask"][i][:valid_length]
+            gradient_token_indices = torch.nonzero(response_mask).squeeze()
+            if gradient_token_indices.numel() > 0:
+                gradient_tokens = valid_seq[gradient_token_indices]
+                decoded_gradient_text = rollout.processing_class.tokenizer.decode(gradient_tokens, skip_special_tokens=False)
+            else:
+                decoded_gradient_text = ""
+            
             # Create datapoint
             datapoint = {
                 "player_index": player_offset,
@@ -214,7 +241,9 @@ def generate_realistic_example():
                 "reward_position": reward_pos,
                 "reward_value": reward_val,
                 "normalized_reward": output.non_tensor_batch["reward_model"][i]["normalized_reward"],
-                "attention_mask": mask[:valid_length].tolist(),
+                "response_mask": output.batch["response_mask"][i][:valid_length].tolist(),
+                "num_gradient_tokens": int(response_mask.sum().item()),
+                "gradient_text_preview": decoded_gradient_text[:500] + "..." if len(decoded_gradient_text) > 500 else decoded_gradient_text,
                 "game_completed": output.non_tensor_batch["game_info"][i].get("completed", False)
             }
             
