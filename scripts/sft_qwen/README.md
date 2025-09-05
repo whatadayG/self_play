@@ -1,6 +1,6 @@
-# Qwen2.5-7B SFT with VERL (FSDP)
+# Qwen3-8B SFT with VERL (FSDP)
 
-This folder provides a minimal SFT pipeline for `Qwen/Qwen2.5-7B-Instruct` using VERL's FSDP SFT trainer, plus a utility to convert the trained checkpoint to HuggingFace format for downstream RL (PPO/GRPO).
+This folder provides a minimal SFT pipeline for `Qwen/Qwen3-8B` using VERL's FSDP SFT trainer, plus a utility to convert the trained checkpoint to HuggingFace format for downstream RL (PPO/GRPO).
 
 ## Prerequisites
 - Python environment with CUDA + PyTorch.
@@ -34,55 +34,29 @@ python /home/nickatomlin/georgiazhou/self_play/sft_qwen/convert_jsonl_to_parquet
   --messages_key messages --tools_key tools --thinking_key enable_thinking
 ```
 
-## 1) Run SFT Training (recommended hyperparameters for ~1k multi-turn dialogues)
+## 1) Run SFT Training (multi-turn, parameters per README)
+Use the VERL multiturn demo shape and pass overrides to match these hyperparameters (epochs, batch sizes, max length, dtype, LR) while switching to Qwen3-8B.
 ```bash
-bash /home/nickatomlin/georgiazhou/self_play/sft_qwen/run_sft_qwen.sh \
-  -t /home/nickatomlin/georgiazhou/self_play/sft_qwen/sft_qwen_from_july25.parquet \
-  -v /home/nickatomlin/georgiazhou/self_play/sft_qwen/sft_qwen_from_july25.parquet \
-  -U -K messages \
-  -m Qwen/Qwen2.5-7B-Instruct \
-  -P qwen2_5_7b_sft \
-  -E multiturn_1k_default \
-  -e 3 \
-  -b 1 \
-  -B 64 \
-  -g 8 \
-  -o /home/nickatomlin/georgiazhou/self_play/verl/checkpoints/sft_qwen2_5_7b
+source /home/nickatomlin/georgiazhou/self_play/test_venv/bin/activate
+CUDA_VISIBLE_DEVICES=0,1,2,3 \
+bash /home/nickatomlin/georgiazhou/self_play/verl/examples/sft/multiturn/run_qwen_05_sp2.sh \
+  4 \
+  /home/nickatomlin/georgiazhou/self_play/verl/checkpoints/sft_qwen3_8b \
+  data.train_files=/home/nickatomlin/georgiazhou/self_play/scripts/sft_qwen/sft_qwen3_10k/sft_qwen3_10k_train.parquet \
+  data.val_files=/home/nickatomlin/georgiazhou/self_play/scripts/sft_qwen/sft_qwen3_10k/sft_qwen3_10k_val.parquet \
+  data.multiturn.enable=true \
+  data.multiturn.messages_key=messages \
+  data.max_length=10000 \so
+  data.micro_batch_size=1 \
+  data.train_batch_size=32 \
+  model.partial_pretrain=Qwen/Qwen3-8B \
+  model.trust_remote_code=true \
+  model.fsdp_config.model_dtype=bf16 \
+  optim.lr=1e-5 \
+  trainer.project_name=multiturn-sft \
+  trainer.experiment_name=multiturn_qwen3_8b_len10k_b32 \
+  trainer.logger=console \
+  trainer.max_epochs=3 \
+  ulysses_sequence_parallel_size=2 \
+  use_remove_padding=true
 ```
-This sets:
-- Multi-turn mode with `messages` as the key
-- `data.max_length=2048`, `model.trust_remote_code=true`, `model.fsdp_config.model_dtype=bf16`
-- `optim.lr=1e-5` for full-parameter FSDP; if you add `-L 32` to enable LoRA, LR auto-switches to `2e-4`
-- Batch: `micro_batch_size_per_gpu=1`, `train_batch_size=64` (must be divisible by DP size)
-- Epochs: 3
-
-Note: If your GPU count differs, the script detects it automatically. Adjust `-B` to keep `train_batch_size % DP == 0`.
-
-## 2) Convert Checkpoint to HuggingFace Format
-```bash
-bash /home/nickatomlin/georgiazhou/self_play/sft_qwen/merge_checkpoint.sh \
-  -o /home/nickatomlin/georgiazhou/self_play/verl/checkpoints/sft_qwen2_5_7b \
-  -t /home/nickatomlin/georgiazhou/self_play/verl/checkpoints/sft_qwen2_5_7b_hf
-```
-
-## 3) Use the SFT model for RL (PPO/GRPO)
-```bash
-python3 -m verl.trainer.main_ppo \
-  algorithm.adv_estimator=grpo \
-  data.train_files=$HOME/data/gsm8k/train.parquet \
-  data.val_files=$HOME/data/gsm8k/test.parquet \
-  actor_rollout_ref.model.path=/home/nickatomlin/georgiazhou/self_play/verl/checkpoints/sft_qwen2_5_7b_hf \
-  critic.model.path=/home/nickatomlin/georgiazhou/self_play/verl/checkpoints/sft_qwen2_5_7b_hf
-```
-To use SGLang or vLLM for rollouts during RL:
-```bash
-python3 -m verl.trainer.main_ppo \
-  actor_rollout_ref.rollout.name=sglang \
-  ...
-```
-
-## Tips
-- `trainer.resume_mode` defaults to `auto`. For fault tolerance, it resumes from the latest step in the output dir.
-- Ensure tokenizer/model compatibility between SFT and RL.
-- Store checkpoints in persistent storage if RL runs on different nodes.
-- If you see import errors for `verl`, double-check you ran `pip install -e /home/nickatomlin/georgiazhou/self_play/verl` or set `PYTHONPATH` accordingly. 

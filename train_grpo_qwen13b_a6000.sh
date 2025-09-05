@@ -55,10 +55,16 @@ fi
 # Copy config to output directory for reference
 cp "$0" "$OUTPUT_DIR/training_script.sh"
 
-# Activate test venv
-source test_venv/bin/activate
+# Activate test venv if it exists
+if [ -f "$PROJECT_DIR/test_venv/bin/activate" ]; then
+    source "$PROJECT_DIR/test_venv/bin/activate"
+elif [ -f "/home/nickatomlin/georgiazhou/self_play/test_venv/bin/activate" ]; then
+    source "/home/nickatomlin/georgiazhou/self_play/test_venv/bin/activate"
+else
+    echo "Warning: Virtual environment not found. Using system Python."
+fi
 
-cd verl
+cd "$PROJECT_DIR/verl"
 
 # Create config file with realistic parameters for 7B model on 4xA6000
 CONFIG_PATH="$OUTPUT_DIR/training_config.yaml"
