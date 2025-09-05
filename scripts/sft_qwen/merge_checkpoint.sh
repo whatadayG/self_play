@@ -61,12 +61,11 @@ fi
 mkdir -p "$TARGET_DIR"
 
 VERL_DIR="/home/nickatomlin/georgiazhou/self_play/verl"
-export PYTHONPATH="$VERL_DIR:$PYTHONPATH"
 
 echo "Merging FSDP checkpoint from: $LOCAL_DIR"
 echo "Saving HuggingFace model to: $TARGET_DIR"
 
-exec python3 -m verl.model_merger merge \
+exec python -m verl.model_merger merge \
   --backend fsdp \
   --local_dir "$LOCAL_DIR" \
   --target_dir "$TARGET_DIR" 
