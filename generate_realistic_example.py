@@ -251,28 +251,44 @@ def generate_realistic_example(num_games=1):
             # Decode the full sequence to string
             decoded_sequence = rollout.processing_class.tokenizer.decode(valid_seq, skip_special_tokens=False)
             
-            # Get response mask and decode tokens where gradient flows
-            response_mask = output.batch["response_mask"][i][:valid_length]
-            gradient_token_indices = torch.nonzero(response_mask).squeeze()
+            # Build full sequence mask - we need to reconstruct where gradients flow in the full sequence
+            # The response_mask is only for the response portion, but we need the full sequence mask
+            prompts = output.batch["prompts"][i]
+            responses = output.batch["responses"][i]
+            response_mask = output.batch["response_mask"][i]
+            
+            # Get actual lengths (before padding)
+            prompt_len = int((prompts != rollout.processing_class.pad_token_id).sum().item())
+            response_len = int((responses != rollout.processing_class.pad_token_id).sum().item())
+            
+            # Create full sequence gradient mask
+            full_gradient_mask = torch.zeros(valid_length, dtype=torch.bool)
+            # The gradient mask in the response portion starts after the prompt
+            if prompt_len < valid_length:
+                response_portion_len = min(response_len, valid_length - prompt_len)
+                full_gradient_mask[prompt_len:prompt_len + response_portion_len] = response_mask[:response_portion_len].bool()
+            
+            # Get indices where gradients flow
+            gradient_token_indices = torch.nonzero(full_gradient_mask).squeeze()
             if gradient_token_indices.numel() > 0:
                 gradient_tokens = valid_seq[gradient_token_indices]
                 decoded_gradient_text = rollout.processing_class.tokenizer.decode(gradient_tokens, skip_special_tokens=False)
             else:
-                decoded_gradient_text = ""
+                decoded_gradient_text = "(no gradient tokens)"
             
             # Create datapoint
             datapoint = {
                 "player_index": player_offset,
                 "sequence_length": valid_length,
+                "prompt_length": prompt_len,
+                "response_length": response_len,
                 "decoded_sequence": decoded_sequence,
                 "raw_reward": raw_reward,
                 "normalized_reward": normalized_reward,
-                "response_mask": output.batch["response_mask"][i][:valid_length].tolist(),
-                "num_gradient_tokens": int(response_mask.sum().item()),
-                "gradient_text_preview": decoded_gradient_text[:500] + "..." if len(decoded_gradient_text) > 500 else decoded_gradient_text,
-                "game_completed": output.non_tensor_batch["game_info"][i].get("completed", False),
-                "prompt_length": len(output.batch["prompts"][i]),
-                "response_length": len(output.batch["responses"][i])
+                "full_sequence_gradient_mask": full_gradient_mask.tolist(),
+                "num_gradient_tokens": int(full_gradient_mask.sum().item()),
+                "gradient_text_full": decoded_gradient_text,
+                "game_completed": output.non_tensor_batch["game_info"][i].get("completed", False)
             }
             
             game_output_data["training_datapoints"].append(datapoint)
