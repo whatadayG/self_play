@@ -6,6 +6,7 @@ This script runs the core rollout logic and outputs the two training datapoints
 with tensors decoded back to string format.
 """
 
+import argparse
 import json
 import os
 import sys
@@ -69,8 +70,12 @@ class RealModelConfig:
     response_length = 512
 
 
-def generate_realistic_example():
-    """Generate example using the actual trained model."""
+def generate_realistic_example(num_games=1):
+    """Generate example using the actual trained model.
+    
+    Args:
+        num_games: Number of games to generate rollouts for
+    """
     
     model_path = "/home/nickatomlin/georgiazhou/self_play/old/save_points/global_step_1000_merged"
     
@@ -84,8 +89,9 @@ def generate_realistic_example():
     
     # Load data from parquet file
     df = pd.read_parquet("data/train.parquet")
-    # Select 5 unique games
-    unique_games = df['game_id'].unique()[:5]
+    # Select n unique games
+    unique_games = df['game_id'].unique()[:num_games]
+    print(f"Generating rollouts for {len(unique_games)} games...")
     
     # Create rollout with real model
     from unittest.mock import patch, MagicMock
@@ -117,8 +123,8 @@ def generate_realistic_example():
         else:
             rollout.game_instructions = "You are playing a cooperative game."
         
-    # Use real model for generation
-    def model_generate_response(messages, obs, player):
+    # Use real model for generation - must be async
+    async def model_generate_response(messages, obs, player):
         """Generate response using the actual model."""
         # Apply chat template
         prompt = rollout.processing_class.apply_chat_template(
@@ -154,14 +160,16 @@ def generate_realistic_example():
         
     rollout._generate_player_response = model_generate_response
     
-    # Create input for 5 games (10 datapoints total, 2 per game)
-    batch_size = 10
+    # Create input for n games (2n datapoints total, 2 per game)
+    batch_size = len(unique_games) * 2
     
     # Prepare data from parquet file
     game_states = []
     player_indices = []
     game_ids = []
     prompts = []
+    input_ids_list = []
+    attention_mask_list = []
     
     for game_idx, game_id in enumerate(unique_games):
         game_data = df[df['game_id'] == game_id]
@@ -172,10 +180,34 @@ def generate_realistic_example():
             player_indices.append(player_idx)
             game_ids.append(int(game_id))
             prompts.append(player_data['prompt'])
+            
+            # Use actual tensors from the data if available
+            if 'input_ids' in player_data and player_data['input_ids'] is not None:
+                input_ids = torch.tensor(player_data['input_ids'])
+                attention_mask = torch.tensor(player_data['attention_mask']) if 'attention_mask' in player_data else torch.ones_like(input_ids)
+            else:
+                # Tokenize the prompt if no pre-tokenized data
+                tokenized = rollout.processing_class.tokenizer(
+                    player_data['prompt'],
+                    truncation=True,
+                    max_length=512,
+                    return_tensors="pt"
+                )
+                input_ids = tokenized['input_ids'][0]
+                attention_mask = tokenized['attention_mask'][0]
+            
+            input_ids_list.append(input_ids)
+            attention_mask_list.append(attention_mask)
+    
+    # Pad sequences to same length
+    from torch.nn.utils.rnn import pad_sequence
+    input_ids_padded = pad_sequence(input_ids_list, batch_first=True, padding_value=rollout.processing_class.tokenizer.pad_token_id or 0)
+    attention_mask_padded = pad_sequence(attention_mask_list, batch_first=True, padding_value=0)
     
     input_data = DataProto(
         batch=TensorDict({
-            "dummy": torch.zeros(batch_size, 1)
+            "input_ids": input_ids_padded,
+            "attention_mask": attention_mask_padded
         }, batch_size=[batch_size]),
         non_tensor_batch={
             "game_state": np.array(game_states),
@@ -189,10 +221,10 @@ def generate_realistic_example():
     output = rollout.generate_sequences(input_data)
     
     
-    # Save outputs to 5 separate JSON files (one per game)
+    # Save outputs to separate JSON files (one per game)
     all_outputs = []
     
-    for game_idx in range(1):
+    for game_idx in range(len(unique_games)):
         # Extract data for both players of this game
         game_output_data = {
             "model_path": model_path,
@@ -206,20 +238,15 @@ def generate_realistic_example():
             i = game_idx * 2 + player_offset  # Index in the batch
             seq = output.batch["input_ids"][i]
             mask = output.batch["attention_mask"][i]
-            rewards = output.batch["rewards"][i]
             
             # Get valid sequence length
             valid_length = int(mask.sum().item())
             valid_seq = seq[:valid_length]
             
-            # Get reward position
-            nonzero_rewards = torch.nonzero(rewards).squeeze()
-            if nonzero_rewards.numel() > 0:
-                reward_pos = nonzero_rewards[-1].item() if nonzero_rewards.dim() > 0 else nonzero_rewards.item()
-                reward_val = rewards[reward_pos].item()
-            else:
-                reward_pos = -1
-                reward_val = 0.0
+            # Get reward information from non-tensor batch
+            # Rewards are provided by the reward model, not included in the batch tensors
+            normalized_reward = output.non_tensor_batch["reward_model"][i]["normalized_reward"]
+            raw_reward = output.non_tensor_batch["reward_model"][i]["reward"]
             
             # Decode the full sequence to string
             decoded_sequence = rollout.processing_class.tokenizer.decode(valid_seq, skip_special_tokens=False)
@@ -238,13 +265,14 @@ def generate_realistic_example():
                 "player_index": player_offset,
                 "sequence_length": valid_length,
                 "decoded_sequence": decoded_sequence,
-                "reward_position": reward_pos,
-                "reward_value": reward_val,
-                "normalized_reward": output.non_tensor_batch["reward_model"][i]["normalized_reward"],
+                "raw_reward": raw_reward,
+                "normalized_reward": normalized_reward,
                 "response_mask": output.batch["response_mask"][i][:valid_length].tolist(),
                 "num_gradient_tokens": int(response_mask.sum().item()),
                 "gradient_text_preview": decoded_gradient_text[:500] + "..." if len(decoded_gradient_text) > 500 else decoded_gradient_text,
-                "game_completed": output.non_tensor_batch["game_info"][i].get("completed", False)
+                "game_completed": output.non_tensor_batch["game_info"][i].get("completed", False),
+                "prompt_length": len(output.batch["prompts"][i]),
+                "response_length": len(output.batch["responses"][i])
             }
             
             game_output_data["training_datapoints"].append(datapoint)
@@ -261,5 +289,14 @@ def generate_realistic_example():
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Generate realistic dialop training examples")
+    parser.add_argument(
+        "--num_games", 
+        type=int, 
+        default=1, 
+        help="Number of games to generate rollouts for (default: 1)"
+    )
+    args = parser.parse_args()
+    
     # Run generation
-    generate_realistic_example()
+    generate_realistic_example(num_games=args.num_games)
