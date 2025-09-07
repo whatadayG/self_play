@@ -6,3 +6,6 @@ data/
 *venv*
 wandb/
 *save_points*
+test_output/
+outputs/
+checkpoints/
