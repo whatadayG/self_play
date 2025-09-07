@@ -1,0 +1,2018 @@
+GRADIENT MASKING VISUALIZATION
+================================================================================
+
+Legend:
+  🟢 = Token receives gradient (loss_mask=1)
+  🔴 = Token does NOT receive gradient (loss_mask=0)
+
+================================================================================
+
+TOKEN-BY-TOKEN BREAKDOWN:
+
+Token ID | Token                | Gradient?  | Source              
+----------------------------------------------------------------------
+  151644 | <|im_start|>         | 🔴 NO       | system_0            
+    8948 | system               | 🔴 NO       | system_0            
+     198 | 
+                    | 🔴 NO       | system_0            
+    2610 | You                  | 🔴 NO       | system_0            
+     323 |  and                 | 🔴 NO       | system_0            
+     697 |  your                | 🔴 NO       | system_0            
+    8263 |  partner             | 🔴 NO       | system_0            
+     525 |  are                 | 🔴 NO       | system_0            
+    3082 |  area                | 🔴 NO       | system_0            
+   25904 |  chairs              | 🔴 NO       | system_0            
+     369 |  for                 | 🔴 NO       | system_0            
+     264 |  a                   | 🔴 NO       | system_0            
+    9816 |  conference          | 🔴 NO       | system_0            
+     323 |  and                 | 🔴 NO       | system_0            
+     498 |  you                 | 🔴 NO       | system_0            
+     614 |  have                | 🔴 NO       | system_0            
+     311 |  to                  | 🔴 NO       | system_0            
+    9793 |  assign              | 🔴 NO       | system_0            
+   59038 |  reviewers           | 🔴 NO       | system_0            
+     311 |  to                  | 🔴 NO       | system_0            
+   15689 |  papers              | 🔴 NO       | system_0            
+      13 | .                    | 🔴 NO       | system_0            
+    8886 |  Each                | 🔴 NO       | system_0            
+     315 |  of                  | 🔴 NO       | system_0            
+     498 |  you                 | 🔴 NO       | system_0            
+     702 |  has                 | 🔴 NO       | system_0            
+    1045 |  some                | 🔴 NO       | system_0            
+    1995 |  information         | 🔴 NO       | system_0            
+     911 |  about               | 🔴 NO       | system_0            
+     892 |  which               | 🔴 NO       | system_0            
+   59038 |  reviewers           | 🔴 NO       | system_0            
+    1035 |  would               | 🔴 NO       | system_0            
+     387 |  be                  | 🔴 NO       | system_0            
+    1661 |  good                | 🔴 NO       | system_0            
+     369 |  for                 | 🔴 NO       | system_0            
+     892 |  which               | 🔴 NO       | system_0            
+   15689 |  papers              | 🔴 NO       | system_0            
+      11 | ,                    | 🔴 NO       | system_0            
+     714 |  but                 | 🔴 NO       | system_0            
+     498 |  you                 | 🔴 NO       | system_0            
+    3278 | 'll                  | 🔴 NO       | system_0            
+     614 |  have                | 🔴 NO       | system_0            
+     311 |  to                  | 🔴 NO       | system_0            
+   19032 |  communicate         | 🔴 NO       | system_0            
+     304 |  in                  | 🔴 NO       | system_0            
+    1973 |  order               | 🔴 NO       | system_0            
+     311 |  to                  | 🔴 NO       | system_0            
+    1281 |  make                | 🔴 NO       | system_0            
+     279 |  the                 | 🔴 NO       | system_0            
+    1850 |  best                | 🔴 NO       | system_0            
+   31172 |  assignments         | 🔴 NO       | system_0            
+     382 | .
+
+                  | 🔴 NO       | system_0            
+    7771 | Your                 | 🔴 NO       | system_0            
+    4345 |  personal            | 🔴 NO       | system_0            
+   55514 |  reviewer            | 🔴 NO       | system_0            
+   76719 | -paper               | 🔴 NO       | system_0            
+   37623 |  similarity          | 🔴 NO       | system_0            
+   12205 |  scores              | 🔴 NO       | system_0            
+     525 |  are                 | 🔴 NO       | system_0            
+    6839 |  shown               | 🔴 NO       | system_0            
+    3685 |  below               | 🔴 NO       | system_0            
+      13 | .                    | 🔴 NO       | system_0            
+   34221 |  Higher              | 🔴 NO       | system_0            
+   12205 |  scores              | 🔴 NO       | system_0            
+   13216 |  indicate            | 🔴 NO       | system_0            
+    2664 |  better              | 🔴 NO       | system_0            
+    9071 |  matches             | 🔴 NO       | system_0            
+     624 | .
+                   | 🔴 NO       | system_0            
+   85518 | Reviewer             | 🔴 NO       | system_0            
+   17862 |  Paper               | 🔴 NO       | system_0            
+   21476 |  Similar             | 🔴 NO       | system_0            
+     487 | ity                  | 🔴 NO       | system_0            
+   69994 |  Scores              | 🔴 NO       | system_0            
+     510 | :
+                   | 🔴 NO       | system_0            
+    8161 | ,B                   | 🔴 NO       | system_0            
+     867 | LE                   | 🔴 NO       | system_0            
+      52 | U                    | 🔴 NO       | system_0            
+      25 | :                    | 🔴 NO       | system_0            
+     264 |  a                   | 🔴 NO       | system_0            
+    6730 |  Method              | 🔴 NO       | system_0            
+     369 |  for                 | 🔴 NO       | system_0            
+   33981 |  Automatic           | 🔴 NO       | system_0            
+   39288 |  Evaluation          | 🔴 NO       | system_0            
+     315 |  of                  | 🔴 NO       | system_0            
+   19087 |  MT                  | 🔴 NO       | system_0            
+      11 | ,                    | 🔴 NO       | system_0            
+   29331 | Elect                | 🔴 NO       | system_0            
+     956 | ra                   | 🔴 NO       | system_0            
+      25 | :                    | 🔴 NO       | system_0            
+    4968 |  Pre                 | 🔴 NO       | system_0            
+   85370 | -training            | 🔴 NO       | system_0            
+    2918 |  Text                | 🔴 NO       | system_0            
+   10751 |  Enc                 | 🔴 NO       | system_0            
+   52498 | oders                | 🔴 NO       | system_0            
+     438 |  as                  | 🔴 NO       | system_0            
+   77300 |  Discrim             | 🔴 NO       | system_0            
+     258 | in                   | 🔴 NO       | system_0            
+    2973 | ators                | 🔴 NO       | system_0            
+   37306 | ,G                   | 🔴 NO       | system_0            
+     385 | lo                   | 🔴 NO       | system_0            
+   42612 | Ve                   | 🔴 NO       | system_0            
+      25 | :                    | 🔴 NO       | system_0            
+    7962 |  Global              | 🔴 NO       | system_0            
+     647 |  V                   | 🔴 NO       | system_0            
+   10605 | ectors               | 🔴 NO       | system_0            
+     369 |  for                 | 🔴 NO       | system_0            
+    9322 |  Word                | 🔴 NO       | system_0            
+   78046 |  Representation      | 🔴 NO       | system_0            
+   91082 | ,GL                  | 🔴 NO       | system_0            
+    2230 | UE                   | 🔴 NO       | system_0            
+      25 | :                    | 🔴 NO       | system_0            
+     362 |  A                   | 🔴 NO       | system_0            
+   17439 |  Multi               | 🔴 NO       | system_0            
+      12 | -                    | 🔴 NO       | system_0            
+    6262 | Task                 | 🔴 NO       | system_0            
+   61622 |  Benchmark           | 🔴 NO       | system_0            
+     323 |  and                 | 🔴 NO       | system_0            
+   18320 |  Analysis            | 🔴 NO       | system_0            
+   17458 |  Platform            | 🔴 NO       | system_0            
+     369 |  for                 | 🔴 NO       | system_0            
+     451 |  N                   | 🔴 NO       | system_0            
+   23236 | LU                   | 🔴 NO       | system_0            
+      11 | ,                    | 🔴 NO       | system_0            
+    4086 | LL                   | 🔴 NO       | system_0            
+      64 | a                    | 🔴 NO       | system_0            
+    4835 | MA                   | 🔴 NO       | system_0            
+      25 | :                    | 🔴 NO       | system_0            
+    5264 |  Open                | 🔴 NO       | system_0            
+     323 |  and                 | 🔴 NO       | system_0            
+   89006 |  Efficient           | 🔴 NO       | system_0            
+    5007 |  Foundation          | 🔴 NO       | system_0            
+   11434 |  Language            | 🔴 NO       | system_0            
+   26874 |  Models              | 🔴 NO       | system_0            
+   23508 | ,R                   | 🔴 NO       | system_0            
+      78 | o                    | 🔴 NO       | system_0            
+   61437 | BERT                 | 🔴 NO       | system_0            
+      64 | a                    | 🔴 NO       | system_0            
+      25 | :                    | 🔴 NO       | system_0            
+     362 |  A                   | 🔴 NO       | system_0            
+    4892 |  Rob                 | 🔴 NO       | system_0            
+     590 | ust                  | 🔴 NO       | system_0            
+     398 | ly                   | 🔴 NO       | system_0            
+   30097 |  Optim               | 🔴 NO       | system_0            
+    1506 | ized                 | 🔴 NO       | system_0            
+     425 |  B                   | 🔴 NO       | system_0            
+    3399 | ERT                  | 🔴 NO       | system_0            
+    4968 |  Pre                 | 🔴 NO       | system_0            
+   30654 | training             | 🔴 NO       | system_0            
+   53084 |  Approach            | 🔴 NO       | system_0            
+      11 | ,                    | 🔴 NO       | system_0            
+    2183 | Qu                   | 🔴 NO       | system_0            
+    1706 | AC                   | 🔴 NO       | system_0            
+      25 | :                    | 🔴 NO       | system_0            
+   15846 |  Question            | 🔴 NO       | system_0            
+   21806 |  Answer              | 🔴 NO       | system_0            
+     287 | ing                  | 🔴 NO       | system_0            
+     304 |  in                  | 🔴 NO       | system_0            
+    9608 |  Context             | 🔴 NO       | system_0            
+      11 | ,                    | 🔴 NO       | system_0            
+   16844 | SW                   | 🔴 NO       | system_0            
+    1890 | AG                   | 🔴 NO       | system_0            
+      25 | :                    | 🔴 NO       | system_0            
+    1527 |  An                  | 🔴 NO       | system_0            
+    2410 |  Ad                  | 🔴 NO       | system_0            
+    3004 | vers                 | 🔴 NO       | system_0            
+   42721 | arial                | 🔴 NO       | system_0            
+   39183 |  Dataset             | 🔴 NO       | system_0            
+     369 |  for                 | 🔴 NO       | system_0            
+   25585 |  Commons             | 🔴 NO       | system_0            
+    1117 | ense                 | 🔴 NO       | system_0            
+     758 |  In                  | 🔴 NO       | system_0            
+    2202 | ference              | 🔴 NO       | system_0            
+     198 | 
+                    | 🔴 NO       | system_0            
+      32 | A                    | 🔴 NO       | system_0            
+    6586 | va                   | 🔴 NO       | system_0            
+   14511 |  Li                  | 🔴 NO       | system_0            
+   10631 | ,,                   | 🔴 NO       | system_0            
+      16 | 1                    | 🔴 NO       | system_0            
+      20 | 5                    | 🔴 NO       | system_0            
+      16 | 1                    | 🔴 NO       | system_0            
+      11 | ,                    | 🔴 NO       | system_0            
+      16 | 1                    | 🔴 NO       | system_0            
+      15 | 0                    | 🔴 NO       | system_0            
+   10631 | ,,                   | 🔴 NO       | system_0            
+      17 | 2                    | 🔴 NO       | system_0            
+      16 | 1                    | 🔴 NO       | system_0            
+      18 | 3                    | 🔴 NO       | system_0            
+   60723 | ,,,                  | 🔴 NO       | system_0            
+      16 | 1                    | 🔴 NO       | system_0            
+      19 | 4                    | 🔴 NO       | system_0            
+      23 | 8                    | 🔴 NO       | system_0            
+     198 | 
+                    | 🔴 NO       | system_0            
+   40586 | Daniel               | 🔴 NO       | system_0            
+   63161 |  Nguyen              | 🔴 NO       | system_0            
+   10631 | ,,                   | 🔴 NO       | system_0            
+      16 | 1                    | 🔴 NO       | system_0            
+      23 | 8                    | 🔴 NO       | system_0            
+      22 | 7                    | 🔴 NO       | system_0            
+      11 | ,                    | 🔴 NO       | system_0            
+      17 | 2                    | 🔴 NO       | system_0            
+      16 | 1                    | 🔴 NO       | system_0            
+      18 | 3                    | 🔴 NO       | system_0            
+   26758 | ,,,,                 | 🔴 NO       | system_0            
+      16 | 1                    | 🔴 NO       | system_0            
+      23 | 8                    | 🔴 NO       | system_0            
+      22 | 7                    | 🔴 NO       | system_0            
+     345 | ,
+                   | 🔴 NO       | system_0            
+      50 | S                    | 🔴 NO       | system_0            
+    1055 | of                   | 🔴 NO       | system_0            
+     685 | ia                   | 🔴 NO       | system_0            
+   62755 |  Patel               | 🔴 NO       | system_0            
+   60723 | ,,,                  | 🔴 NO       | system_0            
+      17 | 2                    | 🔴 NO       | system_0            
+      22 | 7                    | 🔴 NO       | system_0            
+      19 | 4                    | 🔴 NO       | system_0            
+   10631 | ,,                   | 🔴 NO       | system_0            
+      18 | 3                    | 🔴 NO       | system_0            
+      19 | 4                    | 🔴 NO       | system_0            
+      21 | 6                    | 🔴 NO       | system_0            
+   10631 | ,,                   | 🔴 NO       | system_0            
+      16 | 1                    | 🔴 NO       | system_0            
+      23 | 8                    | 🔴 NO       | system_0            
+      22 | 7                    | 🔴 NO       | system_0            
+     345 | ,
+                   | 🔴 NO       | system_0            
+    3036 | And                  | 🔴 NO       | system_0            
+   55314 | rei                  | 🔴 NO       | system_0            
+   61479 |  Petro               | 🔴 NO       | system_0            
+      85 | v                    | 🔴 NO       | system_0            
+   26758 | ,,,,                 | 🔴 NO       | system_0            
+      11 | ,                    | 🔴 NO       | system_0            
+      16 | 1                    | 🔴 NO       | system_0            
+      15 | 0                    | 🔴 NO       | system_0            
+   10631 | ,,                   | 🔴 NO       | system_0            
+      16 | 1                    | 🔴 NO       | system_0            
+      18 | 3                    | 🔴 NO       | system_0            
+      18 | 3                    | 🔴 NO       | system_0            
+     345 | ,
+                   | 🔴 NO       | system_0            
+      44 | M                    | 🔴 NO       | system_0            
+    8462 | organ                | 🔴 NO       | system_0            
+   35421 |  Reed                | 🔴 NO       | system_0            
+   60723 | ,,,                  | 🔴 NO       | system_0            
+      16 | 1                    | 🔴 NO       | system_0            
+      16 | 1                    | 🔴 NO       | system_0            
+      20 | 5                    | 🔴 NO       | system_0            
+   10631 | ,,                   | 🔴 NO       | system_0            
+      18 | 3                    | 🔴 NO       | system_0            
+      21 | 6                    | 🔴 NO       | system_0            
+   10631 | ,,                   | 🔴 NO       | system_0            
+     345 | ,
+                   | 🔴 NO       | system_0            
+   60660 | Joseph               | 🔴 NO       | system_0            
+   47623 |  Santos              | 🔴 NO       | system_0            
+   60723 | ,,,                  | 🔴 NO       | system_0            
+      19 | 4                    | 🔴 NO       | system_0            
+      18 | 3                    | 🔴 NO       | system_0            
+      11 | ,                    | 🔴 NO       | system_0            
+      16 | 1                    | 🔴 NO       | system_0            
+      22 | 7                    | 🔴 NO       | system_0            
+      21 | 6                    | 🔴 NO       | system_0            
+   60723 | ,,,                  | 🔴 NO       | system_0            
+     345 | ,
+                   | 🔴 NO       | system_0            
+      36 | E                    | 🔴 NO       | system_0            
+   53795 | than                 | 🔴 NO       | system_0            
+    9082 |  Smith               | 🔴 NO       | system_0            
+      11 | ,                    | 🔴 NO       | system_0            
+      22 | 7                    | 🔴 NO       | system_0            
+      17 | 2                    | 🔴 NO       | system_0            
+   10631 | ,,                   | 🔴 NO       | system_0            
+      18 | 3                    | 🔴 NO       | system_0            
+      21 | 6                    | 🔴 NO       | system_0            
+   60723 | ,,,                  | 🔴 NO       | system_0            
+      18 | 3                    | 🔴 NO       | system_0            
+      19 | 4                    | 🔴 NO       | system_0            
+      21 | 6                    | 🔴 NO       | system_0            
+      11 | ,                    | 🔴 NO       | system_0            
+     345 | ,
+                   | 🔴 NO       | system_0            
+    2753 | No                   | 🔴 NO       | system_0            
+    1466 | ah                   | 🔴 NO       | system_0            
+   17426 |  Wilson              | 🔴 NO       | system_0            
+      11 | ,                    | 🔴 NO       | system_0            
+      17 | 2                    | 🔴 NO       | system_0            
+      15 | 0                    | 🔴 NO       | system_0            
+      20 | 5                    | 🔴 NO       | system_0            
+      11 | ,                    | 🔴 NO       | system_0            
+      16 | 1                    | 🔴 NO       | system_0            
+      19 | 4                    | 🔴 NO       | system_0            
+      19 | 4                    | 🔴 NO       | system_0            
+   26758 | ,,,,                 | 🔴 NO       | system_0            
+      17 | 2                    | 🔴 NO       | system_0            
+      23 | 8                    | 🔴 NO       | system_0            
+      20 | 5                    | 🔴 NO       | system_0            
+      11 | ,                    | 🔴 NO       | system_0            
+    3554 | ,
+
+                  | 🔴 NO       | system_0            
+    7771 | Your                 | 🔴 NO       | system_0            
+    5795 |  goal                | 🔴 NO       | system_0            
+     374 |  is                  | 🔴 NO       | system_0            
+     311 |  to                  | 🔴 NO       | system_0            
+   29614 |  propose             | 🔴 NO       | system_0            
+     264 |  a                   | 🔴 NO       | system_0            
+     825 |  one                 | 🔴 NO       | system_0            
+    4686 | -to                  | 🔴 NO       | system_0            
+   18589 | -one                 | 🔴 NO       | system_0            
+   12579 |  matching            | 🔴 NO       | system_0            
+    1948 |  between             | 🔴 NO       | system_0            
+   59038 |  reviewers           | 🔴 NO       | system_0            
+     323 |  and                 | 🔴 NO       | system_0            
+   15689 |  papers              | 🔴 NO       | system_0            
+     429 |  that                | 🔴 NO       | system_0            
+   30027 |  maxim               | 🔴 NO       | system_0            
+    4909 | ises                 | 🔴 NO       | system_0            
+     279 |  the                 | 🔴 NO       | system_0            
+    2790 |  total               | 🔴 NO       | system_0            
+   37623 |  similarity          | 🔴 NO       | system_0            
+    5456 |  score               | 🔴 NO       | system_0            
+      13 | .                    | 🔴 NO       | system_0            
+     576 |  The                 | 🔴 NO       | system_0            
+     330 |  "                   | 🔴 NO       | system_0            
+   19357 | Final                | 🔴 NO       | system_0            
+   18115 |  Score               | 🔴 NO       | system_0            
+       1 | "                    | 🔴 NO       | system_0            
+     518 |  at                  | 🔴 NO       | system_0            
+     279 |  the                 | 🔴 NO       | system_0            
+     835 |  end                 | 🔴 NO       | system_0            
+     315 |  of                  | 🔴 NO       | system_0            
+     279 |  the                 | 🔴 NO       | system_0            
+    6236 |  chat                | 🔴 NO       | system_0            
+     320 |  (                   | 🔴 NO       | system_0            
+      15 | 0                    | 🔴 NO       | system_0            
+    1365 |  –                   | 🔴 NO       | system_0            
+     220 |                      | 🔴 NO       | system_0            
+      16 | 1                    | 🔴 NO       | system_0            
+       8 | )                    | 🔴 NO       | system_0            
+   25963 |  reflects            | 🔴 NO       | system_0            
+    1246 |  how                 | 🔴 NO       | system_0            
+    3265 |  close               | 🔴 NO       | system_0            
+     498 |  you                 | 🔴 NO       | system_0            
+     525 |  are                 | 🔴 NO       | system_0            
+     311 |  to                  | 🔴 NO       | system_0            
+     279 |  the                 | 🔴 NO       | system_0            
+   22823 |  optimal             | 🔴 NO       | system_0            
+   12579 |  matching            | 🔴 NO       | system_0            
+    1365 |  –                   | 🔴 NO       | system_0            
+     498 |  you                 | 🔴 NO       | system_0            
+    1366 |  want                | 🔴 NO       | system_0            
+     311 |  to                  | 🔴 NO       | system_0            
+   30027 |  maxim               | 🔴 NO       | system_0            
+    1064 | ise                  | 🔴 NO       | system_0            
+     432 |  it                  | 🔴 NO       | system_0            
+     382 | .
+
+                  | 🔴 NO       | system_0            
+    2052 | Message              | 🔴 NO       | system_0            
+   36566 |  formatting          | 🔴 NO       | system_0            
+     320 |  (                   | 🔴 NO       | system_0            
+   41541 | critical             | 🔴 NO       | system_0            
+     982 | ):
+                  | 🔴 NO       | system_0            
+    4061 | Format               | 🔴 NO       | system_0            
+    2999 |  option              | 🔴 NO       | system_0            
+     220 |                      | 🔴 NO       | system_0            
+      16 | 1                    | 🔴 NO       | system_0            
+    1365 |  –                   | 🔴 NO       | system_0            
+    3624 |  send                | 🔴 NO       | system_0            
+     264 |  a                   | 🔴 NO       | system_0            
+    4622 |  normal              | 🔴 NO       | system_0            
+    1943 |  message             | 🔴 NO       | system_0            
+     510 | :
+                   | 🔴 NO       | system_0            
+   73630 | "L                   | 🔴 NO       | system_0            
+    1415 | ets                  | 🔴 NO       | system_0            
+    1744 |  think               | 🔴 NO       | system_0            
+    3019 |  step                | 🔴 NO       | system_0            
+     553 |  by                  | 🔴 NO       | system_0            
+    3019 |  step                | 🔴 NO       | system_0            
+       1 | "                    | 🔴 NO       | system_0            
+     488 |  +                   | 🔴 NO       | system_0            
+     697 |  your                | 🔴 NO       | system_0            
+   23472 | _internal            | 🔴 NO       | system_0            
+   38229 | _reason              | 🔴 NO       | system_0            
+     287 | ing                  | 🔴 NO       | system_0            
+   73271 | _here                | 🔴 NO       | system_0            
+     488 |  +                   | 🔴 NO       | system_0            
+   10545 |  "[                  | 🔴 NO       | system_0            
+    1994 | message              | 🔴 NO       | system_0            
+   19177 | ]"                   | 🔴 NO       | system_0            
+     488 |  +                   | 🔴 NO       | system_0            
+     697 |  your                | 🔴 NO       | system_0            
+    6462 | _message             | 🔴 NO       | system_0            
+    2346 | _to                  | 🔴 NO       | system_0            
+    4178 | _y                   | 🔴 NO       | system_0            
+     413 | our                  | 🔴 NO       | system_0            
+   72432 | _partner             | 🔴 NO       | system_0            
+     271 | 
+
+                   | 🔴 NO       | system_0            
+    4061 | Format               | 🔴 NO       | system_0            
+    2999 |  option              | 🔴 NO       | system_0            
+     220 |                      | 🔴 NO       | system_0            
+      17 | 2                    | 🔴 NO       | system_0            
+    1365 |  –                   | 🔴 NO       | system_0            
+    3624 |  send                | 🔴 NO       | system_0            
+     264 |  a                   | 🔴 NO       | system_0            
+   13734 |  proposal            | 🔴 NO       | system_0            
+     510 | :
+                   | 🔴 NO       | system_0            
+   73630 | "L                   | 🔴 NO       | system_0            
+    1415 | ets                  | 🔴 NO       | system_0            
+    1744 |  think               | 🔴 NO       | system_0            
+    3019 |  step                | 🔴 NO       | system_0            
+     553 |  by                  | 🔴 NO       | system_0            
+    3019 |  step                | 🔴 NO       | system_0            
+       1 | "                    | 🔴 NO       | system_0            
+     488 |  +                   | 🔴 NO       | system_0            
+     697 |  your                | 🔴 NO       | system_0            
+   23472 | _internal            | 🔴 NO       | system_0            
+   38229 | _reason              | 🔴 NO       | system_0            
+     287 | ing                  | 🔴 NO       | system_0            
+   73271 | _here                | 🔴 NO       | system_0            
+     488 |  +                   | 🔴 NO       | system_0            
+   10545 |  "[                  | 🔴 NO       | system_0            
+    2674 | prop                 | 🔴 NO       | system_0            
+     960 | ose                  | 🔴 NO       | system_0            
+   19177 | ]"                   | 🔴 NO       | system_0            
+     488 |  +                   | 🔴 NO       | system_0            
+     366 |  <                   | 🔴 NO       | system_0            
+   72154 | anything             | 🔴 NO       | system_0            
+     498 |  you                 | 🔴 NO       | system_0            
+    1366 |  want                | 🔴 NO       | system_0            
+     311 |  to                  | 🔴 NO       | system_0            
+    1977 |  say                 | 🔴 NO       | system_0            
+     311 |  to                  | 🔴 NO       | system_0            
+     697 |  your                | 🔴 NO       | system_0            
+    8263 |  partner             | 🔴 NO       | system_0            
+      29 | >                    | 🔴 NO       | system_0            
+     488 |  +                   | 🔴 NO       | system_0            
+    6228 |  "
+                  | 🔴 NO       | system_0            
+   98637 | Proposal             | 🔴 NO       | system_0            
+    2974 | :"                   | 🔴 NO       | system_0            
+     488 |  +                   | 🔴 NO       | system_0            
+     366 |  <                   | 🔴 NO       | system_0            
+     603 | one                  | 🔴 NO       | system_0            
+   55514 |  reviewer            | 🔴 NO       | system_0            
+   76719 | -paper               | 🔴 NO       | system_0            
+   16319 |  assignment          | 🔴 NO       | system_0            
+     817 |  per                 | 🔴 NO       | system_0            
+    1555 |  line                | 🔴 NO       | system_0            
+    1339 | >
+
+                  | 🔴 NO       | system_0            
+    4061 | Format               | 🔴 NO       | system_0            
+    2999 |  option              | 🔴 NO       | system_0            
+     220 |                      | 🔴 NO       | system_0            
+      18 | 3                    | 🔴 NO       | system_0            
+    1365 |  –                   | 🔴 NO       | system_0            
+    5889 |  respond             | 🔴 NO       | system_0            
+     311 |  to                  | 🔴 NO       | system_0            
+     264 |  a                   | 🔴 NO       | system_0            
+   13734 |  proposal            | 🔴 NO       | system_0            
+     510 | :
+                   | 🔴 NO       | system_0            
+   73630 | "L                   | 🔴 NO       | system_0            
+    1415 | ets                  | 🔴 NO       | system_0            
+    1744 |  think               | 🔴 NO       | system_0            
+    3019 |  step                | 🔴 NO       | system_0            
+     553 |  by                  | 🔴 NO       | system_0            
+    3019 |  step                | 🔴 NO       | system_0            
+       1 | "                    | 🔴 NO       | system_0            
+     488 |  +                   | 🔴 NO       | system_0            
+     697 |  your                | 🔴 NO       | system_0            
+   23472 | _internal            | 🔴 NO       | system_0            
+   38229 | _reason              | 🔴 NO       | system_0            
+     287 | ing                  | 🔴 NO       | system_0            
+   73271 | _here                | 🔴 NO       | system_0            
+     488 |  +                   | 🔴 NO       | system_0            
+   10545 |  "[                  | 🔴 NO       | system_0            
+   10330 | accept               | 🔴 NO       | system_0            
+   19177 | ]"                   | 🔴 NO       | system_0            
+    2726 |  OR                  | 🔴 NO       | system_0            
+   10545 |  "[                  | 🔴 NO       | system_0            
+   46996 | reject               | 🔴 NO       | system_0            
+      60 | ]                    | 🔴 NO       | system_0            
+    1837 | "
+
+                  | 🔴 NO       | system_0            
+   30519 | VERY                 | 🔴 NO       | system_0            
+   67140 |  IMPORTANT           | 🔴 NO       | system_0            
+     510 | :
+                   | 🔴 NO       | system_0            
+    6667 | •                    | 🔴 NO       | system_0            
+    8278 |  Only                | 🔴 NO       | system_0            
+     279 |  the                 | 🔴 NO       | system_0            
+    1467 |  text                | 🔴 NO       | system_0            
+   48264 |  AFTER               | 🔴 NO       | system_0            
+     279 |  the                 | 🔴 NO       | system_0            
+    4772 |  tag                 | 🔴 NO       | system_0            
+   11743 |  ([                  | 🔴 NO       | system_0            
+    1994 | message              | 🔴 NO       | system_0            
+    1125 | ],                   | 🔴 NO       | system_0            
+     508 |  [                   | 🔴 NO       | system_0            
+    2674 | prop                 | 🔴 NO       | system_0            
+     960 | ose                  | 🔴 NO       | system_0            
+    1125 | ],                   | 🔴 NO       | system_0            
+     508 |  [                   | 🔴 NO       | system_0            
+   10330 | accept               | 🔴 NO       | system_0            
+    1125 | ],                   | 🔴 NO       | system_0            
+     508 |  [                   | 🔴 NO       | system_0            
+   46996 | reject               | 🔴 NO       | system_0            
+    2467 | ])                   | 🔴 NO       | system_0            
+     686 |  will                | 🔴 NO       | system_0            
+     387 |  be                  | 🔴 NO       | system_0            
+    6839 |  shown               | 🔴 NO       | system_0            
+     311 |  to                  | 🔴 NO       | system_0            
+     697 |  your                | 🔴 NO       | system_0            
+    8263 |  partner             | 🔴 NO       | system_0            
+     624 | .
+                   | 🔴 NO       | system_0            
+    6667 | •                    | 🔴 NO       | system_0            
+   20094 |  Everything          | 🔴 NO       | system_0            
+   56482 |  BEFORE              | 🔴 NO       | system_0            
+     279 |  the                 | 🔴 NO       | system_0            
+    4772 |  tag                 | 🔴 NO       | system_0            
+     320 |  (                   | 🔴 NO       | system_0            
+   16169 | including            | 🔴 NO       | system_0            
+     279 |  the                 | 🔴 NO       | system_0            
+    7274 |  thinking            | 🔴 NO       | system_0            
+   11652 |  sentence            | 🔴 NO       | system_0            
+     323 |  and                 | 🔴 NO       | system_0            
+     697 |  your                | 🔴 NO       | system_0            
+   32711 |  reasoning           | 🔴 NO       | system_0            
+       8 | )                    | 🔴 NO       | system_0            
+     374 |  is                  | 🔴 NO       | system_0            
+   57793 |  PRIVATE             | 🔴 NO       | system_0            
+     323 |  and                 | 🔴 NO       | system_0            
+     686 |  will                | 🔴 NO       | system_0            
+    2581 |  never               | 🔴 NO       | system_0            
+     387 |  be                  | 🔴 NO       | system_0            
+   12596 |  displayed           | 🔴 NO       | system_0            
+     624 | .
+                   | 🔴 NO       | system_0            
+    6667 | •                    | 🔴 NO       | system_0            
+    1446 |  You                 | 🔴 NO       | system_0            
+     646 |  can                 | 🔴 NO       | system_0            
+    1172 |  only                | 🔴 NO       | system_0            
+    2550 |  output              | 🔴 NO       | system_0            
+   24038 |  ONE                 | 🔴 NO       | system_0            
+    4772 |  tag                 | 🔴 NO       | system_0            
+     817 |  per                 | 🔴 NO       | system_0            
+    2484 |  turn                | 🔴 NO       | system_0            
+     323 |  and                 | 🔴 NO       | system_0            
+    1969 |  must                | 🔴 NO       | system_0            
+    2924 |  include             | 🔴 NO       | system_0            
+    2176 |  both                | 🔴 NO       | system_0            
+     279 |  the                 | 🔴 NO       | system_0            
+     869 |  private             | 🔴 NO       | system_0            
+   32711 |  reasoning           | 🔴 NO       | system_0            
+     323 |  and                 | 🔴 NO       | system_0            
+     279 |  the                 | 🔴 NO       | system_0            
+     584 |  public              | 🔴 NO       | system_0            
+    1943 |  message             | 🔴 NO       | system_0            
+     304 |  in                  | 🔴 NO       | system_0            
+    1449 |  every               | 🔴 NO       | system_0            
+    2550 |  output              | 🔴 NO       | system_0            
+     624 | .
+                   | 🔴 NO       | system_0            
+  151645 | <|im_end|>           | 🔴 NO       | system_0            
+     198 | 
+                    | 🔴 NO       | system_0            
+  151644 | <|im_start|>         | 🔴 NO       | gen_prompt_1        
+   77091 | assistant            | 🔴 NO       | gen_prompt_1        
+     198 | 
+                    | 🔴 NO       | gen_prompt_1        
+   93313 | Lets                 | 🟢 YES      | assistant_1         
+    1744 |  think               | 🟢 YES      | assistant_1         
+    3019 |  step                | 🟢 YES      | assistant_1         
+     553 |  by                  | 🟢 YES      | assistant_1         
+    3019 |  step                | 🟢 YES      | assistant_1         
+      13 | .                    | 🟢 YES      | assistant_1         
+     358 |  I                   | 🟢 YES      | assistant_1         
+     686 |  will                | 🟢 YES      | assistant_1         
+    1191 |  start               | 🟢 YES      | assistant_1         
+     553 |  by                  | 🟢 YES      | assistant_1         
+   11560 |  sharing             | 🟢 YES      | assistant_1         
+     279 |  the                 | 🟢 YES      | assistant_1         
+   29905 |  strongest           | 🟢 YES      | assistant_1         
+   55514 |  reviewer            | 🟢 YES      | assistant_1         
+   76719 | -paper               | 🟢 YES      | assistant_1         
+   18304 |  fits                | 🟢 YES      | assistant_1         
+     358 |  I                   | 🟢 YES      | assistant_1         
+    1490 |  see                 | 🟢 YES      | assistant_1         
+      11 | ,                    | 🟢 YES      | assistant_1         
+     773 |  so                  | 🟢 YES      | assistant_1         
+     847 |  my                  | 🟢 YES      | assistant_1         
+    8263 |  partner             | 🟢 YES      | assistant_1         
+     646 |  can                 | 🟢 YES      | assistant_1         
+     653 |  do                  | 🟢 YES      | assistant_1         
+     279 |  the                 | 🟢 YES      | assistant_1         
+    1852 |  same                | 🟢 YES      | assistant_1         
+     323 |  and                 | 🟢 YES      | assistant_1         
+     582 |  we                  | 🟢 YES      | assistant_1         
+     646 |  can                 | 🟢 YES      | assistant_1         
+    1401 |  look                | 🟢 YES      | assistant_1         
+     369 |  for                 | 🟢 YES      | assistant_1         
+    2797 |  clear               | 🟢 YES      | assistant_1         
+   26750 |  mutual              | 🟢 YES      | assistant_1         
+   38935 |  peaks               | 🟢 YES      | assistant_1         
+     476 |  or                  | 🟢 YES      | assistant_1         
+    9071 |  matches             | 🟢 YES      | assistant_1         
+      13 | .                    | 🟢 YES      | assistant_1         
+     358 |  I                   | 🟢 YES      | assistant_1         
+    3278 | 'll                  | 🟢 YES      | assistant_1         
+    1140 |  list                | 🟢 YES      | assistant_1         
+     279 |  the                 | 🟢 YES      | assistant_1         
+    8426 |  highest             | 🟢 YES      | assistant_1         
+   12205 |  scores              | 🟢 YES      | assistant_1         
+     320 |  (                   | 🟢 YES      | assistant_1         
+   20432 | relative             | 🟢 YES      | assistant_1         
+       8 | )                    | 🟢 YES      | assistant_1         
+     323 |  and                 | 🟢 YES      | assistant_1         
+     892 |  which               | 🟢 YES      | assistant_1         
+    6716 |  pair                | 🟢 YES      | assistant_1         
+     819 | ings                 | 🟢 YES      | assistant_1         
+     807 |  they                | 🟢 YES      | assistant_1         
+     728 |  go                  | 🟢 YES      | assistant_1         
+     311 |  to                  | 🟢 YES      | assistant_1         
+      11 | ,                    | 🟢 YES      | assistant_1         
+     438 |  as                  | 🟢 YES      | assistant_1         
+    1632 |  well                | 🟢 YES      | assistant_1         
+     438 |  as                  | 🟢 YES      | assistant_1         
+   11167 |  highlight           | 🟢 YES      | assistant_1         
+     892 |  which               | 🟢 YES      | assistant_1         
+   59038 |  reviewers           | 🟢 YES      | assistant_1         
+    4322 | /p                   | 🟢 YES      | assistant_1         
+    9532 | apers                | 🟢 YES      | assistant_1         
+     358 |  I                   | 🟢 YES      | assistant_1         
+     614 |  have                | 🟢 YES      | assistant_1         
+     902 |  no                  | 🟢 YES      | assistant_1         
+    3546 |  info                | 🟢 YES      | assistant_1         
+     911 |  about               | 🟢 YES      | assistant_1         
+      13 | .                    | 🟢 YES      | assistant_1         
+    1096 |  This                | 🟢 YES      | assistant_1         
+     686 |  will                | 🟢 YES      | assistant_1         
+    2968 |  give                | 🟢 YES      | assistant_1         
+     847 |  my                  | 🟢 YES      | assistant_1         
+    8263 |  partner             | 🟢 YES      | assistant_1         
+    7192 |  maximum             | 🟢 YES      | assistant_1         
+   20017 |  insight             | 🟢 YES      | assistant_1         
+     369 |  for                 | 🟢 YES      | assistant_1         
+     862 |  their               | 🟢 YES      | assistant_1         
+    1790 |  next                | 🟢 YES      | assistant_1         
+    3019 |  step                | 🟢 YES      | assistant_1         
+     382 | .
+
+                  | 🟢 YES      | assistant_1         
+      58 | [                    | 🟢 YES      | assistant_1         
+    1994 | message              | 🟢 YES      | assistant_1         
+      60 | ]                    | 🟢 YES      | assistant_1         
+    5692 |  Here                | 🟢 YES      | assistant_1         
+     525 |  are                 | 🟢 YES      | assistant_1         
+     279 |  the                 | 🟢 YES      | assistant_1         
+   29905 |  strongest           | 🟢 YES      | assistant_1         
+   55514 |  reviewer            | 🟢 YES      | assistant_1         
+   76719 | -paper               | 🟢 YES      | assistant_1         
+   18304 |  fits                | 🟢 YES      | assistant_1         
+     358 |  I                   | 🟢 YES      | assistant_1         
+    1490 |  see                 | 🟢 YES      | assistant_1         
+     504 |  from                | 🟢 YES      | assistant_1         
+     847 |  my                  | 🟢 YES      | assistant_1         
+    1965 |  table               | 🟢 YES      | assistant_1         
+     320 |  (                   | 🟢 YES      | assistant_1         
+   20432 | relative             | 🟢 YES      | assistant_1         
+   32307 |  rankings            | 🟢 YES      | assistant_1         
+      11 | ,                    | 🟢 YES      | assistant_1         
+    2474 |  since               | 🟢 YES      | assistant_1         
+    2750 |  values              | 🟢 YES      | assistant_1         
+     525 |  are                 | 🟢 YES      | assistant_1         
+   30690 |  scaled              | 🟢 YES      | assistant_1         
+    7731 | ):
+
+                 | 🟢 YES      | assistant_1         
+      12 | -                    | 🟢 YES      | assistant_1         
+   78563 |  Sofia               | 🟢 YES      | assistant_1         
+   62755 |  Patel               | 🟢 YES      | assistant_1         
+     374 |  is                  | 🟢 YES      | assistant_1         
+    9016 |  extremely           | 🟢 YES      | assistant_1         
+    3746 |  strong              | 🟢 YES      | assistant_1         
+     369 |  for                 | 🟢 YES      | assistant_1         
+     330 |  "                   | 🟢 YES      | assistant_1         
+   38872 | Ro                   | 🟢 YES      | assistant_1         
+   61437 | BERT                 | 🟢 YES      | assistant_1         
+      64 | a                    | 🟢 YES      | assistant_1         
+       1 | "                    | 🟢 YES      | assistant_1         
+     320 |  (                   | 🟢 YES      | assistant_1         
+   74154 | highest              | 🟢 YES      | assistant_1         
+     897 |  value               | 🟢 YES      | assistant_1         
+     358 |  I                   | 🟢 YES      | assistant_1         
+    1490 |  see                 | 🟢 YES      | assistant_1         
+       8 | )                    | 🟢 YES      | assistant_1         
+     323 |  and                 | 🟢 YES      | assistant_1         
+    1083 |  also                | 🟢 YES      | assistant_1         
+    1661 |  good                | 🟢 YES      | assistant_1         
+     369 |  for                 | 🟢 YES      | assistant_1         
+     330 |  "                   | 🟢 YES      | assistant_1         
+   16844 | SW                   | 🟢 YES      | assistant_1         
+    1890 | AG                   | 🟢 YES      | assistant_1         
+   22956 | ".
+                  | 🟢 YES      | assistant_1         
+      12 | -                    | 🟢 YES      | assistant_1         
+   15118 |  Daniel              | 🟢 YES      | assistant_1         
+   63161 |  Nguyen              | 🟢 YES      | assistant_1         
+     374 |  is                  | 🟢 YES      | assistant_1         
+    3746 |  strong              | 🟢 YES      | assistant_1         
+     369 |  for                 | 🟢 YES      | assistant_1         
+     330 |  "                   | 🟢 YES      | assistant_1         
+   29331 | Elect                | 🟢 YES      | assistant_1         
+     956 | ra                   | 🟢 YES      | assistant_1         
+       1 | "                    | 🟢 YES      | assistant_1         
+     323 |  and                 | 🟢 YES      | assistant_1         
+     702 |  has                 | 🟢 YES      | assistant_1         
+     264 |  a                   | 🟢 YES      | assistant_1         
+   14977 |  decent              | 🟢 YES      | assistant_1         
+   10728 |  rating              | 🟢 YES      | assistant_1         
+     369 |  for                 | 🟢 YES      | assistant_1         
+     330 |  "                   | 🟢 YES      | assistant_1         
+   33497 | BLE                  | 🟢 YES      | assistant_1         
+      52 | U                    | 🟢 YES      | assistant_1         
+       1 | "                    | 🟢 YES      | assistant_1         
+     323 |  and                 | 🟢 YES      | assistant_1         
+     330 |  "                   | 🟢 YES      | assistant_1         
+   16844 | SW                   | 🟢 YES      | assistant_1         
+    1890 | AG                   | 🟢 YES      | assistant_1         
+   22956 | ".
+                  | 🟢 YES      | assistant_1         
+      12 | -                    | 🟢 YES      | assistant_1         
+   41984 |  Noah                | 🟢 YES      | assistant_1         
+   17426 |  Wilson              | 🟢 YES      | assistant_1         
+     374 |  is                  | 🟢 YES      | assistant_1         
+    1602 |  very                | 🟢 YES      | assistant_1         
+    1661 |  good                | 🟢 YES      | assistant_1         
+     369 |  for                 | 🟢 YES      | assistant_1         
+     330 |  "                   | 🟢 YES      | assistant_1         
+   33497 | BLE                  | 🟢 YES      | assistant_1         
+      52 | U                    | 🟢 YES      | assistant_1         
+       1 | "                    | 🟢 YES      | assistant_1         
+     323 |  and                 | 🟢 YES      | assistant_1         
+     330 |  "                   | 🟢 YES      | assistant_1         
+    2183 | Qu                   | 🟢 YES      | assistant_1         
+    1706 | AC                   | 🟢 YES      | assistant_1         
+   22956 | ".
+                  | 🟢 YES      | assistant_1         
+      12 | -                    | 🟢 YES      | assistant_1         
+   62164 |  Ethan               | 🟢 YES      | assistant_1         
+    9082 |  Smith               | 🟢 YES      | assistant_1         
+     374 |  is                  | 🟢 YES      | assistant_1         
+    1850 |  best                | 🟢 YES      | assistant_1         
+     369 |  for                 | 🟢 YES      | assistant_1         
+     330 |  "                   | 🟢 YES      | assistant_1         
+   16844 | SW                   | 🟢 YES      | assistant_1         
+    1890 | AG                   | 🟢 YES      | assistant_1         
+       1 | "                    | 🟢 YES      | assistant_1         
+     323 |  and                 | 🟢 YES      | assistant_1         
+     702 |  has                 | 🟢 YES      | assistant_1         
+     264 |  a                   | 🟢 YES      | assistant_1         
+    2613 |  small               | 🟢 YES      | assistant_1         
+    2432 |  match               | 🟢 YES      | assistant_1         
+     311 |  to                  | 🟢 YES      | assistant_1         
+     330 |  "                   | 🟢 YES      | assistant_1         
+   33497 | BLE                  | 🟢 YES      | assistant_1         
+      52 | U                    | 🟢 YES      | assistant_1         
+   22956 | ".
+                  | 🟢 YES      | assistant_1         
+      12 | -                    | 🟢 YES      | assistant_1         
+   22954 |  Morgan              | 🟢 YES      | assistant_1         
+   35421 |  Reed                | 🟢 YES      | assistant_1         
+     374 |  is                  | 🟢 YES      | assistant_1         
+    1172 |  only                | 🟢 YES      | assistant_1         
+   18054 |  matched             | 🟢 YES      | assistant_1         
+    7469 |  weak                | 🟢 YES      | assistant_1         
+     398 | ly                   | 🟢 YES      | assistant_1         
+     311 |  to                  | 🟢 YES      | assistant_1         
+     330 |  "                   | 🟢 YES      | assistant_1         
+   38872 | Ro                   | 🟢 YES      | assistant_1         
+   61437 | BERT                 | 🟢 YES      | assistant_1         
+      64 | a                    | 🟢 YES      | assistant_1         
+   22956 | ".
+                  | 🟢 YES      | assistant_1         
+      12 | -                    | 🟢 YES      | assistant_1         
+   15115 |  Joseph              | 🟢 YES      | assistant_1         
+   47623 |  Santos              | 🟢 YES      | assistant_1         
+     374 |  is                  | 🟢 YES      | assistant_1         
+    7469 |  weak                | 🟢 YES      | assistant_1         
+     398 | ly                   | 🟢 YES      | assistant_1         
+   18054 |  matched             | 🟢 YES      | assistant_1         
+     311 |  to                  | 🟢 YES      | assistant_1         
+     330 |  "                   | 🟢 YES      | assistant_1         
+    4086 | LL                   | 🟢 YES      | assistant_1         
+      64 | a                    | 🟢 YES      | assistant_1         
+    4835 | MA                   | 🟢 YES      | assistant_1         
+   22956 | ".
+                  | 🟢 YES      | assistant_1         
+      12 | -                    | 🟢 YES      | assistant_1         
+   26427 |  Andre               | 🟢 YES      | assistant_1         
+      72 | i                    | 🟢 YES      | assistant_1         
+   61479 |  Petro               | 🟢 YES      | assistant_1         
+      85 | v                    | 🟢 YES      | assistant_1         
+     374 |  is                  | 🟢 YES      | assistant_1         
+    1172 |  only                | 🟢 YES      | assistant_1         
+   18054 |  matched             | 🟢 YES      | assistant_1         
+     311 |  to                  | 🟢 YES      | assistant_1         
+     330 |  "                   | 🟢 YES      | assistant_1         
+   38872 | Ro                   | 🟢 YES      | assistant_1         
+   61437 | BERT                 | 🟢 YES      | assistant_1         
+      64 | a                    | 🟢 YES      | assistant_1         
+       1 | "                    | 🟢 YES      | assistant_1         
+     320 |  (                   | 🟢 YES      | assistant_1         
+    1204 | very                 | 🟢 YES      | assistant_1         
+    3347 |  low                 | 🟢 YES      | assistant_1         
+    4292 | ).
+                  | 🟢 YES      | assistant_1         
+      12 | -                    | 🟢 YES      | assistant_1         
+   91657 |  Ava                 | 🟢 YES      | assistant_1         
+   14511 |  Li                  | 🟢 YES      | assistant_1         
+     374 |  is                  | 🟢 YES      | assistant_1         
+    1850 |  best                | 🟢 YES      | assistant_1         
+     369 |  for                 | 🟢 YES      | assistant_1         
+     330 |  "                   | 🟢 YES      | assistant_1         
+    3825 | GL                   | 🟢 YES      | assistant_1         
+    2230 | UE                   | 🟢 YES      | assistant_1         
+       1 | "                    | 🟢 YES      | assistant_1         
+     320 |  (                   | 🟢 YES      | assistant_1         
+   20432 | relative             | 🟢 YES      | assistant_1         
+    1850 |  best                | 🟢 YES      | assistant_1         
+     369 |  for                 | 🟢 YES      | assistant_1         
+    1059 |  her                 | 🟢 YES      | assistant_1         
+     701 | ),                   | 🟢 YES      | assistant_1         
+     714 |  but                 | 🟢 YES      | assistant_1         
+    1083 |  also                | 🟢 YES      | assistant_1         
+    7952 |  appears             | 🟢 YES      | assistant_1         
+     369 |  for                 | 🟢 YES      | assistant_1         
+     330 |  "                   | 🟢 YES      | assistant_1         
+   29331 | Elect                | 🟢 YES      | assistant_1         
+     956 | ra                   | 🟢 YES      | assistant_1         
+       1 | "                    | 🟢 YES      | assistant_1         
+     323 |  and                 | 🟢 YES      | assistant_1         
+     330 |  "                   | 🟢 YES      | assistant_1         
+   16844 | SW                   | 🟢 YES      | assistant_1         
+    1890 | AG                   | 🟢 YES      | assistant_1         
+       1 | "                    | 🟢 YES      | assistant_1         
+     320 |  (                   | 🟢 YES      | assistant_1         
+   14772 | lower                | 🟢 YES      | assistant_1         
+    4292 | ).
+                  | 🟢 YES      | assistant_1         
+    2303 |   
+                  | 🟢 YES      | assistant_1         
+      40 | I                    | 🟢 YES      | assistant_1         
+     614 |  have                | 🟢 YES      | assistant_1         
+     902 |  no                  | 🟢 YES      | assistant_1         
+    1995 |  information         | 🟢 YES      | assistant_1         
+     369 |  for                 | 🟢 YES      | assistant_1         
+    1657 |  many                | 🟢 YES      | assistant_1         
+   55514 |  reviewer            | 🟢 YES      | assistant_1         
+   76719 | -paper               | 🟢 YES      | assistant_1         
+   13530 |  pairs               | 🟢 YES      | assistant_1         
+      11 | ,                    | 🟢 YES      | assistant_1         
+     773 |  so                  | 🟢 YES      | assistant_1         
+     421 |  if                  | 🟢 YES      | assistant_1         
+     498 |  you                 | 🟢 YES      | assistant_1         
+    1490 |  see                 | 🟢 YES      | assistant_1         
+    3746 |  strong              | 🟢 YES      | assistant_1         
+   13530 |  pairs               | 🟢 YES      | assistant_1         
+     369 |  for                 | 🟢 YES      | assistant_1         
+    1846 |  those               | 🟢 YES      | assistant_1         
+      11 | ,                    | 🟢 YES      | assistant_1         
+    1077 |  let                 | 🟢 YES      | assistant_1         
+     594 | 's                   | 🟢 YES      | assistant_1         
+   62552 |  prioritize          | 🟢 YES      | assistant_1         
+    1105 |  them                | 🟢 YES      | assistant_1         
+       0 | !                    | 🟢 YES      | assistant_1         
+    5209 |  Please              | 🟢 YES      | assistant_1         
+    4332 |  share               | 🟢 YES      | assistant_1         
+     697 |  your                | 🟢 YES      | assistant_1         
+    1909 |  top                 | 🟢 YES      | assistant_1         
+   55514 |  reviewer            | 🟢 YES      | assistant_1         
+   76719 | -paper               | 🟢 YES      | assistant_1         
+    9071 |  matches             | 🟢 YES      | assistant_1         
+     323 |  and                 | 🟢 YES      | assistant_1         
+     894 |  any                 | 🟢 YES      | assistant_1         
+   32151 |  gaps                | 🟢 YES      | assistant_1         
+     498 |  you                 | 🟢 YES      | assistant_1         
+   22986 |  observe             | 🟢 YES      | assistant_1         
+      13 | .                    | 🟢 YES      | assistant_1         
+  151645 | <|im_end|>           | 🟢 YES      | assistant_1         
+     198 | 
+                    | 🟢 YES      | assistant_1         
+  151644 | <|im_start|>         | 🔴 NO       | user_2              
+     872 | user                 | 🔴 NO       | user_2              
+     271 | 
+
+                   | 🔴 NO       | user_2              
+      58 | [                    | 🔴 NO       | user_2              
+    1994 | message              | 🔴 NO       | user_2              
+      60 | ]                    | 🔴 NO       | user_2              
+    5692 |  Here                | 🔴 NO       | user_2              
+     748 | ’s                   | 🔴 NO       | user_2              
+    1128 |  what                | 🔴 NO       | user_2              
+     358 |  I                   | 🔴 NO       | user_2              
+    1490 |  see                 | 🔴 NO       | user_2              
+     438 |  as                  | 🔴 NO       | user_2              
+     279 |  the                 | 🔴 NO       | user_2              
+   29905 |  strongest           | 🔴 NO       | user_2              
+   55514 |  reviewer            | 🔴 NO       | user_2              
+   76719 | -paper               | 🔴 NO       | user_2              
+    9071 |  matches             | 🔴 NO       | user_2              
+    2661 |  given               | 🔴 NO       | user_2              
+     847 |  my                  | 🔴 NO       | user_2              
+    1965 |  table               | 🔴 NO       | user_2              
+     320 |  (                   | 🔴 NO       | user_2              
+   32771 | again                | 🔴 NO       | user_2              
+      11 | ,                    | 🔴 NO       | user_2              
+     678 |  all                 | 🔴 NO       | user_2              
+   30690 |  scaled              | 🔴 NO       | user_2              
+     773 |  so                  | 🔴 NO       | user_2              
+    1101 |  just                | 🔴 NO       | user_2              
+    8674 |  relative            | 🔴 NO       | user_2              
+   12650 |  importance          | 🔴 NO       | user_2              
+    7731 | ):
+
+                 | 🔴 NO       | user_2              
+      12 | -                    | 🔴 NO       | user_2              
+   15115 |  Joseph              | 🔴 NO       | user_2              
+   47623 |  Santos              | 🔴 NO       | user_2              
+     374 |  is                  | 🔴 NO       | user_2              
+    9016 |  extremely           | 🔴 NO       | user_2              
+    3746 |  strong              | 🔴 NO       | user_2              
+     369 |  for                 | 🔴 NO       | user_2              
+     330 |  "                   | 🔴 NO       | user_2              
+   29331 | Elect                | 🔴 NO       | user_2              
+     956 | ra                   | 🔴 NO       | user_2              
+       1 | "                    | 🔴 NO       | user_2              
+     320 |  (                   | 🔴 NO       | user_2              
+    2408 | my                   | 🔴 NO       | user_2              
+    1909 |  top                 | 🔴 NO       | user_2              
+   30319 | -sc                  | 🔴 NO       | user_2              
+    5503 | oring                | 🔴 NO       | user_2              
+    2432 |  match               | 🔴 NO       | user_2              
+       8 | )                    | 🔴 NO       | user_2              
+     323 |  and                 | 🔴 NO       | user_2              
+    6437 |  solid               | 🔴 NO       | user_2              
+     369 |  for                 | 🔴 NO       | user_2              
+    2176 |  both                | 🔴 NO       | user_2              
+     330 |  "                   | 🔴 NO       | user_2              
+   33497 | BLE                  | 🔴 NO       | user_2              
+      52 | U                    | 🔴 NO       | user_2              
+       1 | "                    | 🔴 NO       | user_2              
+     323 |  and                 | 🔴 NO       | user_2              
+     330 |  "                   | 🔴 NO       | user_2              
+   16844 | SW                   | 🔴 NO       | user_2              
+    1890 | AG                   | 🔴 NO       | user_2              
+   22956 | ".
+                  | 🔴 NO       | user_2              
+      12 | -                    | 🔴 NO       | user_2              
+   41984 |  Noah                | 🔴 NO       | user_2              
+   17426 |  Wilson              | 🔴 NO       | user_2              
+     374 |  is                  | 🔴 NO       | user_2              
+    1602 |  very                | 🔴 NO       | user_2              
+    3746 |  strong              | 🔴 NO       | user_2              
+     369 |  for                 | 🔴 NO       | user_2              
+    2176 |  both                | 🔴 NO       | user_2              
+     330 |  "                   | 🔴 NO       | user_2              
+      38 | G                    | 🔴 NO       | user_2              
+     385 | lo                   | 🔴 NO       | user_2              
+   42612 | Ve                   | 🔴 NO       | user_2              
+       1 | "                    | 🔴 NO       | user_2              
+     323 |  and                 | 🔴 NO       | user_2              
+     330 |  "                   | 🔴 NO       | user_2              
+   16844 | SW                   | 🔴 NO       | user_2              
+    1890 | AG                   | 🔴 NO       | user_2              
+     497 | ",                   | 🔴 NO       | user_2              
+     448 |  with                | 🔴 NO       | user_2              
+    1550 |  high                | 🔴 NO       | user_2              
+   12205 |  scores              | 🔴 NO       | user_2              
+     369 |  for                 | 🔴 NO       | user_2              
+     330 |  "                   | 🔴 NO       | user_2              
+   33497 | BLE                  | 🔴 NO       | user_2              
+      52 | U                    | 🔴 NO       | user_2              
+       1 | "                    | 🔴 NO       | user_2              
+     323 |  and                 | 🔴 NO       | user_2              
+     330 |  "                   | 🔴 NO       | user_2              
+    2183 | Qu                   | 🔴 NO       | user_2              
+    1706 | AC                   | 🔴 NO       | user_2              
+       1 | "                    | 🔴 NO       | user_2              
+     438 |  as                  | 🔴 NO       | user_2              
+    1632 |  well                | 🔴 NO       | user_2              
+     624 | .
+                   | 🔴 NO       | user_2              
+      12 | -                    | 🔴 NO       | user_2              
+   78563 |  Sofia               | 🔴 NO       | user_2              
+   62755 |  Patel               | 🔴 NO       | user_2              
+     374 |  is                  | 🔴 NO       | user_2              
+    1602 |  very                | 🔴 NO       | user_2              
+    1661 |  good                | 🔴 NO       | user_2              
+     369 |  for                 | 🔴 NO       | user_2              
+    2176 |  both                | 🔴 NO       | user_2              
+     330 |  "                   | 🔴 NO       | user_2              
+   33497 | BLE                  | 🔴 NO       | user_2              
+      52 | U                    | 🔴 NO       | user_2              
+       1 | "                    | 🔴 NO       | user_2              
+     323 |  and                 | 🔴 NO       | user_2              
+     330 |  "                   | 🔴 NO       | user_2              
+   16844 | SW                   | 🔴 NO       | user_2              
+    1890 | AG                   | 🔴 NO       | user_2              
+   22956 | ".
+                  | 🔴 NO       | user_2              
+      12 | -                    | 🔴 NO       | user_2              
+   62164 |  Ethan               | 🔴 NO       | user_2              
+    9082 |  Smith               | 🔴 NO       | user_2              
+     374 |  is                  | 🔴 NO       | user_2              
+     264 |  a                   | 🔴 NO       | user_2              
+    1909 |  top                 | 🔴 NO       | user_2              
+    4946 |  fit                 | 🔴 NO       | user_2              
+     369 |  for                 | 🔴 NO       | user_2              
+     330 |  "                   | 🔴 NO       | user_2              
+    3825 | GL                   | 🔴 NO       | user_2              
+    2230 | UE                   | 🔴 NO       | user_2              
+     497 | ",                   | 🔴 NO       | user_2              
+     448 |  with                | 🔴 NO       | user_2              
+    9155 |  smaller             | 🔴 NO       | user_2              
+    9071 |  matches             | 🔴 NO       | user_2              
+     311 |  to                  | 🔴 NO       | user_2              
+     330 |  "                   | 🔴 NO       | user_2              
+   29331 | Elect                | 🔴 NO       | user_2              
+     956 | ra                   | 🔴 NO       | user_2              
+     497 | ",                   | 🔴 NO       | user_2              
+     330 |  "                   | 🔴 NO       | user_2              
+   38872 | Ro                   | 🔴 NO       | user_2              
+   61437 | BERT                 | 🔴 NO       | user_2              
+      64 | a                    | 🔴 NO       | user_2              
+     497 | ",                   | 🔴 NO       | user_2              
+     323 |  and                 | 🔴 NO       | user_2              
+     330 |  "                   | 🔴 NO       | user_2              
+   16844 | SW                   | 🔴 NO       | user_2              
+    1890 | AG                   | 🔴 NO       | user_2              
+   22956 | ".
+                  | 🔴 NO       | user_2              
+      12 | -                    | 🔴 NO       | user_2              
+   22954 |  Morgan              | 🔴 NO       | user_2              
+   35421 |  Reed                | 🔴 NO       | user_2              
+     374 |  is                  | 🔴 NO       | user_2              
+    1850 |  best                | 🔴 NO       | user_2              
+     369 |  for                 | 🔴 NO       | user_2              
+     330 |  "                   | 🔴 NO       | user_2              
+   38872 | Ro                   | 🔴 NO       | user_2              
+   61437 | BERT                 | 🔴 NO       | user_2              
+      64 | a                    | 🔴 NO       | user_2              
+       1 | "                    | 🔴 NO       | user_2              
+     320 |  (                   | 🔴 NO       | user_2              
+    1694 | by                   | 🔴 NO       | user_2              
+    3041 |  far                 | 🔴 NO       | user_2              
+     862 |  their               | 🔴 NO       | user_2              
+    8426 |  highest             | 🔴 NO       | user_2              
+    2432 |  match               | 🔴 NO       | user_2              
+     701 | ),                   | 🔴 NO       | user_2              
+    8922 |  minor               | 🔴 NO       | user_2              
+     369 |  for                 | 🔴 NO       | user_2              
+     330 |  "                   | 🔴 NO       | user_2              
+    2183 | Qu                   | 🔴 NO       | user_2              
+    1706 | AC                   | 🔴 NO       | user_2              
+   22956 | ".
+                  | 🔴 NO       | user_2              
+      12 | -                    | 🔴 NO       | user_2              
+   15118 |  Daniel              | 🔴 NO       | user_2              
+   63161 |  Nguyen              | 🔴 NO       | user_2              
+     702 |  has                 | 🔴 NO       | user_2              
+     264 |  a                   | 🔴 NO       | user_2              
+    3746 |  strong              | 🔴 NO       | user_2              
+    4946 |  fit                 | 🔴 NO       | user_2              
+     369 |  for                 | 🔴 NO       | user_2              
+     330 |  "                   | 🔴 NO       | user_2              
+    4086 | LL                   | 🔴 NO       | user_2              
+      64 | a                    | 🔴 NO       | user_2              
+    4835 | MA                   | 🔴 NO       | user_2              
+     497 | ",                   | 🔴 NO       | user_2              
+     323 |  and                 | 🔴 NO       | user_2              
+   64603 |  midd                | 🔴 NO       | user_2              
+    2718 | ling                 | 🔴 NO       | user_2              
+     369 |  for                 | 🔴 NO       | user_2              
+     330 |  "                   | 🔴 NO       | user_2              
+    2183 | Qu                   | 🔴 NO       | user_2              
+    1706 | AC                   | 🔴 NO       | user_2              
+   22956 | ".
+                  | 🔴 NO       | user_2              
+      12 | -                    | 🔴 NO       | user_2              
+   26427 |  Andre               | 🔴 NO       | user_2              
+      72 | i                    | 🔴 NO       | user_2              
+   61479 |  Petro               | 🔴 NO       | user_2              
+      85 | v                    | 🔴 NO       | user_2              
+     374 |  is                  | 🔴 NO       | user_2              
+    1850 |  best                | 🔴 NO       | user_2              
+     369 |  for                 | 🔴 NO       | user_2              
+     330 |  "                   | 🔴 NO       | user_2              
+    2183 | Qu                   | 🔴 NO       | user_2              
+    1706 | AC                   | 🔴 NO       | user_2              
+     497 | ",                   | 🔴 NO       | user_2              
+    1083 |  also                | 🔴 NO       | user_2              
+    1661 |  good                | 🔴 NO       | user_2              
+     369 |  for                 | 🔴 NO       | user_2              
+     330 |  "                   | 🔴 NO       | user_2              
+    3825 | GL                   | 🔴 NO       | user_2              
+    2230 | UE                   | 🔴 NO       | user_2              
+       1 | "                    | 🔴 NO       | user_2              
+     323 |  and                 | 🔴 NO       | user_2              
+     330 |  "                   | 🔴 NO       | user_2              
+   16844 | SW                   | 🔴 NO       | user_2              
+    1890 | AG                   | 🔴 NO       | user_2              
+   22956 | ".
+                  | 🔴 NO       | user_2              
+      12 | -                    | 🔴 NO       | user_2              
+   91657 |  Ava                 | 🔴 NO       | user_2              
+   14511 |  Li                  | 🔴 NO       | user_2              
+     374 |  is                  | 🔴 NO       | user_2              
+    1850 |  best                | 🔴 NO       | user_2              
+     369 |  for                 | 🔴 NO       | user_2              
+     330 |  "                   | 🔴 NO       | user_2              
+    3825 | GL                   | 🔴 NO       | user_2              
+    2230 | UE                   | 🔴 NO       | user_2              
+     497 | ",                   | 🔴 NO       | user_2              
+     714 |  but                 | 🔴 NO       | user_2              
+   12040 |  relatively          | 🔴 NO       | user_2              
+    7469 |  weak                | 🔴 NO       | user_2              
+   18304 |  fits                | 🔴 NO       | user_2              
+   17920 |  elsewhere           | 🔴 NO       | user_2              
+     382 | .
+
+                  | 🔴 NO       | user_2              
+      38 | G                    | 🔴 NO       | user_2              
+    2625 | aps                  | 🔴 NO       | user_2              
+      25 | :                    | 🔴 NO       | user_2              
+     358 |  I                   | 🔴 NO       | user_2              
+    1490 |  see                 | 🔴 NO       | user_2              
+    4558 |  almost              | 🔴 NO       | user_2              
+    4302 |  nothing             | 🔴 NO       | user_2              
+    3746 |  strong              | 🔴 NO       | user_2              
+     369 |  for                 | 🔴 NO       | user_2              
+     330 |  "                   | 🔴 NO       | user_2              
+    4086 | LL                   | 🔴 NO       | user_2              
+      64 | a                    | 🔴 NO       | user_2              
+    4835 | MA                   | 🔴 NO       | user_2              
+     497 | ",                   | 🔴 NO       | user_2              
+    1172 |  only                | 🔴 NO       | user_2              
+   15118 |  Daniel              | 🔴 NO       | user_2              
+   63161 |  Nguyen              | 🔴 NO       | user_2              
+     702 |  has                 | 🔴 NO       | user_2              
+     264 |  a                   | 🔴 NO       | user_2              
+   27190 |  notable             | 🔴 NO       | user_2              
+     320 |  (                   | 🔴 NO       | user_2              
+    1921 | not                  | 🔴 NO       | user_2              
+    1909 |  top                 | 🔴 NO       | user_2              
+       8 | )                    | 🔴 NO       | user_2              
+    4946 |  fit                 | 🔴 NO       | user_2              
+      13 | .                    | 🔴 NO       | user_2              
+   28811 |  Multiple            | 🔴 NO       | user_2              
+   59038 |  reviewers           | 🔴 NO       | user_2              
+     614 |  have                | 🔴 NO       | user_2              
+     330 |  "                   | 🔴 NO       | user_2              
+   16844 | SW                   | 🔴 NO       | user_2              
+    1890 | AG                   | 🔴 NO       | user_2              
+       1 | "                    | 🔴 NO       | user_2              
+     476 |  or                  | 🔴 NO       | user_2              
+     330 |  "                   | 🔴 NO       | user_2              
+   38872 | Ro                   | 🔴 NO       | user_2              
+   61437 | BERT                 | 🔴 NO       | user_2              
+      64 | a                    | 🔴 NO       | user_2              
+       1 | "                    | 🔴 NO       | user_2              
+     438 |  as                  | 🔴 NO       | user_2              
+     825 |  one                 | 🔴 NO       | user_2              
+     315 |  of                  | 🔴 NO       | user_2              
+     862 |  their               | 🔴 NO       | user_2              
+    2421 |  few                 | 🔴 NO       | user_2              
+   14977 |  decent              | 🔴 NO       | user_2              
+    2606 |  options             | 🔴 NO       | user_2              
+     382 | .
+
+                  | 🔴 NO       | user_2              
+   10061 | Let                  | 🔴 NO       | user_2              
+     748 | ’s                   | 🔴 NO       | user_2              
+    1401 |  look                | 🔴 NO       | user_2              
+     369 |  for                 | 🔴 NO       | user_2              
+   10488 |  opportunities       | 🔴 NO       | user_2              
+    1380 |  where               | 🔴 NO       | user_2              
+     697 |  your                | 🔴 NO       | user_2              
+    1036 |  “                   | 🔴 NO       | user_2              
+    3481 | top                  | 🔴 NO       | user_2              
+     854 | ”                    | 🔴 NO       | user_2              
+    9071 |  matches             | 🔴 NO       | user_2              
+    5285 |  align               | 🔴 NO       | user_2              
+     448 |  with                | 🔴 NO       | user_2              
+     847 |  my                  | 🔴 NO       | user_2              
+     330 |  "                   | 🔴 NO       | user_2              
+    1204 | very                 | 🔴 NO       | user_2              
+    3746 |  strong              | 🔴 NO       | user_2              
+       1 | "                    | 🔴 NO       | user_2              
+    6174 |  ones                | 🔴 NO       | user_2              
+     369 |  for                 | 🔴 NO       | user_2              
+    1932 |  max                 | 🔴 NO       | user_2              
+     897 |  value               | 🔴 NO       | user_2              
+      13 | .                    | 🔴 NO       | user_2              
+    1416 |  If                  | 🔴 NO       | user_2              
+     498 |  you                 | 🔴 NO       | user_2              
+    1366 |  want                | 🔴 NO       | user_2              
+     311 |  to                  | 🔴 NO       | user_2              
+   29614 |  propose             | 🔴 NO       | user_2              
+     458 |  an                  | 🔴 NO       | user_2              
+    2856 |  initial             | 🔴 NO       | user_2              
+   16319 |  assignment          | 🔴 NO       | user_2              
+      11 | ,                    | 🔴 NO       | user_2              
+     358 |  I                   | 🔴 NO       | user_2              
+    4249 | ’m                   | 🔴 NO       | user_2              
+    1083 |  also                | 🔴 NO       | user_2              
+    6247 |  happy               | 🔴 NO       | user_2              
+     311 |  to                  | 🔴 NO       | user_2              
+    4190 |  suggest             | 🔴 NO       | user_2              
+     825 |  one                 | 🔴 NO       | user_2              
+       0 | !                    | 🔴 NO       | user_2              
+  151645 | <|im_end|>           | 🔴 NO       | user_2              
+     198 | 
+                    | 🔴 NO       | user_2              
+  151644 | <|im_start|>         | 🔴 NO       | gen_prompt_3        
+   77091 | assistant            | 🔴 NO       | gen_prompt_3        
+     198 | 
+                    | 🔴 NO       | gen_prompt_3        
+  151667 | <think>              | 🟢 YES      | assistant_3         
+     271 | 
+
+                   | 🟢 YES      | assistant_3         
+  151668 | </think>             | 🟢 YES      | assistant_3         
+     271 | 
+
+                   | 🟢 YES      | assistant_3         
+   93313 | Lets                 | 🟢 YES      | assistant_3         
+    1744 |  think               | 🟢 YES      | assistant_3         
+    3019 |  step                | 🟢 YES      | assistant_3         
+     553 |  by                  | 🟢 YES      | assistant_3         
+    3019 |  step                | 🟢 YES      | assistant_3         
+      13 | .                    | 🟢 YES      | assistant_3         
+     358 |  I                   | 🟢 YES      | assistant_3         
+    1265 |  should              | 🟢 YES      | assistant_3         
+    1430 |  try                 | 🟢 YES      | assistant_3         
+     264 |  a                   | 🟢 YES      | assistant_3         
+   13734 |  proposal            | 🟢 YES      | assistant_3         
+     429 |  that                | 🟢 YES      | assistant_3         
+   14521 |  covers              | 🟢 YES      | assistant_3         
+     279 |  the                 | 🟢 YES      | assistant_3         
+    1909 |  top                 | 🟢 YES      | assistant_3         
+   26750 |  mutual              | 🟢 YES      | assistant_3         
+    9071 |  matches             | 🟢 YES      | assistant_3         
+    1380 |  where               | 🟢 YES      | assistant_3         
+    2176 |  both                | 🟢 YES      | assistant_3         
+   11067 |  sides               | 🟢 YES      | assistant_3         
+    1490 |  see                 | 🟢 YES      | assistant_3         
+     264 |  a                   | 🟢 YES      | assistant_3         
+    3746 |  strong              | 🟢 YES      | assistant_3         
+   55514 |  reviewer            | 🟢 YES      | assistant_3         
+   76719 | -paper               | 🟢 YES      | assistant_3         
+    4946 |  fit                 | 🟢 YES      | assistant_3         
+      11 | ,                    | 🟢 YES      | assistant_3         
+   62534 |  plugs               | 🟢 YES      | assistant_3         
+    2409 |  big                 | 🟢 YES      | assistant_3         
+   32151 |  gaps                | 🟢 YES      | assistant_3         
+      11 | ,                    | 🟢 YES      | assistant_3         
+     323 |  and                 | 🟢 YES      | assistant_3         
+   54852 |  avoids              | 🟢 YES      | assistant_3         
+   12055 |  conflict            | 🟢 YES      | assistant_3         
+      13 | .                    | 🟢 YES      | assistant_3         
+    1752 |  For                 | 🟢 YES      | assistant_3         
+     279 |  the                 | 🟢 YES      | assistant_3         
+    2732 |  rest                | 🟢 YES      | assistant_3         
+      11 | ,                    | 🟢 YES      | assistant_3         
+     358 |  I                   | 🟢 YES      | assistant_3         
+     686 |  will                | 🟢 YES      | assistant_3         
+   17188 |  rely                | 🟢 YES      | assistant_3         
+     389 |  on                  | 🟢 YES      | assistant_3         
+    1039 |  our                 | 🟢 YES      | assistant_3         
+   21750 |  collective          | 🟢 YES      | assistant_3         
+    3546 |  info                | 🟢 YES      | assistant_3         
+     323 |  and                 | 🟢 YES      | assistant_3         
+     847 |  my                  | 🟢 YES      | assistant_3         
+    8263 |  partner             | 🟢 YES      | assistant_3         
+     594 | 's                   | 🟢 YES      | assistant_3         
+    8674 |  relative            | 🟢 YES      | assistant_3         
+   32307 |  rankings            | 🟢 YES      | assistant_3         
+     382 | .
+
+                  | 🟢 YES      | assistant_3         
+    8420 | Here                 | 🟢 YES      | assistant_3         
+     594 | 's                   | 🟢 YES      | assistant_3         
+    1128 |  what                | 🟢 YES      | assistant_3         
+   13352 |  stands              | 🟢 YES      | assistant_3         
+     700 |  out                 | 🟢 YES      | assistant_3         
+     510 | :
+                   | 🟢 YES      | assistant_3         
+      12 | -                    | 🟢 YES      | assistant_3         
+   78563 |  Sofia               | 🟢 YES      | assistant_3         
+   62755 |  Patel               | 🟢 YES      | assistant_3         
+     369 |  for                 | 🟢 YES      | assistant_3         
+     330 |  "                   | 🟢 YES      | assistant_3         
+   38872 | Ro                   | 🟢 YES      | assistant_3         
+   61437 | BERT                 | 🟢 YES      | assistant_3         
+      64 | a                    | 🟢 YES      | assistant_3         
+       1 | "                    | 🟢 YES      | assistant_3         
+     374 |  is                  | 🟢 YES      | assistant_3         
+     847 |  my                  | 🟢 YES      | assistant_3         
+   29905 |  strongest           | 🟢 YES      | assistant_3         
+      11 | ,                    | 🟢 YES      | assistant_3         
+     323 |  and                 | 🟢 YES      | assistant_3         
+     847 |  my                  | 🟢 YES      | assistant_3         
+    8263 |  partner             | 🟢 YES      | assistant_3         
+    2727 |  says                | 🟢 YES      | assistant_3         
+   22954 |  Morgan              | 🟢 YES      | assistant_3         
+   35421 |  Reed                | 🟢 YES      | assistant_3         
+     594 | 's                   | 🟢 YES      | assistant_3         
+    1172 |  only                | 🟢 YES      | assistant_3         
+    3746 |  strong              | 🟢 YES      | assistant_3         
+    2432 |  match               | 🟢 YES      | assistant_3         
+     374 |  is                  | 🟢 YES      | assistant_3         
+     330 |  "                   | 🟢 YES      | assistant_3         
+   38872 | Ro                   | 🟢 YES      | assistant_3         
+   61437 | BERT                 | 🟢 YES      | assistant_3         
+      64 | a                    | 🟢 YES      | assistant_3         
+     497 | ",                   | 🟢 YES      | assistant_3         
+     714 |  but                 | 🟢 YES      | assistant_3         
+   10485 |  mine                | 🟢 YES      | assistant_3         
+     374 |  is                  | 🟢 YES      | assistant_3         
+   78563 |  Sofia               | 🟢 YES      | assistant_3         
+     553 |  by                  | 🟢 YES      | assistant_3         
+     264 |  a                   | 🟢 YES      | assistant_3         
+    2409 |  big                 | 🟢 YES      | assistant_3         
+    4745 |  margin              | 🟢 YES      | assistant_3         
+    1959 |  —                   | 🟢 YES      | assistant_3         
+     714 |  but                 | 🟢 YES      | assistant_3         
+   78563 |  Sofia               | 🟢 YES      | assistant_3         
+     374 |  is                  | 🟢 YES      | assistant_3         
+    1083 |  also                | 🟢 YES      | assistant_3         
+    3746 |  strong              | 🟢 YES      | assistant_3         
+     369 |  for                 | 🟢 YES      | assistant_3         
+     330 |  "                   | 🟢 YES      | assistant_3         
+   16844 | SW                   | 🟢 YES      | assistant_3         
+    1890 | AG                   | 🟢 YES      | assistant_3         
+       1 | "                    | 🟢 YES      | assistant_3         
+     389 |  on                  | 🟢 YES      | assistant_3         
+    2176 |  both                | 🟢 YES      | assistant_3         
+   11067 |  sides               | 🟢 YES      | assistant_3         
+      13 | .                    | 🟢 YES      | assistant_3         
+    4354 |  However             | 🟢 YES      | assistant_3         
+      11 | ,                    | 🟢 YES      | assistant_3         
+   22954 |  Morgan              | 🟢 YES      | assistant_3         
+     594 | 's                   | 🟢 YES      | assistant_3         
+    1172 |  only                | 🟢 YES      | assistant_3         
+    2409 |  big                 | 🟢 YES      | assistant_3         
+    2432 |  match               | 🟢 YES      | assistant_3         
+     374 |  is                  | 🟢 YES      | assistant_3         
+     330 |  "                   | 🟢 YES      | assistant_3         
+   38872 | Ro                   | 🟢 YES      | assistant_3         
+   61437 | BERT                 | 🟢 YES      | assistant_3         
+      64 | a                    | 🟢 YES      | assistant_3         
+       1 | "                    | 🟢 YES      | assistant_3         
+     389 |  on                  | 🟢 YES      | assistant_3         
+     847 |  my                  | 🟢 YES      | assistant_3         
+    1965 |  table               | 🟢 YES      | assistant_3         
+      11 | ,                    | 🟢 YES      | assistant_3         
+     773 |  so                  | 🟢 YES      | assistant_3         
+     358 |  I                   | 🟢 YES      | assistant_3         
+     686 |  will                | 🟢 YES      | assistant_3         
+    9793 |  assign              | 🟢 YES      | assistant_3         
+   22954 |  Morgan              | 🟢 YES      | assistant_3         
+     311 |  to                  | 🟢 YES      | assistant_3         
+     330 |  "                   | 🟢 YES      | assistant_3         
+   38872 | Ro                   | 🟢 YES      | assistant_3         
+   61437 | BERT                 | 🟢 YES      | assistant_3         
+      64 | a                    | 🟢 YES      | assistant_3         
+       1 | "                    | 🟢 YES      | assistant_3         
+     320 |  (                   | 🟢 YES      | assistant_3         
+   11284 | since                | 🟢 YES      | assistant_3         
+     358 |  I                   | 🟢 YES      | assistant_3         
+     614 |  have                | 🟢 YES      | assistant_3         
+    4302 |  nothing             | 🟢 YES      | assistant_3         
+     770 |  else                | 🟢 YES      | assistant_3         
+     369 |  for                 | 🟢 YES      | assistant_3         
+    1105 |  them                | 🟢 YES      | assistant_3         
+       8 | )                    | 🟢 YES      | assistant_3         
+     323 |  and                 | 🟢 YES      | assistant_3         
+   78563 |  Sofia               | 🟢 YES      | assistant_3         
+     311 |  to                  | 🟢 YES      | assistant_3         
+     330 |  "                   | 🟢 YES      | assistant_3         
+   16844 | SW                   | 🟢 YES      | assistant_3         
+    1890 | AG                   | 🟢 YES      | assistant_3         
+   22956 | ".
+                  | 🟢 YES      | assistant_3         
+      12 | -                    | 🟢 YES      | assistant_3         
+   15115 |  Joseph              | 🟢 YES      | assistant_3         
+   47623 |  Santos              | 🟢 YES      | assistant_3         
+     374 |  is                  | 🟢 YES      | assistant_3         
+    9016 |  extremely           | 🟢 YES      | assistant_3         
+    3746 |  strong              | 🟢 YES      | assistant_3         
+     369 |  for                 | 🟢 YES      | assistant_3         
+     330 |  "                   | 🟢 YES      | assistant_3         
+   29331 | Elect                | 🟢 YES      | assistant_3         
+     956 | ra                   | 🟢 YES      | assistant_3         
+       1 | "                    | 🟢 YES      | assistant_3         
+     369 |  for                 | 🟢 YES      | assistant_3         
+     847 |  my                  | 🟢 YES      | assistant_3         
+    8263 |  partner             | 🟢 YES      | assistant_3         
+      11 | ,                    | 🟢 YES      | assistant_3         
+    1393 |  while               | 🟢 YES      | assistant_3         
+     358 |  I                   | 🟢 YES      | assistant_3         
+     614 |  have                | 🟢 YES      | assistant_3         
+   91657 |  Ava                 | 🟢 YES      | assistant_3         
+     323 |  and                 | 🟢 YES      | assistant_3         
+   15118 |  Daniel              | 🟢 YES      | assistant_3         
+    3204 |  possible            | 🟢 YES      | assistant_3         
+     369 |  for                 | 🟢 YES      | assistant_3         
+     330 |  "                   | 🟢 YES      | assistant_3         
+   29331 | Elect                | 🟢 YES      | assistant_3         
+     956 | ra                   | 🟢 YES      | assistant_3         
+       1 | "                    | 🟢 YES      | assistant_3         
+     714 |  but                 | 🟢 YES      | assistant_3         
+     537 |  not                 | 🟢 YES      | assistant_3         
+     438 |  as                  | 🟢 YES      | assistant_3         
+    3746 |  strong              | 🟢 YES      | assistant_3         
+      13 | .                    | 🟢 YES      | assistant_3         
+    2055 |  So                  | 🟢 YES      | assistant_3         
+   15115 |  Joseph              | 🟢 YES      | assistant_3         
+     311 |  to                  | 🟢 YES      | assistant_3         
+     330 |  "                   | 🟢 YES      | assistant_3         
+   29331 | Elect                | 🟢 YES      | assistant_3         
+     956 | ra                   | 🟢 YES      | assistant_3         
+   22956 | ".
+                  | 🟢 YES      | assistant_3         
+      12 | -                    | 🟢 YES      | assistant_3         
+   62164 |  Ethan               | 🟢 YES      | assistant_3         
+    9082 |  Smith               | 🟢 YES      | assistant_3         
+     374 |  is                  | 🟢 YES      | assistant_3         
+    1850 |  best                | 🟢 YES      | assistant_3         
+     369 |  for                 | 🟢 YES      | assistant_3         
+     330 |  "                   | 🟢 YES      | assistant_3         
+   16844 | SW                   | 🟢 YES      | assistant_3         
+    1890 | AG                   | 🟢 YES      | assistant_3         
+       1 | "                    | 🟢 YES      | assistant_3         
+     504 |  from                | 🟢 YES      | assistant_3         
+     847 |  my                  | 🟢 YES      | assistant_3         
+    1965 |  table               | 🟢 YES      | assistant_3         
+      11 | ,                    | 🟢 YES      | assistant_3         
+     714 |  but                 | 🟢 YES      | assistant_3         
+   78563 |  Sofia               | 🟢 YES      | assistant_3         
+     374 |  is                  | 🟢 YES      | assistant_3         
+    1083 |  also                | 🟢 YES      | assistant_3         
+     264 |  a                   | 🟢 YES      | assistant_3         
+    3746 |  strong              | 🟢 YES      | assistant_3         
+    4946 |  fit                 | 🟢 YES      | assistant_3         
+     369 |  for                 | 🟢 YES      | assistant_3         
+     330 |  "                   | 🟢 YES      | assistant_3         
+   16844 | SW                   | 🟢 YES      | assistant_3         
+    1890 | AG                   | 🟢 YES      | assistant_3         
+       1 | "                    | 🟢 YES      | assistant_3         
+     504 |  from                | 🟢 YES      | assistant_3         
+    2176 |  both                | 🟢 YES      | assistant_3         
+      13 | .                    | 🟢 YES      | assistant_3         
+    8704 |  Since               | 🟢 YES      | assistant_3         
+   62164 |  Ethan               | 🟢 YES      | assistant_3         
+     374 |  is                  | 🟢 YES      | assistant_3         
+     697 |  your                | 🟢 YES      | assistant_3         
+    1909 |  top                 | 🟢 YES      | assistant_3         
+     369 |  for                 | 🟢 YES      | assistant_3         
+     330 |  "                   | 🟢 YES      | assistant_3         
+    3825 | GL                   | 🟢 YES      | assistant_3         
+    2230 | UE                   | 🟢 YES      | assistant_3         
+       1 | "                    | 🟢 YES      | assistant_3         
+     323 |  and                 | 🟢 YES      | assistant_3         
+     330 |  "                   | 🟢 YES      | assistant_3         
+   16844 | SW                   | 🟢 YES      | assistant_3         
+    1890 | AG                   | 🟢 YES      | assistant_3         
+     497 | ",                   | 🟢 YES      | assistant_3         
+     714 |  but                 | 🟢 YES      | assistant_3         
+   78563 |  Sofia               | 🟢 YES      | assistant_3         
+     374 |  is                  | 🟢 YES      | assistant_3         
+   16061 |  locked              | 🟢 YES      | assistant_3         
+     311 |  to                  | 🟢 YES      | assistant_3         
+     330 |  "                   | 🟢 YES      | assistant_3         
+   16844 | SW                   | 🟢 YES      | assistant_3         
+    1890 | AG                   | 🟢 YES      | assistant_3         
+       1 | "                    | 🟢 YES      | assistant_3         
+    3403 |  above               | 🟢 YES      | assistant_3         
+      11 | ,                    | 🟢 YES      | assistant_3         
+   62164 |  Ethan               | 🟢 YES      | assistant_3         
+     646 |  can                 | 🟢 YES      | assistant_3         
+     728 |  go                  | 🟢 YES      | assistant_3         
+     311 |  to                  | 🟢 YES      | assistant_3         
+     330 |  "                   | 🟢 YES      | assistant_3         
+    3825 | GL                   | 🟢 YES      | assistant_3         
+    2230 | UE                   | 🟢 YES      | assistant_3         
+       1 | "                    | 🟢 YES      | assistant_3         
+     320 |  (                   | 🟢 YES      | assistant_3         
+   18654 | also                 | 🟢 YES      | assistant_3         
+    9071 |  matches             | 🟢 YES      | assistant_3         
+     847 |  my                  | 🟢 YES      | assistant_3         
+    1965 |  table               | 🟢 YES      | assistant_3         
+     369 |  for                 | 🟢 YES      | assistant_3         
+   91657 |  Ava                 | 🟢 YES      | assistant_3         
+    4292 | ).
+                  | 🟢 YES      | assistant_3         
+      12 | -                    | 🟢 YES      | assistant_3         
+   15118 |  Daniel              | 🟢 YES      | assistant_3         
+   63161 |  Nguyen              | 🟢 YES      | assistant_3         
+     374 |  is                  | 🟢 YES      | assistant_3         
+     847 |  my                  | 🟢 YES      | assistant_3         
+    1850 |  best                | 🟢 YES      | assistant_3         
+    2999 |  option              | 🟢 YES      | assistant_3         
+     369 |  for                 | 🟢 YES      | assistant_3         
+     330 |  "                   | 🟢 YES      | assistant_3         
+   33497 | BLE                  | 🟢 YES      | assistant_3         
+      52 | U                    | 🟢 YES      | assistant_3         
+     497 | ",                   | 🟢 YES      | assistant_3         
+     323 |  and                 | 🟢 YES      | assistant_3         
+     847 |  my                  | 🟢 YES      | assistant_3         
+    8263 |  partner             | 🟢 YES      | assistant_3         
+    6738 |  calls               | 🟢 YES      | assistant_3         
+    1435 |  him                 | 🟢 YES      | assistant_3         
+    1172 |  only                | 🟢 YES      | assistant_3         
+    3746 |  strong              | 🟢 YES      | assistant_3         
+     369 |  for                 | 🟢 YES      | assistant_3         
+     330 |  "                   | 🟢 YES      | assistant_3         
+    4086 | LL                   | 🟢 YES      | assistant_3         
+      64 | a                    | 🟢 YES      | assistant_3         
+    4835 | MA                   | 🟢 YES      | assistant_3         
+    3263 | ".                   | 🟢 YES      | assistant_3         
+     358 |  I                   | 🟢 YES      | assistant_3         
+    3278 | 'll                  | 🟢 YES      | assistant_3         
+    2432 |  match               | 🟢 YES      | assistant_3         
+   15118 |  Daniel              | 🟢 YES      | assistant_3         
+     311 |  to                  | 🟢 YES      | assistant_3         
+     330 |  "                   | 🟢 YES      | assistant_3         
+    4086 | LL                   | 🟢 YES      | assistant_3         
+      64 | a                    | 🟢 YES      | assistant_3         
+    4835 | MA                   | 🟢 YES      | assistant_3         
+     497 | ",                   | 🟢 YES      | assistant_3         
+    1667 |  using               | 🟢 YES      | assistant_3         
+     847 |  my                  | 🟢 YES      | assistant_3         
+    8263 |  partner             | 🟢 YES      | assistant_3         
+     594 | 's                   | 🟢 YES      | assistant_3         
+   21933 |  preference          | 🟢 YES      | assistant_3         
+     624 | .
+                   | 🟢 YES      | assistant_3         
+      12 | -                    | 🟢 YES      | assistant_3         
+   26427 |  Andre               | 🟢 YES      | assistant_3         
+      72 | i                    | 🟢 YES      | assistant_3         
+   61479 |  Petro               | 🟢 YES      | assistant_3         
+      85 | v                    | 🟢 YES      | assistant_3         
+     374 |  is                  | 🟢 YES      | assistant_3         
+    1850 |  best                | 🟢 YES      | assistant_3         
+     369 |  for                 | 🟢 YES      | assistant_3         
+     330 |  "                   | 🟢 YES      | assistant_3         
+    2183 | Qu                   | 🟢 YES      | assistant_3         
+    1706 | AC                   | 🟢 YES      | assistant_3         
+       1 | "                    | 🟢 YES      | assistant_3         
+     817 |  per                 | 🟢 YES      | assistant_3         
+     847 |  my                  | 🟢 YES      | assistant_3         
+    8263 |  partner             | 🟢 YES      | assistant_3         
+      11 | ,                    | 🟢 YES      | assistant_3         
+     323 |  and                 | 🟢 YES      | assistant_3         
+     702 |  has                 | 🟢 YES      | assistant_3         
+     264 |  a                   | 🟢 YES      | assistant_3         
+    7469 |  weak                | 🟢 YES      | assistant_3         
+     330 |  "                   | 🟢 YES      | assistant_3         
+   38872 | Ro                   | 🟢 YES      | assistant_3         
+   61437 | BERT                 | 🟢 YES      | assistant_3         
+      64 | a                    | 🟢 YES      | assistant_3         
+       1 | "                    | 🟢 YES      | assistant_3         
+    2432 |  match               | 🟢 YES      | assistant_3         
+     389 |  on                  | 🟢 YES      | assistant_3         
+     847 |  my                  | 🟢 YES      | assistant_3         
+    1965 |  table               | 🟢 YES      | assistant_3         
+      26 | ;                    | 🟢 YES      | assistant_3         
+     773 |  so                  | 🟢 YES      | assistant_3         
+   26427 |  Andre               | 🟢 YES      | assistant_3         
+      72 | i                    | 🟢 YES      | assistant_3         
+     311 |  to                  | 🟢 YES      | assistant_3         
+     330 |  "                   | 🟢 YES      | assistant_3         
+    2183 | Qu                   | 🟢 YES      | assistant_3         
+    1706 | AC                   | 🟢 YES      | assistant_3         
+   22956 | ".
+                  | 🟢 YES      | assistant_3         
+      12 | -                    | 🟢 YES      | assistant_3         
+   41984 |  Noah                | 🟢 YES      | assistant_3         
+   17426 |  Wilson              | 🟢 YES      | assistant_3         
+     374 |  is                  | 🟢 YES      | assistant_3         
+    1602 |  very                | 🟢 YES      | assistant_3         
+    3746 |  strong              | 🟢 YES      | assistant_3         
+     369 |  for                 | 🟢 YES      | assistant_3         
+     330 |  "                   | 🟢 YES      | assistant_3         
+      38 | G                    | 🟢 YES      | assistant_3         
+     385 | lo                   | 🟢 YES      | assistant_3         
+   42612 | Ve                   | 🟢 YES      | assistant_3         
+       1 | "                    | 🟢 YES      | assistant_3         
+     369 |  for                 | 🟢 YES      | assistant_3         
+     847 |  my                  | 🟢 YES      | assistant_3         
+    8263 |  partner             | 🟢 YES      | assistant_3         
+     323 |  and                 | 🟢 YES      | assistant_3         
+     702 |  has                 | 🟢 YES      | assistant_3         
+    1172 |  only                | 🟢 YES      | assistant_3         
+     330 |  "                   | 🟢 YES      | assistant_3         
+   33497 | BLE                  | 🟢 YES      | assistant_3         
+      52 | U                    | 🟢 YES      | assistant_3         
+       1 | "                    | 🟢 YES      | assistant_3         
+     323 |  and                 | 🟢 YES      | assistant_3         
+     330 |  "                   | 🟢 YES      | assistant_3         
+    2183 | Qu                   | 🟢 YES      | assistant_3         
+    1706 | AC                   | 🟢 YES      | assistant_3         
+       1 | "                    | 🟢 YES      | assistant_3         
+     389 |  on                  | 🟢 YES      | assistant_3         
+   10485 |  mine                | 🟢 YES      | assistant_3         
+     624 | .
+                   | 🟢 YES      | assistant_3         
+      12 | -                    | 🟢 YES      | assistant_3         
+   91657 |  Ava                 | 🟢 YES      | assistant_3         
+   14511 |  Li                  | 🟢 YES      | assistant_3         
+     374 |  is                  | 🟢 YES      | assistant_3         
+    1850 |  best                | 🟢 YES      | assistant_3         
+     369 |  for                 | 🟢 YES      | assistant_3         
+     330 |  "                   | 🟢 YES      | assistant_3         
+    3825 | GL                   | 🟢 YES      | assistant_3         
+    2230 | UE                   | 🟢 YES      | assistant_3         
+       1 | "                    | 🟢 YES      | assistant_3         
+     389 |  on                  | 🟢 YES      | assistant_3         
+    2176 |  both                | 🟢 YES      | assistant_3         
+    1039 |  our                 | 🟢 YES      | assistant_3         
+   12632 |  tables              | 🟢 YES      | assistant_3         
+      11 | ,                    | 🟢 YES      | assistant_3         
+     714 |  but                 | 🟢 YES      | assistant_3         
+     421 |  if                  | 🟢 YES      | assistant_3         
+   62164 |  Ethan               | 🟢 YES      | assistant_3         
+     374 |  is                  | 🟢 YES      | assistant_3         
+    1052 |  there               | 🟢 YES      | assistant_3         
+      11 | ,                    | 🟢 YES      | assistant_3         
+   91657 |  Ava                 | 🟢 YES      | assistant_3         
+     646 |  can                 | 🟢 YES      | assistant_3         
+     728 |  go                  | 🟢 YES      | assistant_3         
+     311 |  to                  | 🟢 YES      | assistant_3         
+     330 |  "                   | 🟢 YES      | assistant_3         
+   33497 | BLE                  | 🟢 YES      | assistant_3         
+      52 | U                    | 🟢 YES      | assistant_3         
+   22956 | ".
+                  | 🟢 YES      | assistant_3         
+      12 | -                    | 🟢 YES      | assistant_3         
+   17375 |  Finally             | 🟢 YES      | assistant_3         
+      11 | ,                    | 🟢 YES      | assistant_3         
+    5155 |  fill                | 🟢 YES      | assistant_3         
+     304 |  in                  | 🟢 YES      | assistant_3         
+     438 |  as                  | 🟢 YES      | assistant_3         
+    1850 |  best                | 🟢 YES      | assistant_3         
+    3204 |  possible            | 🟢 YES      | assistant_3         
+   12831 |  considering         | 🟢 YES      | assistant_3         
+     650 |  un                  | 🟢 YES      | assistant_3         
+   39021 | assigned             | 🟢 YES      | assistant_3         
+   59038 |  reviewers           | 🟢 YES      | assistant_3         
+     382 | .
+
+                  | 🟢 YES      | assistant_3         
+   48815 | [prop                | 🟢 YES      | assistant_3         
+     960 | ose                  | 🟢 YES      | assistant_3         
+      60 | ]                    | 🟢 YES      | assistant_3         
+    5692 |  Here                | 🟢 YES      | assistant_3         
+     748 | ’s                   | 🟢 YES      | assistant_3         
+     458 |  an                  | 🟢 YES      | assistant_3         
+    2856 |  initial             | 🟢 YES      | assistant_3         
+   12579 |  matching            | 🟢 YES      | assistant_3         
+    3118 |  based               | 🟢 YES      | assistant_3         
+     389 |  on                  | 🟢 YES      | assistant_3         
+    1039 |  our                 | 🟢 YES      | assistant_3         
+   26750 |  mutual              | 🟢 YES      | assistant_3         
+    3746 |  strong              | 🟢 YES      | assistant_3         
+   18304 |  fits                | 🟢 YES      | assistant_3         
+      13 | .                    | 🟢 YES      | assistant_3         
+    6771 |  Let                 | 🟢 YES      | assistant_3         
+     748 | ’s                   | 🟢 YES      | assistant_3         
+    4263 |  discuss             | 🟢 YES      | assistant_3         
+   32974 |  adjustments         | 🟢 YES      | assistant_3         
+     438 |  as                  | 🟢 YES      | assistant_3         
+    4362 |  needed              | 🟢 YES      | assistant_3         
+     476 |  or                  | 🟢 YES      | assistant_3         
+     421 |  if                  | 🟢 YES      | assistant_3         
+     498 |  you                 | 🟢 YES      | assistant_3         
+    1490 |  see                 | 🟢 YES      | assistant_3         
+     894 |  any                 | 🟢 YES      | assistant_3         
+   11924 |  substantial         | 🟢 YES      | assistant_3         
+   90357 |  downgrade           | 🟢 YES      | assistant_3         
+    1588 |  here                | 🟢 YES      | assistant_3         
+   15757 | .<                   | 🟢 YES      | assistant_3         
+    1323 | br                   | 🟢 YES      | assistant_3         
+   10171 | />
+                  | 🟢 YES      | assistant_3         
+   98637 | Proposal             | 🟢 YES      | assistant_3         
+   31252 | :<                   | 🟢 YES      | assistant_3         
+    1323 | br                   | 🟢 YES      | assistant_3         
+      14 | /                    | 🟢 YES      | assistant_3         
+    5789 | >&                   | 🟢 YES      | assistant_3         
+   91137 | emsp                 | 🟢 YES      | assistant_3         
+      26 | ;                    | 🟢 YES      | assistant_3         
+     481 |  -                   | 🟢 YES      | assistant_3         
+   51718 |  BLE                 | 🟢 YES      | assistant_3         
+      52 | U                    | 🟢 YES      | assistant_3         
+      25 | :                    | 🟢 YES      | assistant_3         
+   91657 |  Ava                 | 🟢 YES      | assistant_3         
+   14511 |  Li                  | 🟢 YES      | assistant_3         
+    9480 | <br                  | 🟢 YES      | assistant_3         
+      14 | /                    | 🟢 YES      | assistant_3         
+    5789 | >&                   | 🟢 YES      | assistant_3         
+   91137 | emsp                 | 🟢 YES      | assistant_3         
+      26 | ;                    | 🟢 YES      | assistant_3         
+     481 |  -                   | 🟢 YES      | assistant_3         
+    9884 |  Elect               | 🟢 YES      | assistant_3         
+     956 | ra                   | 🟢 YES      | assistant_3         
+      25 | :                    | 🟢 YES      | assistant_3         
+   15115 |  Joseph              | 🟢 YES      | assistant_3         
+   47623 |  Santos              | 🟢 YES      | assistant_3         
+    9480 | <br                  | 🟢 YES      | assistant_3         
+      14 | /                    | 🟢 YES      | assistant_3         
+    5789 | >&                   | 🟢 YES      | assistant_3         
+   91137 | emsp                 | 🟢 YES      | assistant_3         
+      26 | ;                    | 🟢 YES      | assistant_3         
+     481 |  -                   | 🟢 YES      | assistant_3         
+   24373 |  Glo                 | 🟢 YES      | assistant_3         
+   42612 | Ve                   | 🟢 YES      | assistant_3         
+      25 | :                    | 🟢 YES      | assistant_3         
+   41984 |  Noah                | 🟢 YES      | assistant_3         
+   17426 |  Wilson              | 🟢 YES      | assistant_3         
+    9480 | <br                  | 🟢 YES      | assistant_3         
+      14 | /                    | 🟢 YES      | assistant_3         
+    5789 | >&                   | 🟢 YES      | assistant_3         
+   91137 | emsp                 | 🟢 YES      | assistant_3         
+      26 | ;                    | 🟢 YES      | assistant_3         
+     481 |  -                   | 🟢 YES      | assistant_3         
+    5588 |  GL                  | 🟢 YES      | assistant_3         
+    2230 | UE                   | 🟢 YES      | assistant_3         
+      25 | :                    | 🟢 YES      | assistant_3         
+   62164 |  Ethan               | 🟢 YES      | assistant_3         
+    9082 |  Smith               | 🟢 YES      | assistant_3         
+    9480 | <br                  | 🟢 YES      | assistant_3         
+      14 | /                    | 🟢 YES      | assistant_3         
+    5789 | >&                   | 🟢 YES      | assistant_3         
+   91137 | emsp                 | 🟢 YES      | assistant_3         
+      26 | ;                    | 🟢 YES      | assistant_3         
+     481 |  -                   | 🟢 YES      | assistant_3         
+     444 |  L                   | 🟢 YES      | assistant_3         
+    8747 | La                   | 🟢 YES      | assistant_3         
+    4835 | MA                   | 🟢 YES      | assistant_3         
+      25 | :                    | 🟢 YES      | assistant_3         
+   15118 |  Daniel              | 🟢 YES      | assistant_3         
+   63161 |  Nguyen              | 🟢 YES      | assistant_3         
+    9480 | <br                  | 🟢 YES      | assistant_3         
+      14 | /                    | 🟢 YES      | assistant_3         
+    5789 | >&                   | 🟢 YES      | assistant_3         
+   91137 | emsp                 | 🟢 YES      | assistant_3         
+      26 | ;                    | 🟢 YES      | assistant_3         
+     481 |  -                   | 🟢 YES      | assistant_3         
+   11830 |  Ro                  | 🟢 YES      | assistant_3         
+   61437 | BERT                 | 🟢 YES      | assistant_3         
+      64 | a                    | 🟢 YES      | assistant_3         
+      25 | :                    | 🟢 YES      | assistant_3         
+   22954 |  Morgan              | 🟢 YES      | assistant_3         
+   35421 |  Reed                | 🟢 YES      | assistant_3         
+    9480 | <br                  | 🟢 YES      | assistant_3         
+      14 | /                    | 🟢 YES      | assistant_3         
+    5789 | >&                   | 🟢 YES      | assistant_3         
+   91137 | emsp                 | 🟢 YES      | assistant_3         
+      26 | ;                    | 🟢 YES      | assistant_3         
+     481 |  -                   | 🟢 YES      | assistant_3         
+    3406 |  Qu                  | 🟢 YES      | assistant_3         
+    1706 | AC                   | 🟢 YES      | assistant_3         
+      25 | :                    | 🟢 YES      | assistant_3         
+   26427 |  Andre               | 🟢 YES      | assistant_3         
+      72 | i                    | 🟢 YES      | assistant_3         
+   61479 |  Petro               | 🟢 YES      | assistant_3         
+      85 | v                    | 🟢 YES      | assistant_3         
+    9480 | <br                  | 🟢 YES      | assistant_3         
+      14 | /                    | 🟢 YES      | assistant_3         
+    5789 | >&                   | 🟢 YES      | assistant_3         
+   91137 | emsp                 | 🟢 YES      | assistant_3         
+      26 | ;                    | 🟢 YES      | assistant_3         
+     481 |  -                   | 🟢 YES      | assistant_3         
+   13387 |  SW                  | 🟢 YES      | assistant_3         
+    1890 | AG                   | 🟢 YES      | assistant_3         
+      25 | :                    | 🟢 YES      | assistant_3         
+   78563 |  Sofia               | 🟢 YES      | assistant_3         
+   62755 |  Patel               | 🟢 YES      | assistant_3         
+  151645 | <|im_end|>           | 🟢 YES      | assistant_3         
+     198 | 
+                    | 🟢 YES      | assistant_3         
+   10330 | accept               | 🔴 NO       | user_4              
+      60 | ]                    | 🔴 NO       | user_4              
+   44978 | Nice                 | 🔴 NO       | user_4              
+    2856 |  initial             | 🔴 NO       | user_4              
+   16319 |  assignment          | 🔴 NO       | user_4              
+    2293 | —                    | 🔴 NO       | user_4              
+     574 | this                 | 🔴 NO       | user_4              
+    9071 |  matches             | 🔴 NO       | user_4              
+   16510 |  strongly            | 🔴 NO       | user_4              
+     448 |  with                | 🔴 NO       | user_4              
+     847 |  my                  | 🔴 NO       | user_4              
+    8426 |  highest             | 🔴 NO       | user_4              
+     897 |  value               | 🔴 NO       | user_4              
+    6716 |  pair                | 🔴 NO       | user_4              
+     819 | ings                 | 🔴 NO       | user_4              
+      13 | .                    | 🔴 NO       | user_4              
+   15115 |  Joseph              | 🔴 NO       | user_4              
+   47623 |  Santos              | 🔴 NO       | user_4              
+     311 |  to                  | 🔴 NO       | user_4              
+    9884 |  Elect               | 🔴 NO       | user_4              
+     956 | ra                   | 🔴 NO       | user_4              
+      11 | ,                    | 🔴 NO       | user_4              
+   22954 |  Morgan              | 🔴 NO       | user_4              
+   35421 |  Reed                | 🔴 NO       | user_4              
+     311 |  to                  | 🔴 NO       | user_4              
+   11830 |  Ro                  | 🔴 NO       | user_4              
+   61437 | BERT                 | 🔴 NO       | user_4              
+      64 | a                    | 🔴 NO       | user_4              
+      11 | ,                    | 🔴 NO       | user_4              
+   62164 |  Ethan               | 🔴 NO       | user_4              
+    9082 |  Smith               | 🔴 NO       | user_4              
+     311 |  to                  | 🔴 NO       | user_4              
+    5588 |  GL                  | 🔴 NO       | user_4              
+    2230 | UE                   | 🔴 NO       | user_4              
+      11 | ,                    | 🔴 NO       | user_4              
+     323 |  and                 | 🔴 NO       | user_4              
+   15118 |  Daniel              | 🔴 NO       | user_4              
+   63161 |  Nguyen              | 🔴 NO       | user_4              
+     311 |  to                  | 🔴 NO       | user_4              
+     444 |  L                   | 🔴 NO       | user_4              
+    8747 | La                   | 🔴 NO       | user_4              
+    4835 | MA                   | 🔴 NO       | user_4              
+     525 |  are                 | 🔴 NO       | user_4              
+     678 |  all                 | 🔴 NO       | user_4              
+    1850 |  best                | 🔴 NO       | user_4              
+     304 |  in                  | 🔴 NO       | user_4              
+     847 |  my                  | 🔴 NO       | user_4              
+    1651 |  view                | 🔴 NO       | user_4              
+     438 |  as                  | 🔴 NO       | user_4              
+    1632 |  well                | 🔴 NO       | user_4              
+      13 | .                    | 🔴 NO       | user_4              
+   31639 |  Assign              | 🔴 NO       | user_4              
+     287 | ing                  | 🔴 NO       | user_4              
+   41984 |  Noah                | 🔴 NO       | user_4              
+   17426 |  Wilson              | 🔴 NO       | user_4              
+     311 |  to                  | 🔴 NO       | user_4              
+   24373 |  Glo                 | 🔴 NO       | user_4              
+   42612 | Ve                   | 🔴 NO       | user_4              
+     323 |  and                 | 🔴 NO       | user_4              
+   78563 |  Sofia               | 🔴 NO       | user_4              
+   62755 |  Patel               | 🔴 NO       | user_4              
+     311 |  to                  | 🔴 NO       | user_4              
+   13387 |  SW                  | 🔴 NO       | user_4              
+    1890 | AG                   | 🔴 NO       | user_4              
+    4990 |  takes               | 🔴 NO       | user_4              
+    2453 |  care                | 🔴 NO       | user_4              
+     315 |  of                  | 🔴 NO       | user_4              
+     862 |  their               | 🔴 NO       | user_4              
+    1909 |  top                 | 🔴 NO       | user_4              
+    9071 |  matches             | 🔴 NO       | user_4              
+      13 | .                    | 🔴 NO       | user_4              
+   26427 |  Andre               | 🔴 NO       | user_4              
+      72 | i                    | 🔴 NO       | user_4              
+   61479 |  Petro               | 🔴 NO       | user_4              
+      85 | v                    | 🔴 NO       | user_4              
+     374 |  is                  | 🔴 NO       | user_4              
+    8491 |  definitely          | 🔴 NO       | user_4              
+    1850 |  best                | 🔴 NO       | user_4              
+     369 |  for                 | 🔴 NO       | user_4              
+    3406 |  Qu                  | 🔴 NO       | user_4              
+    1706 | AC                   | 🔴 NO       | user_4              
+     504 |  from                | 🔴 NO       | user_4              
+    1128 |  what                | 🔴 NO       | user_4              
+     358 |  I                   | 🔴 NO       | user_4              
+    1490 |  see                 | 🔴 NO       | user_4              
+      13 | .                    | 🔴 NO       | user_4              
+     358 |  I                   | 🔴 NO       | user_4              
+    4249 | ’m                   | 🔴 NO       | user_4              
+    1661 |  good                | 🔴 NO       | user_4              
+     311 |  to                  | 🔴 NO       | user_4              
+   10354 |  proceed             | 🔴 NO       | user_4              
+     448 |  with                | 🔴 NO       | user_4              
+     419 |  this                | 🔴 NO       | user_4              
+   12579 |  matching            | 🔴 NO       | user_4              
+       0 | !                    | 🔴 NO       | user_4              
+  151645 | <|im_end|>           | 🔴 NO       | user_4              
+     198 | 
+                    | 🔴 NO       | user_4              
+
+================================================================================
+
+FULL CONVERSATION WITH GRADIENT HIGHLIGHTING:
+
+<|im_start|>system
+You and your partner are area chairs for a conference and you have to assign reviewers to papers. Each of you has some information about which reviewers would be good for which papers, but you'll have to communicate in order to make the best assignments.
+
+Your personal reviewer-paper similarity scores are shown below. Higher scores indicate better matches.
+Reviewer Paper Similarity Scores:
+,BLEU: a Method for Automatic Evaluation of MT,Electra: Pre-training Text Encoders as Discriminators,GloVe: Global Vectors for Word Representation,GLUE: A Multi-Task Benchmark and Analysis Platform for NLU,LLaMA: Open and Efficient Foundation Language Models,RoBERTa: A Robustly Optimized BERT Pretraining Approach,QuAC: Question Answering in Context,SWAG: An Adversarial Dataset for Commonsense Inference
+Ava Li,,151,10,,213,,,148
+Daniel Nguyen,,187,213,,,,187,
+Sofia Patel,,,274,,346,,187,
+Andrei Petrov,,,,,10,,133,
+Morgan Reed,,,115,,36,,,
+Joseph Santos,,,43,176,,,,
+Ethan Smith,72,,36,,,346,,
+Noah Wilson,205,144,,,,285,,
+
+Your goal is to propose a one-to-one matching between reviewers and papers that maximises the total similarity score. The "Final Score" at the end of the chat (0 – 1) reflects how close you are to the optimal matching – you want to maximise it.
+
+Message formatting (critical):
+Format option 1 – send a normal message:
+"Lets think step by step" + your_internal_reasoning_here + "[message]" + your_message_to_your_partner
+
+Format option 2 – send a proposal:
+"Lets think step by step" + your_internal_reasoning_here + "[propose]" + <anything you want to say to your partner> + "
+Proposal:" + <one reviewer-paper assignment per line>
+
+Format option 3 – respond to a proposal:
+"Lets think step by step" + your_internal_reasoning_here + "[accept]" OR "[reject]"
+
+VERY IMPORTANT:
+• Only the text AFTER the tag ([message], [propose], [accept], [reject]) will be shown to your partner.
+• Everything BEFORE the tag (including the thinking sentence and your reasoning) is PRIVATE and will never be displayed.
+• You can only output ONE tag per turn and must include both the private reasoning and the public message in every output.
+<|im_end|>
+<|im_start|>assistant
+【GRADIENT OFF】Lets think step by step. I will start by sharing the strongest reviewer-paper fits I see, so my partner can do the same and we can look for clear mutual peaks or matches. I'll list the highest scores (relative) and which pairings they go to, as well as highlight which reviewers/papers I have no info about. This will give my partner maximum insight for their next step.
+
+[message] Here are the strongest reviewer-paper fits I see from my table (relative rankings, since values are scaled):
+
+- Sofia Patel is extremely strong for "RoBERTa" (highest value I see) and also good for "SWAG".
+- Daniel Nguyen is strong for "Electra" and has a decent rating for "BLEU" and "SWAG".
+- Noah Wilson is very good for "BLEU" and "QuAC".
+- Ethan Smith is best for "SWAG" and has a small match to "BLEU".
+- Morgan Reed is only matched weakly to "RoBERTa".
+- Joseph Santos is weakly matched to "LLaMA".
+- Andrei Petrov is only matched to "RoBERTa" (very low).
+- Ava Li is best for "GLUE" (relative best for her), but also appears for "Electra" and "SWAG" (lower).
+  
+I have no information for many reviewer-paper pairs, so if you see strong pairs for those, let's prioritize them! Please share your top reviewer-paper matches and any gaps you observe.<|im_end|>
+【GRADIENT ON】<|im_start|>user
+
+[message] Here’s what I see as the strongest reviewer-paper matches given my table (again, all scaled so just relative importance):
+
+- Joseph Santos is extremely strong for "Electra" (my top-scoring match) and solid for both "BLEU" and "SWAG".
+- Noah Wilson is very strong for both "GloVe" and "SWAG", with high scores for "BLEU" and "QuAC" as well.
+- Sofia Patel is very good for both "BLEU" and "SWAG".
+- Ethan Smith is a top fit for "GLUE", with smaller matches to "Electra", "RoBERTa", and "SWAG".
+- Morgan Reed is best for "RoBERTa" (by far their highest match), minor for "QuAC".
+- Daniel Nguyen has a strong fit for "LLaMA", and middling for "QuAC".
+- Andrei Petrov is best for "QuAC", also good for "GLUE" and "SWAG".
+- Ava Li is best for "GLUE", but relatively weak fits elsewhere.
+
+Gaps: I see almost nothing strong for "LLaMA", only Daniel Nguyen has a notable (not top) fit. Multiple reviewers have "SWAG" or "RoBERTa" as one of their few decent options.
+
+Let’s look for opportunities where your “top” matches align with my "very strong" ones for max value. If you want to propose an initial assignment, I’m also happy to suggest one!<|im_end|>
+<|im_start|>assistant
+【GRADIENT OFF】<think>
+
+</think>
+
+Lets think step by step. I should try a proposal that covers the top mutual matches where both sides see a strong reviewer-paper fit, plugs big gaps, and avoids conflict. For the rest, I will rely on our collective info and my partner's relative rankings.
+
+Here's what stands out:
+- Sofia Patel for "RoBERTa" is my strongest, and my partner says Morgan Reed's only strong match is "RoBERTa", but mine is Sofia by a big margin — but Sofia is also strong for "SWAG" on both sides. However, Morgan's only big match is "RoBERTa" on my table, so I will assign Morgan to "RoBERTa" (since I have nothing else for them) and Sofia to "SWAG".
+- Joseph Santos is extremely strong for "Electra" for my partner, while I have Ava and Daniel possible for "Electra" but not as strong. So Joseph to "Electra".
+- Ethan Smith is best for "SWAG" from my table, but Sofia is also a strong fit for "SWAG" from both. Since Ethan is your top for "GLUE" and "SWAG", but Sofia is locked to "SWAG" above, Ethan can go to "GLUE" (also matches my table for Ava).
+- Daniel Nguyen is my best option for "BLEU", and my partner calls him only strong for "LLaMA". I'll match Daniel to "LLaMA", using my partner's preference.
+- Andrei Petrov is best for "QuAC" per my partner, and has a weak "RoBERTa" match on my table; so Andrei to "QuAC".
+- Noah Wilson is very strong for "GloVe" for my partner and has only "BLEU" and "QuAC" on mine.
+- Ava Li is best for "GLUE" on both our tables, but if Ethan is there, Ava can go to "BLEU".
+- Finally, fill in as best possible considering unassigned reviewers.
+
+[propose] Here’s an initial matching based on our mutual strong fits. Let’s discuss adjustments as needed or if you see any substantial downgrade here.<br/>
+Proposal:<br/>&emsp; - BLEU: Ava Li<br/>&emsp; - Electra: Joseph Santos<br/>&emsp; - GloVe: Noah Wilson<br/>&emsp; - GLUE: Ethan Smith<br/>&emsp; - LLaMA: Daniel Nguyen<br/>&emsp; - RoBERTa: Morgan Reed<br/>&emsp; - QuAC: Andrei Petrov<br/>&emsp; - SWAG: Sofia Patel<|im_end|>
+【GRADIENT ON】accept]Nice initial assignment—this matches strongly with my highest value pairings. Joseph Santos to Electra, Morgan Reed to RoBERTa, Ethan Smith to GLUE, and Daniel Nguyen to LLaMA are all best in my view as well. Assigning Noah Wilson to GloVe and Sofia Patel to SWAG takes care of their top matches. Andrei Petrov is definitely best for QuAC from what I see. I’m good to proceed with this matching!<|im_end|>
+
+
+================================================================================
+
+SUMMARY:
+  Total tokens: 1824
+  Tokens with gradient: 856 (46.9%)
+  Tokens without gradient: 968 (53.1%)

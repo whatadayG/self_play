@@ -1,0 +1,20 @@
+MESSAGE-LEVEL GRADIENT SUMMARY
+================================================================================
+
+Message 0: [SYSTEM] ❌ NO GRADIENT
+Content: You and your partner are area chairs for a conference and you have to assign reviewers to papers. Ea...
+----------------------------------------
+Message 1: [ASSISTANT] ✅ RECEIVES GRADIENT
+Content: Lets think step by step. I will start by sharing the strongest reviewer-paper fits I see, so my part...
+----------------------------------------
+Message 2: [USER] ❌ NO GRADIENT
+Content: 
+[message] Here’s what I see as the strongest reviewer-paper matches given my table (again, all scal...
+----------------------------------------
+Message 3: [ASSISTANT] ✅ RECEIVES GRADIENT
+Content: Lets think step by step. I should try a proposal that covers the top mutual matches where both sides...
+----------------------------------------
+Message 4: [USER] ❌ NO GRADIENT
+Content: 
+[accept]Nice initial assignment—this matches strongly with my highest value pairings. Joseph Santos...
+----------------------------------------
