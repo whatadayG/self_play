@@ -7,7 +7,7 @@ set -e
 
 PROJECT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 DATA_DIR="${PROJECT_DIR}/data"
-MODEL_PATH="${PROJECT_DIR}/old/save_points/global_step_1000_merged"
+MODEL_PATH="${PROJECT_DIR}/checkpoints/sft_qwen3_8b/global_step_3600_merged"
 
 # Clean up any existing Ray state to prevent hanging
 ray stop --force 2>/dev/null || true
@@ -66,6 +66,26 @@ fi
 
 cd "$PROJECT_DIR/verl"
 
+# Load generation parameters from shared config
+GENERATION_CONFIG="$PROJECT_DIR/generation_config.yaml"
+if [ ! -f "$GENERATION_CONFIG" ]; then
+    echo "Error: Generation config not found at $GENERATION_CONFIG"
+    exit 1
+fi
+
+# Extract parameters from generation config
+TEMPERATURE=$(python -c "import yaml; print(yaml.safe_load(open('$GENERATION_CONFIG'))['sampling_params']['temperature'])")
+TOP_P=$(python -c "import yaml; print(yaml.safe_load(open('$GENERATION_CONFIG'))['sampling_params']['top_p'])")
+MAX_NEW_TOKENS=$(python -c "import yaml; print(yaml.safe_load(open('$GENERATION_CONFIG'))['sampling_params']['max_new_tokens'])")
+REPETITION_PENALTY=$(python -c "import yaml; print(yaml.safe_load(open('$GENERATION_CONFIG'))['sampling_params']['repetition_penalty'])")
+
+echo "Using generation parameters from $GENERATION_CONFIG:"
+echo "  temperature: $TEMPERATURE"
+echo "  top_p: $TOP_P"
+echo "  max_new_tokens: $MAX_NEW_TOKENS"
+echo "  repetition_penalty: $REPETITION_PENALTY"
+echo ""
+
 # Create config file with realistic parameters for 7B model on 4xA6000
 CONFIG_PATH="$OUTPUT_DIR/training_config.yaml"
 cat > "$CONFIG_PATH" << EOF
@@ -110,7 +130,8 @@ actor_rollout_ref:
     use_fused_kernels: True
     fused_kernel_options:
         impl_backend: triton  # Use triton backend for fused kernels
-    use_torch_compile: False  # Disable torch compile to avoid cache issues
+    use_torch_compile: True  # Enable torch compile for better performance
+    attn_implementation: flash_attention_2  # Enable Flash Attention 2
     
   # Actor training configuration
   actor:
@@ -125,7 +146,7 @@ actor_rollout_ref:
     kl_loss_type: low_var_kl
     entropy_coeff: 0.01
     gradient_accumulation_steps: # TODO: set back to 4
-    use_torch_compile: False  # Disable to avoid cache issues
+    use_torch_compile: True  # Enable torch compile for better performance
     fsdp_config:
       param_offload: False  # A6000s have enough memory
       optimizer_offload: False
@@ -142,11 +163,11 @@ actor_rollout_ref:
     pipeline_model_parallel_size: 1
     log_prob_micro_batch_size_per_gpu: 1
     
-    # Generation parameters
-    temperature: 0.7
-    top_p: 0.9
-    max_new_tokens: 4096
-    repetition_penalty: 1.02  # Slight penalty to reduce repetition
+    # Generation parameters (loaded from shared config)
+    temperature: $TEMPERATURE
+    top_p: $TOP_P
+    max_new_tokens: $MAX_NEW_TOKENS
+    repetition_penalty: $REPETITION_PENALTY
     
     # SGLang server optimization
     mem_fraction_static: 0.4
@@ -158,7 +179,7 @@ actor_rollout_ref:
   # Reference model configuration
   ref:
     log_prob_micro_batch_size_per_gpu: 1
-    use_torch_compile: False  # Disable to avoid cache issues
+    use_torch_compile: True  # Enable torch compile for better performance
     fsdp_config:
       param_offload: False
       model_dtype: bfloat16
@@ -176,8 +197,8 @@ trainer:
   experiment_name: 'qwen7b_grpo_4xa6000'
   n_gpus_per_node: 4
   nnodes: 1
-  save_freq: 10  # Save every 100 steps
-  test_freq: 10   # Test every 50 steps
+  save_freq: 10  # Save every 100 steps #TODO: increase this massively
+  test_freq: 10   # Test every 50 steps #TODO: 100
   val_before_train: False
   total_epochs: 1  # since there are 16000 input sequences
   grad_clip: 1.0  # Gradient clipping for stability

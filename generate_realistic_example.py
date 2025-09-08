@@ -15,6 +15,7 @@ from pathlib import Path
 import torch
 import numpy as np
 import pandas as pd
+import yaml
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from tensordict import TensorDict
 
@@ -27,65 +28,43 @@ from dialop.envs.optimization import OptimizationEnv
 from verl.protocol import DataProto
 from verl.workers.rollout.dialop_selfplay_rollout import DialopSelfPlayRollout
 
-
-class RealModelProcessingClass:
-    """Processing class with real model."""
-    def __init__(self, model_path):
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
-        if self.tokenizer.pad_token is None:
-            self.tokenizer.pad_token = self.tokenizer.eos_token
-            
-    def apply_chat_template(self, messages, tokenize=False, add_generation_prompt=True, **kwargs):
-        """Apply the model's actual chat template."""
-        # Check if tokenizer has a chat template
-        if hasattr(self.tokenizer, 'apply_chat_template'):
-            return self.tokenizer.apply_chat_template(
-                messages, 
-                tokenize=tokenize,
-                add_generation_prompt=add_generation_prompt,
-                **kwargs
-            )
-        else:
-            # Fallback to simple format
-            text = ""
-            for msg in messages:
-                role = msg.get("role", "user")
-                content = msg.get("content", "")
-                if role == "system":
-                    text += f"System: {content}\n"
-                elif role == "user":
-                    text += f"User: {content}\n"
-                else:
-                    text += f"Assistant: {content}\n"
-            if add_generation_prompt:
-                text += "Assistant: "
-            
-            if tokenize:
-                return self.tokenizer.encode(text, add_special_tokens=True)
-            return text
+import logging
+logging.getLogger('verl.workers.rollout.dialop_selfplay_rollout').setLevel(logging.DEBUG)
 
 
 class RealModelConfig:
-    max_model_len = 8192
-    response_length = 512
+    def __init__(self, config_dict):
+        self.max_model_len = config_dict['max_model_len']
+        self.response_length = config_dict['sampling_params']['max_new_tokens']  # For compatibility
+    
 
-
-def generate_realistic_example(num_games=1):
+def generate_realistic_example(num_games=1, model_path="/home/nickatomlin/georgiazhou/self_play/old/save_points/global_step_1000_merged"):
     """Generate example using the actual trained model.
     
     Args:
         num_games: Number of games to generate rollouts for
     """
     
-    model_path = "/home/nickatomlin/georgiazhou/self_play/old/save_points/global_step_1000_merged"
+    # Load generation config
+    config_path = Path(__file__).parent / "generation_config.yaml"
+    with open(config_path, 'r') as f:
+        config = yaml.safe_load(f)
     
-    # Load the actual model
+    # Load the actual model with optimizations
     model = AutoModelForCausalLM.from_pretrained(
         model_path,
-        torch_dtype=torch.float32,
+        torch_dtype=torch.float16,
+        attn_implementation="flash_attention_2",  # Enable Flash Attention 2
         device_map="auto"
     )
     model.eval()
+    
+    # Compile model for faster inference (overhead only on first run)
+    model = torch.compile(model, mode='reduce-overhead', fullgraph=True)
+
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
     
     # Load data from parquet file
     df = pd.read_parquet("data/train.parquet")
@@ -103,38 +82,35 @@ def generate_realistic_example(num_games=1):
         pass
     
     with patch('verl.workers.rollout.sglang_rollout.SGLangRollout.__init__', mock_init):
-        rollout = DialopSelfPlayRollout(config=RealModelConfig())
-        rollout.config = RealModelConfig()
-        rollout.sampling_params = {
-            "temperature": 0.7,
-            "top_p": 0.9,
-            "max_new_tokens": 256
-        }
-        rollout.processing_class = RealModelProcessingClass(model_path)
+        model_config = RealModelConfig(config)
+        rollout = DialopSelfPlayRollout(config=model_config, max_turns=4, max_retries_per_turn=2)
+        rollout.config = model_config
+        rollout.sampling_params = config['sampling_params']
+        rollout.processing_class = tokenizer  # Required by parent class
+        rollout.tokenizer = tokenizer  # Keep for direct usage in this script
         rollout._games_logged = 0
         rollout._failed_games_logged = 0
         rollout.output_dir = "."
         
         # Load game instructions
-        from pathlib import Path
         instructions_path = Path(__file__).parent / "dialop" / "dialop" / "envs" / "data" / "optimization.txt"
         if instructions_path.exists():
             rollout.game_instructions = instructions_path.read_text().strip()
         else:
-            rollout.game_instructions = "You are playing a cooperative game."
+            raise FileNotFoundError(f"Game instructions file not found at {instructions_path}")
         
     # Use real model for generation - must be async
     async def model_generate_response(messages, obs, player):
         """Generate response using the actual model."""
         # Apply chat template
-        prompt = rollout.processing_class.apply_chat_template(
+        prompt = rollout.tokenizer.apply_chat_template(
             messages + [{"role": "user", "content": obs}],
             tokenize=False,
             add_generation_prompt=True
         )
         
         # Tokenize
-        inputs = rollout.processing_class.tokenizer(
+        inputs = rollout.tokenizer(
             prompt,
             return_tensors="pt",
             truncation=True,
@@ -148,13 +124,15 @@ def generate_realistic_example(num_games=1):
                 max_new_tokens=rollout.sampling_params["max_new_tokens"],
                 temperature=rollout.sampling_params["temperature"],
                 top_p=rollout.sampling_params["top_p"],
+                repetition_penalty=rollout.sampling_params.get("repetition_penalty", 1.0),
                 do_sample=True,
-                pad_token_id=rollout.processing_class.tokenizer.pad_token_id,
+                pad_token_id=rollout.tokenizer.pad_token_id,
+                use_cache=True,  # Enable KV cache for faster generation
             )
         
         # Extract only the generated part
         generated_ids = outputs[0][len(inputs.input_ids[0]):]
-        response = rollout.processing_class.tokenizer.decode(generated_ids, skip_special_tokens=True)
+        response = rollout.tokenizer.decode(generated_ids, skip_special_tokens=True)
         
         return response
         
@@ -187,7 +165,7 @@ def generate_realistic_example(num_games=1):
                 attention_mask = torch.tensor(player_data['attention_mask']) if 'attention_mask' in player_data else torch.ones_like(input_ids)
             else:
                 # Tokenize the prompt if no pre-tokenized data
-                tokenized = rollout.processing_class.tokenizer(
+                tokenized = rollout.tokenizer(
                     player_data['prompt'],
                     truncation=True,
                     max_length=512,
@@ -201,7 +179,7 @@ def generate_realistic_example(num_games=1):
     
     # Pad sequences to same length
     from torch.nn.utils.rnn import pad_sequence
-    input_ids_padded = pad_sequence(input_ids_list, batch_first=True, padding_value=rollout.processing_class.tokenizer.pad_token_id or 0)
+    input_ids_padded = pad_sequence(input_ids_list, batch_first=True, padding_value=rollout.tokenizer.pad_token_id or 0)
     attention_mask_padded = pad_sequence(attention_mask_list, batch_first=True, padding_value=0)
     
     input_data = DataProto(
@@ -219,89 +197,7 @@ def generate_realistic_example(num_games=1):
     
     # Run generate_sequences
     output = rollout.generate_sequences(input_data)
-    
-    
-    # Save outputs to separate JSON files (one per game)
-    all_outputs = []
-    
-    for game_idx in range(len(unique_games)):
-        # Extract data for both players of this game
-        game_output_data = {
-            "model_path": model_path,
-            "generation_params": rollout.sampling_params,
-            "game_id": int(unique_games[game_idx]),
-            "training_datapoints": []
-        }
-        
-        # Process both players for this game
-        for player_offset in range(2):
-            i = game_idx * 2 + player_offset  # Index in the batch
-            seq = output.batch["input_ids"][i]
-            mask = output.batch["attention_mask"][i]
-            
-            # Get valid sequence length
-            valid_length = int(mask.sum().item())
-            valid_seq = seq[:valid_length]
-            
-            # Get reward information from non-tensor batch
-            # Rewards are provided by the reward model, not included in the batch tensors
-            normalized_reward = output.non_tensor_batch["reward_model"][i]["normalized_reward"]
-            raw_reward = output.non_tensor_batch["reward_model"][i]["reward"]
-            
-            # Decode the full sequence to string
-            decoded_sequence = rollout.processing_class.tokenizer.decode(valid_seq, skip_special_tokens=False)
-            
-            # Build full sequence mask - we need to reconstruct where gradients flow in the full sequence
-            # The response_mask is only for the response portion, but we need the full sequence mask
-            prompts = output.batch["prompts"][i]
-            responses = output.batch["responses"][i]
-            response_mask = output.batch["response_mask"][i]
-            
-            # Get actual lengths (before padding)
-            prompt_len = int((prompts != rollout.processing_class.pad_token_id).sum().item())
-            response_len = int((responses != rollout.processing_class.pad_token_id).sum().item())
-            
-            # Create full sequence gradient mask
-            full_gradient_mask = torch.zeros(valid_length, dtype=torch.bool)
-            # The gradient mask in the response portion starts after the prompt
-            if prompt_len < valid_length:
-                response_portion_len = min(response_len, valid_length - prompt_len)
-                full_gradient_mask[prompt_len:prompt_len + response_portion_len] = response_mask[:response_portion_len].bool()
-            
-            # Get indices where gradients flow
-            gradient_token_indices = torch.nonzero(full_gradient_mask).squeeze()
-            if gradient_token_indices.numel() > 0:
-                gradient_tokens = valid_seq[gradient_token_indices]
-                decoded_gradient_text = rollout.processing_class.tokenizer.decode(gradient_tokens, skip_special_tokens=False)
-            else:
-                decoded_gradient_text = "(no gradient tokens)"
-            
-            # Create datapoint
-            datapoint = {
-                "player_index": player_offset,
-                "sequence_length": valid_length,
-                "prompt_length": prompt_len,
-                "response_length": response_len,
-                "decoded_sequence": decoded_sequence,
-                "raw_reward": raw_reward,
-                "normalized_reward": normalized_reward,
-                "full_sequence_gradient_mask": full_gradient_mask.tolist(),
-                "num_gradient_tokens": int(full_gradient_mask.sum().item()),
-                "gradient_text_full": decoded_gradient_text,
-                "game_completed": output.non_tensor_batch["game_info"][i].get("completed", False)
-            }
-            
-            game_output_data["training_datapoints"].append(datapoint)
-        
-        # Save to separate JSON file
-        json_file = f"realistic_dialop_example_{game_idx + 1}.json"
-        with open(json_file, "w") as f:
-            json.dump(game_output_data, f, indent=2)
-        
-        all_outputs.append(game_output_data)
-        print(f"Saved game {game_idx + 1} to {json_file}")
-    
-    return all_outputs
+    # output data structure is now internal to the DialopSelfPlayRollout class
 
 
 if __name__ == "__main__":
@@ -312,7 +208,12 @@ if __name__ == "__main__":
         default=1, 
         help="Number of games to generate rollouts for (default: 1)"
     )
+    parser.add_argument(
+        "--model_path", 
+        type=str, 
+        default="/home/nickatomlin/georgiazhou/self_play/checkpoints/sft_qwen3_8b/global_step_4800_merged", 
+    )
     args = parser.parse_args()
     
     # Run generation
-    generate_realistic_example(num_games=args.num_games)
+    generate_realistic_example(num_games=args.num_games, model_path=args.model_path)
