@@ -38,6 +38,8 @@ class HFModelPlayer:
             **kwargs: Additional arguments (for compatibility)
         """
         self.prompt = prompt
+        self.model_format = []
+        self.model_format.append({"role": "system", "content": prompt})
         self.role = role
         self.console = console
         self.model_path = model_path
@@ -127,13 +129,13 @@ class HFModelPlayer:
                 selfprompt += self.prefix
         
         # Format as chat template
-        messages = [
-            {"role": "system", "content": selfprompt}
-        ]
+        ##messages = [
+        ##    {"role": "system", "content": selfprompt}
+        ##]
         
         # Apply chat template
         text = self.tokenizer.apply_chat_template(
-            messages,
+            self.model_format,
             tokenize=False,
             add_generation_prompt=True
         )

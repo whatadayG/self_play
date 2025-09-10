@@ -20,13 +20,17 @@ try:
         client = OpenAI(api_key=x["api_key"], organization=x["organization"])
     print("Loaded .api_key")
 except Exception as e:
-    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    try:
+        client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    except Exception as inner_e:
+        client = None
+        print(inner_e)
     print(e)  
         
     print("Loaded .api_key")
 
 
-if not client.api_key:
+if (client is None) or (not getattr(client, "api_key", None)):
     print("Warning: no OpenAI API key loaded.")
 
 
@@ -70,11 +74,14 @@ class LLMPlayer:
         self.agent_planning_extra = "Messages must be formatted with a type like '[message]' or '[tool]' or '[think]' or '[propose]'. Remember, user might not say everything they want or forget things that are important to them. It's important to ask questions to the user to understand the user's priorities so you can propose the best itinerary that satisfies the user's most important preferences."
         self.user_priority = "You should optimize for the features with high importance socres because it directly affects your final score."
         self.role = role
+        
         self.console = console      
         self.model = "gpt-4.1" #not 4o
         self.optional = optional
         self.removed_optional = False
         self.strategy = None
+        self.model_format = {"system": "", "user": "", "assistant": ""}
+        self.model_format["system"] = prompt
         # API tracker will be attached externally (e.g., by the evaluation loop)
         # Default to None so we can safely check for it later.
         self.api_tracker = None
@@ -258,6 +265,8 @@ class LLMPlayer:
         #import pdb; pdb.set_trace()
         #if kwargs.get('model') != 'gpt-4.1':
         #    import pdb; pdb.set_trace()
+        if client is None:
+            raise RuntimeError("OpenAI client not initialized. Set OPENAI_API_KEY or provide .api_key when using LLMPlayer.")
         response = client.chat.completions.create(**kwargs)
         self.console.print("player: ", self.role)
         self.console.print("Response: ",

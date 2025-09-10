@@ -29,6 +29,16 @@ class OptimizationEnv(DialogueEnv):
                 "turn_player": self.players[self.game.turn_player],
                 "done": False}
 
+    def format_error_msg(error_msg: str, player: str, done: bool=False):
+        return {
+            "done": done,
+            "turn_player": player,
+            "player-1": error_msg if player == 'player-1' else '',
+            "player-2": error_msg if player == 'player-2' else '',
+            "message_type": "None"
+        }
+
+
     def step(
         self,
         message,
@@ -46,32 +56,26 @@ class OptimizationEnv(DialogueEnv):
         player = self.players[self.game.turn_player]
         # Begin thinking-step validation similar to PlanningEnv
         think_required = False
-        if player == "player-2":
-            # Always require a thinking step from player-2 (acts like the agent)
-            think_required = True
-        elif player == "player-1" and user_think:
-            # Require a thinking step for player-1 only when user_think flag is set
-            think_required = True
+        ##if player == "player-2":
+        ##    # Always require a thinking step from player-2 (acts like the agent)
+        ##    think_required = True
+        ##elif player == "player-1" and user_think:
+        ##    # Require a thinking step for player-1 only when user_think flag is set
+        ##    think_required = True
         
         if message.endswith("...") or message.endswith(":"):
             error_msg = (
-                f"\nIf you output something similary to <Here are some of the highest reviewer-paper matches I see:>, you must specify WHAT the matches are in the same output. If you don't, your turn will end and your partner won't know the matches you were talking about. You must not end the message half way. Your output was: '{message}'\n"
+                f"\nIf you output something similar to <Here are some of the highest reviewer-paper matches I see:>, you must specify WHAT the matches are in the same output. If you don't, your turn will end and your partner won't know the matches you were talking about. You must not end the message halfway. Your output was: '{message}'\n"
             )
-            return {
-                "done": False,
-                "turn_player": player,
-                "player-1": error_msg if player == 'player-1' else '',
-                "player-2": error_msg if player == 'player-2' else '',
-                "message_type": "None"
-            }, True
+            return self.format_error_msg(error_msg, player), True
 
-        if think_required:
-            # Look for the first occurrence of a valid message type tag
-            tag_match = re.search(r"\[(message|propose|accept|reject)\]", message, re.IGNORECASE)
-            if tag_match:
-                message_type = tag_match.group(1).lower()
-                think_part = message[:tag_match.start()].strip()
+        # Look for the first occurrence of a valid message type tag
+        tag_match = re.search(r"\[(message|propose|accept|reject)\]", message, re.IGNORECASE)
+        if tag_match:
+            message_type = tag_match.group(1).lower()
+            think_part = message[:tag_match.start()].strip()
 
+            if think_required:
                 # Validate the thinking step content
                 if think_part == "" or ("let's think step by step" not in think_part.lower() and "lets think step by step" not in think_part.lower()):
                     error_msg = (
@@ -79,63 +83,35 @@ class OptimizationEnv(DialogueEnv):
                         "You must show the thinking process and output the message all in the same output. "
                         f"The thinking step is empty or incorrect in your current output. Your output was: '{message}'\n"
                     )
-                    return {
-                        "done": False,
-                        "turn_player": player,
-                        "player-1": error_msg if player == 'player-1' else '',
-                        "player-2": error_msg if player == 'player-2' else '',
-                        "message_type": "None"
-                    }, True
+                    return self.format_error_msg(error_msg, player), True
 
-                # No role-based restriction: the current turn player (the recipient of the proposal)
-                # is allowed to accept or reject. Validation of whether an accept/reject is permitted
-                # (i.e., a full proposal exists) is handled elsewhere by `_parse_message` and
-                # `_proposal_response`.
-            else:
-                # No valid message tag found
-                error_msg = (
-                    f"\nError: Your response must contain one of the following message types explicitly stated: [message], [propose], [accept], or [reject]. "
-                    f"Your output was: {message}\n"
-                )
-                return {
-                    "done": False,
-                    "turn_player": player,
-                    "player-1": error_msg if player == 'player-1' else '',
-                    "player-2": error_msg if player == 'player-2' else '',
-                    "message_type": "None"
-                }, True
-        # End thinking-step validation
+            # No role-based restriction: the current turn player (the recipient of the proposal)
+            # is allowed to accept or reject. Validation of whether an accept/reject is permitted
+            # (i.e., a full proposal exists) is handled elsewhere by `_parse_message` and
+            # `_proposal_response`.
+        else:
+            # No valid message tag found
+            error_msg = (
+                f"\nError: Your response must contain one of the following message types explicitly stated: [message], [propose], [accept], or [reject]. "
+                f"Your output was: {message}\n"
+            )
+            return self.format_error_msg(error_msg, player), True
 
-        # Always parse only the visible part (from the first tag onwards)
-        tag_for_parse = re.search(r"\[(message|propose|accept|reject)\]", message, re.IGNORECASE)
-        if tag_for_parse is None:
-            # Should be caught earlier, but safeguard here as well
-            return {
-                "done": False,
-                "turn_player": player,
-                "player-1": "\nError: Your message must contain a tag like [message], [propose], [accept], or [reject].",
-                "player-2": "\nError: Your message must contain a tag like [message], [propose], [accept], or [reject].",
-                "message_type": "None"
-            }, True
-
-        msg_for_parse = message[tag_for_parse.start():].lstrip()
+        msg_for_parse = message[tag_match.start():].lstrip()
         try:
-            # When `propose` flag is passed (used by force_proposal scheduler),
-            # treat the raw `message` as a proposal even if it is not explicitly
-            # tagged with "[propose]". This mirrors how PlanningEnv handles the
-            # same functionality.
             m = self._parse_message(
                     msg_for_parse,
-                    edited_prompt_propose = propose,
                     can_propose = True,
                     can_respond = True,
                     must_respond = (self.game.proposal is not None),
+                    edited_prompt_propose = False,
                     )
             type_ = m["mtype"]
             content = m["msg"]
-            # Enforce that when `propose` flag is True, the parsed message must be of type "propose".
             if propose and type_ != "propose":
-                raise ValueError("When `propose=True`, the message must be of type 'propose'.")
+                # NOTE: i don't think this ever happen?
+                error_msg = "\nError: When `propose=True`, the message must be of type 'propose'."
+                return self.format_error_msg(error_msg, player), True
             if type_ == "message":
                 self.num_msgs += 1
 
@@ -162,7 +138,7 @@ class OptimizationEnv(DialogueEnv):
                     proposal_content = "Proposal:" + content.split("Proposal:")[1].strip()
                 else:
                     proposal_content = content
-                _ = self._propose(proposal_content)
+                self._propose(proposal_content)
 
                 # Build observations where the partner only sees from the tag onwards
                 tag_match_visible = re.search(r"\[propose\]", message, re.IGNORECASE)
@@ -200,7 +176,7 @@ class OptimizationEnv(DialogueEnv):
                 raise ValueError(f"Message type not found for: {message}.")
         except GameError as e:
             obss = ["", ""]
-            obss[self.game.turn_player] = f"{message}\nError: {str(e)}"
+            obss[self.game.turn_player] = f"\nError: {str(e)}; your message was: {message}"
             obss = {self.players[i]: obs for i, obs in enumerate(obss)}
             obss.update({
                 "turn_player": self.players[self.game.turn_player],
@@ -231,13 +207,6 @@ class OptimizationEnv(DialogueEnv):
 
         proposal = self._parse_proposal(message)
         self.game.propose(None, self.game.turn_player, proposal_ids=proposal)
-        proposer = 1 - self.game.turn_player
-        obss = ["", ""]
-        obss[proposer] = message
-        obss[self.game.turn_player] = (
-            f"\nPartner: {message}"
-            f"\nYou can output one of these choices: [accept] <your message to your partner> or [reject] <your message to your partner>")
-        return obss
 
     def _init_from_action_log(self):
         obss = {}
@@ -301,11 +270,7 @@ class OptimizationEnv(DialogueEnv):
         proposal_lines = [line.strip() for line in proposal_lines]
         proposal_lines = [line for line in proposal_lines if line]
         # Validate header line
-        header_line = proposal_lines[0]
-        if header_line.strip().startswith("Proposal:"):
-            # Normalize header to exactly 'Proposal:' and discard any trailing content on the same line
-            proposal_lines[0] = "Proposal:"
-        else:
+        if proposal_lines[0] != "Proposal:":
             raise GameError(
                 "Your proposal after [propose] <anything you want to say to your partner> must start with 'Proposal:' (capital P, trailing colon)."
             )

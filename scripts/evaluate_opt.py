@@ -384,7 +384,10 @@ def run(
     if True:
         player_1_data = obss["player-1"]
         player_2_data = obss["player-2"]
-
+        assert len(players['player-1'].model_format) == 1 and len(players['player-2'].model_format) == 1, "players model format at the begining must be 1 (system)"
+        
+        players['player-1'].model_format[0]['content'] += player_1_data
+        players['player-2'].model_format[0]['content'] += player_2_data
         conversations_save = []
  
         while not obss["done"] and t < max_length:
@@ -392,10 +395,10 @@ def run(
             console.print(obss)
             
             # Have players observe the current state
-            if obss["player-1"].startswith("Reviewer Paper Similarity Scores:") or obss["player-2"].startswith("Reviewer Paper Similarity Scores:"):
-                info = True
-            else:
-                info = False
+            ##if obss["player-1"].startswith("Reviewer Paper Similarity Scores:") or obss["player-2"].startswith("Reviewer Paper Similarity Scores:"):
+            ##    info = True
+            ##else:
+            ##    info = False
       
             [player.observe(obss[pname]) for pname, player in players.items()]
             
@@ -479,13 +482,15 @@ def run(
                 # Apply the same logic when we actually hand the response to
                 # the environment: only set the `propose` flag when we really
                 # forced the agent to propose.
+                players[current_player].model_format.append({"role": "assistant", "content": resp})
+                
                 if must_propose_now:
                     obss, resample = env.step(resp, propose=True, user_think=True)
                 else:
                     obss, resample = env.step(resp, user_think=True)
                     print(f"obss: {obss}")
-
-                #import pdb; pdb.set_trace()
+                    
+                               #import pdb; pdb.set_trace()
                 
                 # DETECTION: Check if a proposal was just made in full_conversation_reproposal mode
                 if (metadata and metadata.get("mode") == "full_conversation_reproposal" and 
@@ -497,6 +502,8 @@ def run(
                 if not resample:
                     if 'Error' in obss['player-1'] or 'Error' in obss['player-2']:
                         import pdb; pdb.set_trace()
+                    
+                    players[obss["turn_player"]].model_format.append({"role": "user", "content": obss[obss["turn_player"]]})
                     turn_data = {
                         "speaker": current_player,
                         "player-1": obss['player-1'],
@@ -504,6 +511,8 @@ def run(
                     }
                     conversations_save.append(turn_data)
                     break
+                
+                players[current_player].model_format.append({"role": "user", "content": obss[current_player]})
                 
                 resample_count += 1
                 refresh_count += 1
@@ -627,11 +636,11 @@ def main(
     use_word_limit: Optional[bool]=False,
     track_costs: Optional[bool]=False,
     threshold: Optional[float]=0.5,
-    temperature: Optional[float]=0.2,
-    load_game_state: Optional[str]="/home/nickatomlin/georgiazhou/new_dialop/RL-matching/dialop/data/optimization.jsonl",
+    temperature: Optional[float]=0.7,
+    load_game_state: Optional[str]=None,#"/home/nickatomlin/georgiazhou/new_dialop/RL-matching/dialop/data/optimization.jsonl",
     auto_accept: Optional[bool]=False,
     use_sglang: Optional[bool]=True,
-    sglang_url: Optional[str]="http://localhost:30000/v1",
+    sglang_url: Optional[str]="http://localhost:8000",
 ):
     
     open( f"count_all_begin_runs_{exp_name}.txt", "a").write(
@@ -754,20 +763,19 @@ def main(
         else:
             # Create base players - check if model is local or API-based
             def create_player(prompt, role, model_id, optional=None):
+                # When using sglang, always use the sglang server and ignore model_id
+                if use_sglang:
+                    print(f"Using SglangModelPlayer for {role} at {sglang_url} (ignoring model_id)")
+                    return SglangModelPlayer(
+                        prompt,
+                        role,
+                        console,
+                        optional=optional,
+                        sglang_url=sglang_url,
+                        temperature=temperature,
+                    )
                 # Check if this is a local model (Hugging Face style path)
                 if "/" in model_id and not model_id.startswith("gpt"):
-                    if use_sglang:
-                        print(f"Using SglangModelPlayer for {role} with model {model_id} at {sglang_url}")
-                        return SglangModelPlayer(
-                            prompt,
-                            role,
-                            console,
-                            model_path=model_id,
-                            optional=optional,
-                            sglang_url=sglang_url,
-                            temperature=temperature,
-                        )
-                    # Fallback to HF if requested not to use sglang
                     if HFModelPlayer is not None:
                         print(f"Using HFModelPlayer for {role} with model {model_id}")
                         return HFModelPlayer(prompt, role, console,

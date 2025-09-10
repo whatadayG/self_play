@@ -28,6 +28,8 @@ class SglangModelPlayer:
         **kwargs: Dict[str, Any],
     ) -> None:
         self.prompt = prompt
+        self.model_format = []
+        self.model_format.append({"role": "system", "content": prompt})
         self.role = role
         self.console = console
         self.model_path = model_path
@@ -86,12 +88,17 @@ class SglangModelPlayer:
             selfprompt = selfprompt + "\n" + "Here is your conversational strategy: " + strategy
 
         if not selfprompt.endswith(self.prefix):
-            if propose:
-                selfprompt += (self.prefix + "[propose]")
-            else:
-                selfprompt += self.prefix
+            ##if propose:
+            ##    selfprompt += (self.prefix + "[propose]")
+            ##else:
+            ##    
+            selfprompt += self.prefix
 
-        messages = [{"role": "system", "content": selfprompt}]
+        #messages = [{"role": "system", "content": selfprompt}]
+        messages = self.model_format
+        
+        print(f"model format: {messages}")
+        #import pdb; pdb.set_trace()
 
         # build request
         effective_temperature = 1.8 if vary else self.temperature
@@ -100,7 +107,7 @@ class SglangModelPlayer:
             "messages": messages,
             "temperature": effective_temperature,
             "top_p": 0.9,
-            "max_tokens": 256,
+            "max_tokens": 4096,
             "n": 1,
             "stop": ["User:", "Agent:", "You:"],
         }
