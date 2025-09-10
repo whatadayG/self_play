@@ -10,11 +10,11 @@ if [ -n "$VENV_PATH" ]; then
   source "$VENV_PATH/bin/activate"
 fi
 
-MODEL_PATH=${MODEL_PATH:-"/home/nickatomlin/georgiazhou/self_play/save_points/global_step_200_merged"}
+MODEL_PATH=${MODEL_PATH:-"/home/nickatomlin/georgiazhou/self_play/checkpoints/sft_qwen3_8b/global_step_4800_merged/"}
 PORT=${PORT:-8000}
 TP_SIZE=${TP_SIZE:-2}  # Tensor parallel size
 GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.9}
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-"2,3"}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-"6,7"}
 
 echo "Starting SGLang server..."
 echo "Model: $MODEL_PATH"
@@ -23,13 +23,6 @@ echo "TP Size: $TP_SIZE"
 
 # Kill any existing server on the port
 lsof -ti:$PORT | xargs kill -9 2>/dev/null || true
-
-# Optional torch.compile
-if [ "${ENABLE_TORCH_COMPILE:-0}" != "0" ]; then
-    COMPILE_FLAG="--enable-torch-compile"
-else
-    COMPILE_FLAG=""
-fi
 
 # Start SGLang server
 python -m sglang.launch_server \
@@ -40,7 +33,7 @@ python -m sglang.launch_server \
     --trust-remote-code \
     --mem-fraction-static $GPU_MEMORY_UTILIZATION \
     --dtype bfloat16 \
-    $COMPILE_FLAG \
+    --enable-torch-compile \
     &
 
 # Store the PID
