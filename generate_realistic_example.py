@@ -103,7 +103,7 @@ def generate_realistic_example(num_games=1, model_name="Qwen/Qwen2.5-7B-Instruct
         rollout = DialopSelfPlayRollout(
             config=rollout_config,
             max_turns=5,
-            max_retries_per_turn=3
+            max_retries_per_turn=0
         )
         rollout.config = rollout_config
         rollout.sampling_params = sampling_params
