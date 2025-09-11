@@ -4,7 +4,7 @@ Provides common functionality for dialogue agents.
 """
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional, Dict, Any, Tuple, List
 from rich.console import Console
 from rich.markup import escape
@@ -14,12 +14,9 @@ from rich.markup import escape
 class ModelConfig:
     """Base configuration for all model players."""
     temperature: float = 0.7
-    max_tokens: int = 256
+    max_tokens: int = 4096
     top_p: float = 0.9
-    stop_sequences: List[str] = field(default_factory=lambda: ["User:", "Agent:", "You:"])
-    # Note: Original LLMPlayer includes "\n", but HF/SGLang/Local do not
-    # Subclasses can override as needed for exact compatibility
-    
+
 
 @dataclass
 class SGLangConfig(ModelConfig):
@@ -31,7 +28,7 @@ class SGLangConfig(ModelConfig):
 
 @dataclass 
 class VLLMConfig(ModelConfig):
-    """Configuration specific to VLLM model player."""
+    """Configuration specific to vLLM model player."""
     gpu_memory_utilization: float = 0.8
     dtype: str = "bfloat16"
     trust_remote_code: bool = True
@@ -43,45 +40,45 @@ class HFConfig(ModelConfig):
     device: str = "cuda"
     torch_dtype: str = "bfloat16"
     trust_remote_code: bool = True
-    
+
+
+@dataclass
+class OpenAIConfig(ModelConfig):
+    """Configuration specific to OpenAI model player."""
+    model: str = "gpt-4-turbo-preview"
+    organization: Optional[str] = None
+    api_key_path: str = "/home/nickatomlin/georgiazhou/dialop/dialop/.api_key"
+    frequency_penalty: float = 0.0
+    presence_penalty: float = 0.0
+
 
 class BaseModelPlayer(ABC):
     """Abstract base class for all model players."""
     
     def __init__(
         self,
-        prompt: str,
+        system_prompt: str,
         role: str,
         console: Console,
         model_path: str,
-        prefix: str = "\nYou:",
-        optional: Optional[str] = None,
         config: Optional[ModelConfig] = None,
-        **kwargs
     ):
         """Initialize the base model player.
         
         Args:
-            prompt: Initial system prompt
+            system_prompt: Initial system prompt that defines the player
             role: Role of the player (user, agent, etc.)
             console: Rich console for output
             model_path: Path to the model
-            prefix: Prefix for responses
-            optional: Optional context that can be removed if needed
             config: Model configuration object
-            **kwargs: Additional arguments for backward compatibility
         """
-        self.prompt = prompt
         self.role = role
         self.console = console
         self.model_path = model_path
-        self.prefix = prefix
-        self.optional = optional
-        self.removed_optional = False
         self.config = config or ModelConfig()
         
-        # Store any extra kwargs for subclass use
-        self.extra_kwargs = kwargs
+        # Conversation state management
+        self.messages = [{"role": "system", "content": system_prompt}]
         
         # Initialize model-specific components
         self._setup_model()
@@ -92,11 +89,11 @@ class BaseModelPlayer(ABC):
         pass
     
     @abstractmethod
-    def _generate_text(self, prompt: str, **gen_kwargs) -> Tuple[str, int, int]:
+    def _generate_text(self, messages: List[Dict[str, str]], **gen_kwargs) -> Tuple[str, int, int]:
         """Generate text using the model.
         
         Args:
-            prompt: The prompt to generate from
+            messages: List of message dictionaries with 'role' and 'content'
             **gen_kwargs: Generation parameters (temperature, max_tokens, etc.)
             
         Returns:
@@ -104,156 +101,68 @@ class BaseModelPlayer(ABC):
         """
         pass
     
-    @abstractmethod
-    def _count_tokens(self, text: str) -> int:
-        """Count tokens in the given text.
-        
-        Args:
-            text: Text to count tokens for
-            
-        Returns:
-            Number of tokens
-        """
-        pass
-    
-    def observe(self, obs: str, info: bool = False, force: bool = False, 
-                ignore_obs: bool = False) -> None:
+    def observe(self, obs: str) -> None:
         """Observe new information and update conversation state.
         
         Args:
-            obs: Observation text
-            info: Whether this is informational context
-            force: Force observation even if empty
-            ignore_obs: Ignore this observation
+            obs: Observation text (treated as user message)
         """
         # Clean observation
-        obs = obs.replace("<PAD>", "").strip()
-        if not obs and not force:
-            return
-            
-        if ignore_obs:
-            return
-            
-        if info:
-            self.prompt += (obs + "\n" + "Here is the start of your current conversation:\n")
-        else:
-            if "Partner:" in obs:
-                self.prompt += obs
-            else:
-                self.prompt += (self.prefix + obs)
+        obs = obs.strip()
+        if obs:
+            # Add as user message
+            self.messages.append({"role": "user", "content": obs})
     
-    def _prepare_prompt(self, propose: bool = False, strategy: Optional[str] = None) -> str:
-        """Prepare the prompt for generation.
-        
-        Args:
-            propose: Whether to prompt for a proposal
-            strategy: Optional strategy to append
-            
-        Returns:
-            Prepared prompt string
-        """
-        prompt = self.prompt
-        
-        if strategy:
-            prompt = prompt + '\n' + 'Here is your conversational strategy: ' + strategy
-        
-        if not prompt.endswith(self.prefix):
-            if propose:
-                prompt += (self.prefix + '[propose]')
-            else:
-                prompt += self.prefix
-                
-        return prompt
-    
-    def _remove_optional_context(self) -> None:
-        """Remove optional context to fit within context window."""
-        if self.optional and not self.removed_optional:
-            self.prompt = self.prompt.replace(self.optional, "")
-            self.removed_optional = True
-    
-    def _clean_response(self, response: str) -> str:
-        """Clean up the generated response.
-        
-        Args:
-            response: Raw response from model
-            
-        Returns:
-            Cleaned response
-        """
-        response = response.strip()
-        
-        # Remove any echoed speaker tags at the start
-        for stop in self.config.stop_sequences:
-            if response.startswith(stop):
-                response = response[len(stop):].lstrip()
-        
-        # Truncate at the first occurrence of any stop tag (but not at start)
-        for stop in self.config.stop_sequences:
-            idx = response.find(stop)
-            if idx > 0:
-                response = response[:idx]
-                break
-                
-        return response.strip()
-    
-    def _log_response(self, response: str, input_tokens: int, output_tokens: int) -> None:
-        """Log the response to console.
-        
-        Args:
-            response: Generated response
-            input_tokens: Number of input tokens
-            output_tokens: Number of output tokens
-        """
-        self.console.rule(f"{self.role}'s turn")
-        self.console.print(f"Response: {escape(response)}")
-        self.console.print(f"Tokens - Input: {input_tokens}, Output: {output_tokens}")
-    
-    def respond(self, t: int = 0, max_len: int = 256, vary: bool = False,
-                propose: bool = False, temporal_id: Optional[int] = None,
-                strategy: Optional[str] = None) -> str:
+    def respond(self, **kwargs) -> str:
         """Generate a response from the model.
         
         Args:
-            t: Current turn number
-            max_len: Maximum conversation length
-            vary: Whether to use higher temperature for variation
-            propose: Whether the model should make a proposal
-            temporal_id: Temporal index (for compatibility)
-            strategy: Conversation strategy to append
+            **kwargs: Additional generation parameters
             
         Returns:
             Generated response string
         """
-        # Prepare prompt
-        prompt = self._prepare_prompt(propose=propose, strategy=strategy)
-        
-        # Check context length and handle if needed
-        token_count = self._count_tokens(prompt)
-        if token_count > 7500:  # Conservative limit
-            if self.optional and not self.removed_optional:
-                self._remove_optional_context()
-                prompt = self._prepare_prompt(propose=propose, strategy=strategy)
-        
         # Set generation parameters
         gen_kwargs = {
-            "temperature": 1.8 if vary else self.config.temperature,
-            "max_tokens": self.config.max_tokens,
-            "top_p": self.config.top_p,
+            "temperature": kwargs.get("temperature", self.config.temperature),
+            "max_tokens": kwargs.get("max_tokens", self.config.max_tokens),
+            "top_p": kwargs.get("top_p", self.config.top_p),
         }
         
         # Generate response
         try:
-            response_text, input_tokens, output_tokens = self._generate_text(prompt, **gen_kwargs)
+            response_text, input_tokens, output_tokens = self._generate_text(self.messages, **gen_kwargs)
         except Exception as e:
             self.console.print(f"[red]Generation error: {e}[/red]")
-            response_text = "[message] I need to think about this."
-            input_tokens = token_count
+            response_text = "I need to think about this."
+            input_tokens = 0
             output_tokens = len(response_text.split())
         
-        # Clean response
-        response_text = self._clean_response(response_text)
+        # Add assistant response to conversation history
+        self.messages.append({"role": "assistant", "content": response_text})
         
         # Log response
-        self._log_response(response_text, input_tokens, output_tokens)
+        self.console.rule(f"{self.role}'s turn")
+        self.console.print(f"Response: {escape(response_text)}")
+        self.console.print(f"Tokens - Input: {input_tokens}, Output: {output_tokens}")
         
         return response_text
+    
+    def get_conversation_history(self) -> List[Dict[str, str]]:
+        """Get the full conversation history.
+        
+        Returns:
+            List of message dictionaries
+        """
+        return self.messages.copy()
+    
+    def reset_conversation(self, keep_system: bool = True) -> None:
+        """Reset the conversation history.
+        
+        Args:
+            keep_system: Whether to keep the system prompt
+        """
+        if keep_system and self.messages and self.messages[0]["role"] == "system":
+            self.messages = [self.messages[0]]
+        else:
+            self.messages = []
