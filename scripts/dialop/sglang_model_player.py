@@ -110,11 +110,11 @@ class SGLangModelPlayer(BaseModelPlayer):
             if self.tokenizer.pad_token is None:
                 self.tokenizer.pad_token = self.tokenizer.eos_token
     
-    def get_input_sequence(self) -> str:
-        """Get the actual input sequence that would be passed to model inference.
+    def get_input_string(self) -> str:
+        """Get the input string that would be passed to model inference.
         
         Returns:
-            The detokenized version of the input tensor
+            The formatted input string with chat template applied
         """
         self._load_tokenizer()
         
@@ -125,6 +125,23 @@ class SGLangModelPlayer(BaseModelPlayer):
             add_generation_prompt=True
         )
         return input_text
+    
+    def get_input_sequence(self) -> List[int]:
+        """Get the actual input tensor (token IDs) that would be passed to model inference.
+        
+        Returns:
+            List of token IDs representing the input sequence
+        """
+        self._load_tokenizer()
+        
+        # Apply chat template and tokenize
+        input_text = self.tokenizer.apply_chat_template(
+            self.messages,
+            tokenize=False,
+            add_generation_prompt=True
+        )
+        input_tokens = self.tokenizer.encode(input_text, add_special_tokens=True)
+        return input_tokens
     
     def get_assistant_mask(self) -> List[int]:
         """Generate a mask that is 1 for tokens within assistant messages.

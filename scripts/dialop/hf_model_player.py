@@ -116,7 +116,11 @@ class HFModelPlayer(BaseModelPlayer):
         
         return response_text, input_tokens, output_tokens
     
-    def get_input_sequence(self) -> str:
+    def get_input_string(self) -> str:
+        """Not implemented for HF player. Use SGLangModelPlayer for this functionality."""
+        raise NotImplementedError("get_input_string is only implemented for SGLangModelPlayer")
+    
+    def get_input_sequence(self) -> List[int]:
         """Not implemented for HF player. Use SGLangModelPlayer for this functionality."""
         raise NotImplementedError("get_input_sequence is only implemented for SGLangModelPlayer")
     
