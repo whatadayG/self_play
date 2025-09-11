@@ -103,3 +103,15 @@ class OpenAIModelPlayer(BaseModelPlayer):
         output_tokens = response.usage.completion_tokens
         
         return response_text, input_tokens, output_tokens
+    
+    def get_input_sequence(self) -> str:
+        """Not implemented for OpenAI player. Use SGLangModelPlayer for this functionality."""
+        raise NotImplementedError("get_input_sequence is only implemented for SGLangModelPlayer")
+    
+    def get_assistant_mask(self) -> List[int]:
+        """Not implemented for OpenAI player. Use SGLangModelPlayer for this functionality."""
+        raise NotImplementedError("get_assistant_mask is only implemented for SGLangModelPlayer")
+    
+    def get_masked_sequences_pretty(self) -> str:
+        """Not implemented for OpenAI player. Use SGLangModelPlayer for this functionality."""
+        raise NotImplementedError("get_masked_sequences_pretty is only implemented for SGLangModelPlayer")

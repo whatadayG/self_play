@@ -166,3 +166,21 @@ class BaseModelPlayer(ABC):
             self.messages = [self.messages[0]]
         else:
             self.messages = []
+    
+    def get_pretty_conversation(self) -> str:
+        """Get a pretty-formatted representation of the conversation.
+        
+        Returns:
+            Formatted string with System:, Assistant:, User: labels
+        """
+        parts = []
+        for msg in self.messages:
+            role = msg["role"]
+            content = msg["content"]
+            if role == "system":
+                parts.append(f"System:\n{content}")
+            elif role == "assistant":
+                parts.append(f"Assistant:\n{content}")
+            elif role == "user":
+                parts.append(f"User:\n{content}")
+        return "\n\n".join(parts)
