@@ -34,7 +34,6 @@ python -m sglang.launch_server \
     --mem-fraction-static $GPU_MEMORY_UTILIZATION \
     --dtype bfloat16 \
     --enable-torch-compile \
-    &
 
 # Store the PID
 SERVER_PID=$!

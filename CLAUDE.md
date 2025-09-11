@@ -157,3 +157,4 @@ The project revealed that integrating true self-play into verl's existing infras
 
 # IMPORTANT instructions
 - Almost all useful scripts you will be called on to write or modify will require actual model input to test behavior in a realistic way. It probably is not the right idea to write mock tests with fake model outputs. NEVER write a script that uses dummy model inputs or fake model outputs to simulate a rollout unless requested to by the user. If a script already uses a model to generate rollouts, NEVER EVER EVER modify the script to simulate model outputs to save time or "get better feedback".
+- Where it makes sense to do so, assume the happy path unless it's explicitly known that the happy path is not always followed and that errors MUST be followed. It's much better for a script to fail early and loudly than for errors to be caught and hidden in incorrect ways.
