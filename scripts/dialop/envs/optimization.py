@@ -176,7 +176,7 @@ class OptimizationEnv(DialogueEnv):
                 raise ValueError(f"Message type not found for: {message}.")
         except GameError as e:
             obss = ["", ""]
-            obss[self.game.turn_player] = f"\nError: {str(e)}; your message was: {message}"
+            obss[self.game.turn_player] = f"\nError: {str(e)}"
             obss = {self.players[i]: obs for i, obs in enumerate(obss)}
             obss.update({
                 "turn_player": self.players[self.game.turn_player],
