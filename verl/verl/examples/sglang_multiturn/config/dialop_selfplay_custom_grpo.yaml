@@ -1,0 +1,90 @@
+hydra:
+  searchpath:
+    - file://verl/trainer/config
+
+defaults:
+  - ppo_trainer
+  - _self_
+
+# Data configuration for dialop self-play with minimal initializations
+data:
+  max_prompt_length: 2048  # Dialop prompts can be long with tables
+  max_response_length: 2048  # Allow room for proposals and negotiation
+  train_batch_size: 256
+  return_raw_chat: True
+  train_files: ${HOME}/data/dialop_selfplay_init/train.parquet
+  val_files: ${HOME}/data/dialop_selfplay_init/test.parquet
+
+# Algorithm configuration
+algorithm:
+  adv_estimator: grpo  # Use GRPO for self-play
+  use_kl_in_reward: False  # Don't add KL penalty to rewards
+
+# Actor/Rollout/Reference configuration
+actor_rollout_ref:
+  hybrid_engine: True
+  
+  # Model configuration
+  model:
+    path: Qwen/Qwen2.5-0.5B-Instruct
+    use_remove_padding: True
+    enable_gradient_checkpointing: True
+    enable_activation_offloading: True
+    enable_gradient_offloading: False
+  
+  # Actor training configuration
+  actor:
+    optim:
+      lr: 1e-6
+    ppo_mini_batch_size: ${data.train_batch_size}
+    ppo_micro_batch_size_per_gpu: 8
+    use_kl_loss: True
+    kl_loss_coef: 0.001
+    kl_loss_type: low_var_kl
+    entropy_coeff: 0.01  # Small entropy bonus for exploration
+    fsdp_config:
+      param_offload: False
+      optimizer_offload: False
+      model_dtype: bfloat16
+  
+  # Rollout configuration - Using custom rollout worker
+  rollout:
+    # Use our custom rollout worker
+    _target_: verl.workers.rollout.dialop_selfplay_rollout.DialopSelfPlayRollout
+    
+    # SGLang configuration
+    gpu_memory_utilization: 0.7
+    n: 4  # Number of rollouts per prompt
+    tensor_model_parallel_size: 1
+    log_prob_micro_batch_size_per_gpu: 8
+    
+    # Generation parameters
+    temperature: 0.7
+    top_p: 0.9
+    max_new_tokens: 512
+    response_length: 512
+    
+    # Note: multi_turn is handled internally by DialopSelfPlayRollout
+  
+  # Reference model configuration
+  ref:
+    log_prob_micro_batch_size_per_gpu: 8
+    fsdp_config:
+      param_offload: False
+
+# Reward configuration
+reward_model:
+  # Use our custom dialop self-play reward manager
+  type: dialop_selfplay
+
+# Trainer configuration
+trainer:
+  critic_warmup: 0
+  logger: ["console", "wandb"]
+  project_name: 'dialop_selfplay_custom_grpo'
+  experiment_name: 'qwen2.5-0.5b_dialop_selfplay_custom'
+  n_gpus_per_node: 8
+  nnodes: 1
+  save_freq: 100  # Save checkpoint every 100 steps
+  test_freq: 20  # Evaluate every 20 steps
+  total_epochs: 10

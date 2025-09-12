@@ -1,0 +1,24 @@
+hydra:
+  searchpath:
+    - file://verl/trainer/config
+
+defaults:
+  - ppo_trainer
+  - _self_
+
+data:
+  max_prompt_length: 1024
+  max_response_length: 3072  # 1024 * 3 for multi-turn dialogue
+  train_batch_size: 256
+  return_raw_chat: True
+  filter_overlong_prompts: True
+  truncation: 'error'
+  prompt_key: "prompt"  # Key in parquet for initial game messages
+
+actor_rollout_ref:
+  hybrid_engine: True
+  rollout:
+    name: sglang
+    multi_turn:
+      enable: True
+      max_user_turns: 35  # Match the max_turns in interaction config

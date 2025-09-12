@@ -1,0 +1,6 @@
+interaction:
+  - name: "matching_game"
+    class_name: "verl.interactions.matching_game_interaction.MatchingGameInteraction"
+    config:
+      max_turns: 35
+      force_proposal_threshold: 5  # Force proposal in last 5 turns

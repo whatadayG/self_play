@@ -1,0 +1,7 @@
+interaction:
+  - name: dialop_selfplay
+    class_name: verl.interactions.dialop_selfplay_interaction.DialopSelfplayInteraction
+    config:
+      env_type: optimization  # Can be extended to support mediation, planning
+      max_turns: 20  # Maximum turns before forcing termination
+      timeout: 60  # Timeout in seconds for each interaction

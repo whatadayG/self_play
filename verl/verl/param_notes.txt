@@ -1,0 +1,29 @@
+qualtiative remarks:
+- although many files are called ppo they are perfectly compatible with GRPO, don't be confused
+    - including ppo/ray_trainer.py, which is the main training code
+- training proceeds by alternating rollout phases (which are forward pass only) with training phases (which compute gradients and update model params).
+    - making the rollout phases
+- files:
+    - main training loop is in ppo/ray_trainer.py
+    - rollout generation logic, including interaction/multiturn logic, is in verl/workers/rollout/sglang_rollout/sglang_rollout.py
+         - you want to get a conversation where claude is looking at this if you want to implement self-play
+         - converting a multiturn rollout into a gradient update is handled automatically by the main training loop, but if you implement self play it may be tricker and you may need to add extra logic to the mani training loop
+- ray is the name of the distributed computing framework, for multiple nodes, it's not relevant, so ignore all ray-related logic
+
+
+param info:
+- there is a document for finetuning in docs/perf/perf_tuning.rst, but it's outdated and does not apply to sglang
+
+- rollout and optimization don't happen at the same time, so rollout can take most of the memory
+    - for vllm this means you can set gpu utilization as high as like 0.9, but for sglang the meaning is different and you should probably set it lower, like 0.7 according to that doc
+
+param_offload should probably stay False for speed
+reference model param_offload should probably stay True
+
+all things relating to triton fused kernels, etc. should stay true
+i think that liger kernels do not work with other fused kernels, so should stay false
+
+- tensor parallelism should probably be as many as the number of GPUs, particularly for larger models, but have not tested
+-
+
+

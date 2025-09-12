@@ -1,0 +1,2 @@
+ray init kwargs: {'num_cpus': None, 'runtime_env': {'env_vars': {'TOKENIZERS_PARALLELISM': 'true', 'NCCL_DEBUG': 'WARN', 'VLLM_LOGGING_LEVEL': 'WARN', 'VLLM_ALLOW_RUNTIME_LORA_UPDATING': 'true', 'CUDA_DEVICE_MAX_CONNECTIONS': '1'}, 'working_dir': None}}
+2025-08-18 00:47:28,470	INFO worker.py:1918 -- Started a local Ray instance. View the dashboard at [1m[32m127.0.0.1:8265 [39m[22m
