@@ -1,11 +1,12 @@
 """
-SGLang model player using SGLang server HTTP API.
+SGLang model player using SGLang server HTTP API or internal engine.
 """
 
 import os
+import asyncio
 import requests
 import numpy as np
-from typing import Optional, Tuple, List, Dict
+from typing import Optional, Tuple, List, Dict, Any
 from rich.console import Console
 from transformers import AutoTokenizer
 
@@ -13,7 +14,7 @@ from .base_player import BaseModelPlayer, SGLangConfig
 
 
 class SGLangModelPlayer(BaseModelPlayer):
-    """Player that queries an SGLang server via HTTP API."""
+    """Player that queries an SGLang server via HTTP API or internal engine."""
     
     def __init__(
         self,
@@ -22,6 +23,9 @@ class SGLangModelPlayer(BaseModelPlayer):
         console: Console,
         model_path: str = "Qwen/Qwen2.5-7B-Instruct",
         config: Optional[SGLangConfig] = None,
+        # New optional parameters for internal engine mode
+        engine: Optional[Any] = None,
+        processing_class: Optional[Any] = None,
     ):
         """Initialize SGLang model player.
         
@@ -31,26 +35,75 @@ class SGLangModelPlayer(BaseModelPlayer):
             console: Rich console for output
             model_path: Model identifier on the SGLang server
             config: SGLang configuration
+            engine: Optional SGLang AsyncEngine for internal mode
+            processing_class: Optional tokenizer/processor for internal mode
         """
         self.config = config or SGLangConfig()
-        self.tokenizer = None  # Will be loaded on demand
+        self.tokenizer = None  # Will be loaded on demand for external mode
+        self.engine = engine
+        self.processing_class = processing_class
+        
+        # Validate configuration: exactly one mode should be configured
+        # Design intent:
+        # - Internal mode: engine and processing_class are provided (for training within verl)
+        # - External mode: neither are provided, uses HTTP API to external SGLang server
+        # - Mixed mode is not supported to maintain clear separation of concerns
+        
+        if (engine is None) != (processing_class is None):
+            raise ValueError(
+                "Invalid configuration: engine and processing_class must both be provided (internal mode) "
+                "or both be None (external mode). Mixed configurations are not supported."
+            )
+        
+        if engine is not None and processing_class is not None:
+            # Internal mode - uses direct engine calls
+            mode = "internal engine"
+        else:
+            # External mode - uses HTTP API
+            mode = "external HTTP"
+            
+        # Log the mode once during initialization
+        print(f"[SGLangModelPlayer] Initialized in {mode} mode for {role}")
+        
         super().__init__(system_prompt, role, console, model_path, self.config)
     
     def _setup_model(self) -> None:
-        """Set up SGLang server connection."""
-        # Ensure base URL has correct format
-        base_url = self.config.server_url.rstrip("/")
-        if not base_url.endswith("/v1"):
-            base_url = base_url + "/v1"
-        self.base_url = base_url
-        self.completions_url = f"{self.base_url}/chat/completions"
-        
-        # Get API key from environment or config
-        self.api_key = os.environ.get("SGLANG_API_KEY", self.config.api_key)
-        
-        self.console.print(f"[green]Using SGLang server at {self.base_url} for {self.role}[/green]")
+        """Set up SGLang server connection or internal engine."""
+        if self.engine is not None:
+            # Internal engine mode
+            self.console.print(f"[green]Using internal SGLang engine for {self.role}[/green]")
+        else:
+            # External HTTP mode
+            # Ensure base URL has correct format
+            base_url = self.config.server_url.rstrip("/")
+            if not base_url.endswith("/v1"):
+                base_url = base_url + "/v1"
+            self.base_url = base_url
+            self.completions_url = f"{self.base_url}/chat/completions"
+            
+            # Get API key from environment or config
+            self.api_key = os.environ.get("SGLANG_API_KEY", self.config.api_key)
+            
+            self.console.print(f"[green]Using SGLang server at {self.base_url} for {self.role}[/green]")
     
     def _generate_text(self, messages: List[Dict[str, str]], **gen_kwargs) -> Tuple[str, int, int]:
+        """Generate text using SGLang.
+        
+        Args:
+            messages: List of message dictionaries
+            **gen_kwargs: Generation parameters
+            
+        Returns:
+            Tuple of (response_text, input_tokens, output_tokens)
+        """
+        if self.engine is not None:
+            # Internal engine mode
+            return self._generate_text_internal(messages, **gen_kwargs)
+        else:
+            # External HTTP mode
+            return self._generate_text_external(messages, **gen_kwargs)
+    
+    def _generate_text_external(self, messages: List[Dict[str, str]], **gen_kwargs) -> Tuple[str, int, int]:
         """Generate text using SGLang HTTP API.
         
         Args:
@@ -106,9 +159,14 @@ class SGLangModelPlayer(BaseModelPlayer):
     def _load_tokenizer(self):
         """Load tokenizer if not already loaded."""
         if self.tokenizer is None:
-            self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
-            if self.tokenizer.pad_token is None:
-                self.tokenizer.pad_token = self.tokenizer.eos_token
+            if self.processing_class is not None:
+                # Use the provided processing class (tokenizer) for internal mode
+                self.tokenizer = self.processing_class
+            else:
+                # Load tokenizer for external mode
+                self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
+                if self.tokenizer.pad_token is None:
+                    self.tokenizer.pad_token = self.tokenizer.eos_token
     
     def get_input_string(self) -> str:
         """Get the input string that would be passed to model inference.
@@ -232,6 +290,73 @@ class SGLangModelPlayer(BaseModelPlayer):
         
         # Join with double newlines for readability
         return "\n\n".join(sequences)
+    
+    def _generate_text_internal(self, messages: List[Dict[str, str]], **gen_kwargs) -> Tuple[str, int, int]:
+        """Generate text using internal SGLang engine.
+        
+        Args:
+            messages: List of message dictionaries
+            **gen_kwargs: Generation parameters
+            
+        Returns:
+            Tuple of (response_text, input_tokens, output_tokens)
+        """
+        # Apply chat template to format messages
+        text = self.processing_class.apply_chat_template(
+            messages,
+            tokenize=False,
+            add_generation_prompt=True
+        )
+        
+        # Tokenize to get input IDs
+        prompt_ids = self.processing_class.encode(text)
+        
+        # Prepare sampling parameters
+        sampling_params = {
+            "temperature": gen_kwargs.get("temperature", self.config.temperature),
+            "top_p": gen_kwargs.get("top_p", self.config.top_p),
+            "max_new_tokens": gen_kwargs.get("max_tokens", self.config.max_tokens),
+            "n": 1,
+        }
+        
+        # Log generation start
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.setLevel(os.getenv("VERL_LOGGING_LEVEL", "WARN"))
+        logger.info(f"[SGLangPlayer] Starting internal generation with {len(prompt_ids)} input tokens")
+        logger.info(f"[SGLangPlayer] Sampling params: {sampling_params}")
+        logger.info(f"[SGLangPlayer] Engine available: {self.engine is not None}")
+        logger.info(f"[SGLangPlayer] Processing class available: {self.processing_class is not None}")
+        
+        try:
+            logger.info(f"[SGLangPlayer] Calling engine.async_generate...")
+            
+            # Get or create event loop (needed in Ray async actors)
+            loop = asyncio.get_event_loop()
+            
+            output = loop.run_until_complete(
+                self.engine.async_generate(
+                    input_ids=prompt_ids,
+                    sampling_params=sampling_params,
+                    prompt=None,  # We're providing input_ids directly
+                )
+            )
+            logger.info(f"[SGLangPlayer] Engine call completed")
+            
+            # Extract response text and calculate tokens
+            response_text = output["text"]
+            input_tokens = len(prompt_ids)
+            # Output tokens is the total generated minus the input
+            output_tokens = len(output["output_ids"]) - input_tokens
+            
+            logger.debug(f"[SGLangPlayer] Generated {output_tokens} tokens")
+            return response_text, input_tokens, output_tokens
+            
+        except Exception as e:
+            logger.error(f"[SGLangPlayer] Internal generation error: {e}")
+            self.console.print(f"[red]Internal generation error: {e}[/red]")
+            # Return a fallback response
+            return "I need to think about this.", len(prompt_ids), 7
 
 
 # Backward compatibility alias
