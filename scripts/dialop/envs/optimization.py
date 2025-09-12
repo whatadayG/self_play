@@ -29,7 +29,7 @@ class OptimizationEnv(DialogueEnv):
                 "turn_player": self.players[self.game.turn_player],
                 "done": False}
 
-    def format_error_msg(error_msg: str, player: str, done: bool=False):
+    def format_error_msg(self, error_msg: str, player: str, done: bool=False):
         return {
             "done": done,
             "turn_player": player,
