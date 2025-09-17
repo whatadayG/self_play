@@ -9,9 +9,16 @@ from typing import Any, Dict, List
 import numpy as np
 import pandas as pd
 
-# Local imports
-from scripts.dialop.sglang_model_player import SGLangModelPlayer, SGLangConfig
-from scripts.dialop.envs.optimization import OptimizationEnv
+# Make project root importable when running from scripts/
+import sys
+import os
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+# Local imports (now importable as top-level 'dialop')
+from dialop.sglang_model_player import SGLangModelPlayer, SGLangConfig
+from dialop.envs.optimization import OptimizationEnv
 
 
 def run_one_game(player_cfg: dict, model_id: str, instructions: str) -> Dict[str, Any]:

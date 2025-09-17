@@ -14,7 +14,7 @@ MODEL_PATH=${MODEL_PATH:-"/home/nickatomlin/georgiazhou/self_play/checkpoints/sf
 PORT=${PORT:-8000}
 TP_SIZE=${TP_SIZE:-2}  # Tensor parallel size
 GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.9}
-export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-"6,7"}
+export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-"0,1,2,3"}
 
 echo "Starting SGLang server..."
 echo "Model: $MODEL_PATH"
