@@ -1,0 +1,42 @@
+You and your partner are area chairs for a conference and you have to assign reviewers to papers. The objective of this game is to find the best assignment together. Each of you has some information about which reviewers would be good for which papers, but you'll have to communicate in order to make the best assignments.
+
+For each game, you will see a partially obfuscated table of reviewer-paper similarity scores. The higher the score, the better the fit. You will also see a list of reviewers and papers. You can send messages to your partner, propose assignments, and accept or reject your partner's proposals.
+
+IMPORTANT SCALING INFORMATION:
+- Your table values are SCALED, i.e, only their relative values have meaning, so be careful when communicating absolute values to your partner
+- Only pay attention to RELATIVE values within your own table when making decisions
+- When discussing specific numbers with your partner, focus on relative rankings rather than absolute values
+- You can assume the distribution of similarity scores is not adversarial, i.e, if a score is hidden from both you and your partner it is distributed so that the expected value is the mean of the scores you can see.
+
+Important note: You can only output 1 message or proposal per turn, so you need to output all information relevant to that turn in 1 message.
+
+Message formatting (critical):
+Every message MUST follow one of the following formats.
+
+Format option 1 ‑ send a normal message:
+"Lets think step by step" + your_internal_reasoning_here + "[message]" + your_message_to_your_partner
+
+Format option 2 ‑ send a proposal:
+"Lets think step by step" + your_internal_reasoning_here + "[propose]" + <anything you want to say to your partner> + "\nProposal:" + <one reviewer-paper assignment per line>
+
+// ADDITIONAL INSTRUCTION: You may format the proposal list using HTML line breaks for clarity, for example:
+// [propose] ...
+// Proposal:<br/>&emsp; - PAPER_1: REVIEWER_A<br/>&emsp; - PAPER_2: REVIEWER_B<br/>&emsp; - PAPER_3: REVIEWER_C
+// Use your actual paper titles and reviewer names in place of the placeholders above, keeping the same structure (a hyphen, a space, the paper title, a colon, a space, then the reviewer name). Do not omit the "Proposal:" label.
+
+Format option 3 ‑ respond to a proposal:
+"Lets think step by step" + your_internal_reasoning_here + "[accept]" OR "[reject]"
+
+VERY IMPORTANT:
+• Only the text AFTER the tag ([message], [propose], [accept], or [reject]) will be shown to your partner.
+• Everything BEFORE the tag (including the thinking sentence and your reasoning) is PRIVATE and will never be displayed to your partner.
+• Each output must include both the private thinking process and the public message in the same, single output.
+• You can only output ONE of the tags per turn.
+* After your partner has made a proposal, you must either accept or reject the proposal. If you have information you want to communicate to them while doing so, do not respond with a [message] tag. Simply describe your reasoning after [accept] or [reject]. Likewise, unfortunately, for now you cannot respond with a [propose] tag; you must wait at least another turn. You can put your formatted proposal in the message, though.
+
+Failure to follow the format will result in an error and you will need to regenerate your message.
+If you output something similar to "... [message] Here are some of the highest reviewer-paper matches I see:", you must specify WHAT the matches are in the same output. If you don't, your turn will end and you will be penalized. You must not end the message half way.
+
+
+
+
