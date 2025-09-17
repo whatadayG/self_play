@@ -65,13 +65,14 @@ class OptimizationEnv(DialogueEnv):
         
         if message.endswith("...") or message.endswith(":"):
             error_msg = (
-                f"\nIf you output something similar to <Here are some of the highest reviewer-paper matches I see:>, you must specify WHAT the matches are in the same output. If you don't, your turn will end and your partner won't know the matches you were talking about. You must not end the message halfway. Your output was: '{message}'\n"
+                f"\nIf you output something similar to <Here are some of the highest reviewer-paper matches I see:>, you must specify WHAT the matches are in the same output. If you don't, your turn will end and your partner won't know the matches you were talking about. You must not end the message halfway."
             )
             return self.format_error_msg(error_msg, player), True
 
-        # Look for the first occurrence of a valid message type tag
-        tag_match = re.search(r"\[(message|propose|accept|reject)\]", message, re.IGNORECASE)
+        # Look for the last occurrence of a valid message type tag
+        tag_match = list(re.finditer(r"\[(message|propose|accept|reject)\]", message, re.IGNORECASE))
         if tag_match:
+            tag_match = tag_match[-1]
             message_type = tag_match.group(1).lower()
             think_part = message[:tag_match.start()].strip()
 
@@ -81,7 +82,7 @@ class OptimizationEnv(DialogueEnv):
                     error_msg = (
                         f"\nError: You must output 'Let's think step by step' first before outputting '[{message_type}]<message>'. "
                         "You must show the thinking process and output the message all in the same output. "
-                        f"The thinking step is empty or incorrect in your current output. Your output was: '{message}'\n"
+                        f"The thinking step is empty or incorrect in your current output."
                     )
                     return self.format_error_msg(error_msg, player), True
 
@@ -92,8 +93,7 @@ class OptimizationEnv(DialogueEnv):
         else:
             # No valid message tag found
             error_msg = (
-                f"\nError: Your response must contain one of the following message types explicitly stated: [message], [propose], [accept], or [reject]. "
-                f"Your output was: {message}\n"
+                f"\nError: Your response must contain one of the following message types explicitly stated: [message], [propose], [accept], or [reject]. \n"
             )
             return self.format_error_msg(error_msg, player), True
 
@@ -269,10 +269,13 @@ class OptimizationEnv(DialogueEnv):
         proposal_lines = re.split(pattern, message)
         proposal_lines = [line.strip() for line in proposal_lines]
         proposal_lines = [line for line in proposal_lines if line]
+        # print(f"*****************************************************\n{message}")
+        # print(len(proposal_lines))
         # Validate header line
-        if proposal_lines[0] != "Proposal:":
+        if not proposal_lines[0].startswith("Proposal:"):
             raise GameError(
                 "Your proposal after [propose] <anything you want to say to your partner> must start with 'Proposal:' (capital P, trailing colon)."
+                "Recall that you cannot input any message after 'Proposal:'. You can only put your proposal after 'Proposal:', but you can put a message between '[propose] and 'Proposal:'"
             )
 
         # Validate that the correct number of assignment lines are present
@@ -283,7 +286,7 @@ class OptimizationEnv(DialogueEnv):
                 f"Your proposal must list exactly {expected_assignments} paper–reviewer assignments (one per paper). "
                 f"I detected {provided_assignments}. Example format:\n"
                 "Proposal:<br/>&emsp; - PAPER_1: REVIEWER_A<br/>&emsp; - PAPER_2: REVIEWER_B<br/>&emsp; ..."
-                "Also remember that don't put any message after Proposal:. You can only put your proposal after Proposal:, but you can put a message between [propose] and Proposal:"
+                
             )
         # Use the original (unmutated) lists so that indices correspond to the
         # true row/column numbers in the table.
@@ -298,6 +301,8 @@ class OptimizationEnv(DialogueEnv):
         for line in proposal_lines[1:]:
             # Remove any leading list markers like '-'
             cleaned_line = line.lstrip("- ")
+            formatting_chars = "*_`~#[](){}|\\<>"
+            cleaned_line = cleaned_line.translate(str.maketrans('', '', formatting_chars))
             # Split on the *last* colon so that colons inside the paper title are preserved
             if ":" not in cleaned_line:
                 raise GameError(
