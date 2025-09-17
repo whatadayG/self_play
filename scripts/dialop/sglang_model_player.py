@@ -164,7 +164,19 @@ class SGLangModelPlayer(BaseModelPlayer):
                 self.tokenizer = self.processing_class
             else:
                 # Load tokenizer for external mode
-                self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
+                try:
+                    # First try to load as a local path
+                    if os.path.exists(self.model_path):
+                        self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True, local_files_only=True)
+                    else:
+                        # Fall back to loading from Hugging Face hub
+                        self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
+                except Exception as e:
+                    # If loading fails, try a common base model tokenizer as fallback
+                    print(f"Warning: Failed to load tokenizer from {self.model_path}: {e}")
+                    print("Falling back to Qwen2.5-7B-Instruct tokenizer")
+                    self.tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-7B-Instruct", trust_remote_code=True)
+                
                 if self.tokenizer.pad_token is None:
                     self.tokenizer.pad_token = self.tokenizer.eos_token
     
