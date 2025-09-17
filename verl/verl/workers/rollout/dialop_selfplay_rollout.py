@@ -87,7 +87,7 @@ class DialopSelfPlayRollout(SGLangRollout):
         self.model_path = args[0] if args else "default"
         
         # Load game instructions
-        instructions_path = project_root / "dialop" / "dialop" / "envs" / "data" / "optimization.txt"
+        instructions_path = project_root / "scripts" / "dialop" / "envs" / "data" / "optimization.txt"
         self.game_instructions = instructions_path.read_text().strip()
         
         # Create mock console for players
