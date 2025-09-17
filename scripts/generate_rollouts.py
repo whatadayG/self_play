@@ -34,15 +34,19 @@ def run_one_game(player_cfg: dict, model_id: str, instructions: str) -> Dict[str
     if not cfg.server_url.endswith("/v1"):
         cfg.server_url += "/v1"
 
+    # Resolve the {unknown_value} placeholder as in the reference rollout
+    instr_p1 = instructions.replace("{unknown_value}", "50")
+    instr_p2 = instructions.replace("{unknown_value}", "50")
+
     p1 = SGLangModelPlayer(
-        system_prompt=instructions,
+        system_prompt=instr_p1,
         role="player-1",
         console=console,
         model_path=model_id,
         config=cfg,
     )
     p2 = SGLangModelPlayer(
-        system_prompt=instructions,
+        system_prompt=instr_p2,
         role="player-2",
         console=console,
         model_path=model_id,
@@ -136,7 +140,7 @@ def main():
     ap.add_argument("--num-games", type=int, default=512)
     ap.add_argument("--temperature", type=float, default=0.7)
     ap.add_argument("--top-p", type=float, default=0.9)
-    ap.add_argument("--max-new-tokens", type=int, default=256)
+    ap.add_argument("--max-new-tokens", type=int, default=8192)
     # Use a large default; external server's KV cache is governed by mem fraction, not this cap
     ap.add_argument("--max-model-len", type=int, default=32768)
     ap.add_argument("--seed", type=int, default=42)
