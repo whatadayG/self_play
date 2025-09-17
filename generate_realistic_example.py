@@ -102,11 +102,15 @@ def generate_realistic_example(num_games=1, model_name="Qwen/Qwen2.5-7B-Instruct
     with patch('verl.workers.rollout.sglang_rollout.SGLangRollout.__init__', mock_init):
         rollout = DialopSelfPlayRollout(
             config=rollout_config,
-            max_turns=5,
-            max_retries_per_turn=0
+            max_turns=8,
+            max_retries_per_turn=3
         )
         rollout.config = rollout_config
         rollout.sampling_params = sampling_params
+        
+        # Set the model name and SGLang URL for external mode
+        rollout.model_name = model_name
+        rollout.sglang_url = sglang_url
         
         # Set output directory for debug logs
         rollout.output_dir = "."
@@ -192,7 +196,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--model-name", 
         type=str, 
-        default="Qwen/Qwen2.5-7B-Instruct",
+        default="/home/nickatomlin/georgiazhou/self_play/checkpoints/sft_qwen3_8b/global_step_4800_merged",
         help="Model name on the SGLang server (default: Qwen/Qwen2.5-7B-Instruct)"
     )
     parser.add_argument(
