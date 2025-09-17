@@ -354,6 +354,8 @@ class FSDPSFTTrainer:
         input_ids = batch["input_ids"].to(self.device_name)
         attention_mask = batch["attention_mask"].to(self.device_name)
         position_ids = batch["position_ids"].to(self.device_name)
+        # Optional per-sample scalar weight (GRPO-style weighting). If present, broadcast to tokens.
+        sample_weight = batch.pop("sample_weight", None)
         loss_mask = batch.pop("loss_mask")[:, :-1].reshape(-1).to(self.device_name)
         loss_fct = nn.CrossEntropyLoss(reduction="none")
 
@@ -377,6 +379,12 @@ class FSDPSFTTrainer:
                 shift_labels = shift_labels.to(shift_logits.device)
                 loss = loss_fct(shift_logits, shift_labels)
                 loss = loss * loss_mask.to(loss.device)
+                if sample_weight is not None:
+                    # sample_weight: (B,) => expand to token-level weights
+                    B = input_ids.size(0)
+                    token_weights = sample_weight.to(loss.device).view(B, 1).expand(B, input_ids.size(1) - 1)
+                    loss = loss.view(B, -1) * token_weights
+                    loss = loss.reshape(-1)
             else:
                 # IMPORTANT: We have a big assumption here, so we can shard the SAME sequence across SP ranks
                 # i.e., each GPU has <1 sequence, and each SP group has 1 sequence
@@ -430,6 +438,11 @@ class FSDPSFTTrainer:
                 full_loss = full_loss.reshape(-1)
                 loss_mask = loss_mask.to(full_loss.device)
                 loss = full_loss * loss_mask
+                if sample_weight is not None:
+                    # For SP path, full_loss has shape (B, L-1) after reconstruction
+                    B = input_ids.shape[0]
+                    token_weights = sample_weight.to(full_loss.device).view(B, 1).expand_as(full_loss)
+                    loss = (full_loss * token_weights).reshape(-1) * loss_mask
 
             valid_token_this_rank = torch.sum(loss_mask)
 
