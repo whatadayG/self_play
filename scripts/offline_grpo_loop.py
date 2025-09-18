@@ -6,6 +6,7 @@ import json
 import argparse
 import subprocess
 from pathlib import Path
+import requests
 
 
 def start_sglang_server(model_path: str, gpus: str = "0,1,2,3", tp: int = 4, mem_util: float = 0.6) -> subprocess.Popen:
@@ -56,6 +57,31 @@ def run_tee(cmd: list[str], logfile: Path, env=None):
                 raise subprocess.CalledProcessError(proc.returncode, cmd)
 
 
+def wait_for_sglang(server_url: str, timeout_sec: int = 900, interval_sec: int = 5) -> None:
+    """Poll the SGLang OpenAI-compatible /v1/models endpoint until ready or timeout."""
+    base = server_url.rstrip("/")
+    if not base.endswith("/v1"):
+        base = base + "/v1"
+    deadline = time.time() + timeout_sec
+    last_err = None
+    while time.time() < deadline:
+        try:
+            r = requests.get(f"{base}/models", timeout=10)
+            r.raise_for_status()
+            data = r.json()
+            # Require at least one model entry
+            if isinstance(data, dict) and data.get("data"):
+                return
+            # Some versions return list
+            if isinstance(data, list) and len(data) > 0:
+                return
+        except Exception as e:
+            last_err = e
+        print("[offline_grpo] waiting for SGLang server...", flush=True)
+        time.sleep(interval_sec)
+    raise TimeoutError(f"SGLang server at {base} did not become ready within {timeout_sec}s. Last error: {last_err}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rounds", type=int, default=1)
@@ -65,6 +91,7 @@ def main():
     ap.add_argument("--gpus", default="0,1,2,3")
     ap.add_argument("--tp", type=int, default=4)
     ap.add_argument("--server-port", type=int, default=8000)
+    ap.add_argument("--server-wait-seconds", type=int, default=900, help="Max seconds to wait for SGLang server readiness")
     ap.add_argument("--wandb-project", default="offline-grpo")
     ap.add_argument("--wandb-entity", default=None)
     ap.add_argument("--wandb-run-name", default=None)
@@ -108,14 +135,24 @@ def main():
         server_proc = start_sglang_server(
             model_path=current_model, gpus=args.gpus, tp=args.tp, mem_util=0.6
         )
-        # Wait a few seconds for server to come up
-        time.sleep(30)
+        # Wait for server to come up by polling /v1/models
+        server_url = f"http://127.0.0.1:{args.server_port}"
+        try:
+            wait_for_sglang(server_url, timeout_sec=args.server_wait_seconds, interval_sec=5)
+        except Exception as e:
+            print(f"Error waiting for SGLang server: {e}")
+            kill_process_tree(server_proc)
+            # Best effort: kill any lingering server processes
+            try:
+                subprocess.run(["pkill", "-f", "sglang.launch_server"], check=False)
+            except Exception:
+                pass
+            raise
 
         # 2) Generate rollouts
         print("Generating rollouts...")
         # crude dynamic length: let generator cap to large max_model_len; after writing Parquet, compute 95th pct length
         out_parquet = round_dir / "train.parquet"
-        server_url = f"http://127.0.0.1:{args.server_port}"
         # Prefer test_venv's python to ensure proper deps
         test_py = "/home/nickatomlin/georgiazhou/self_play/test_venv/bin/python"
         python_bin = test_py if os.path.exists(test_py) else sys.executable
@@ -162,11 +199,19 @@ def main():
         finally:
             print("Stopping SGLang server...")
             kill_process_tree(server_proc)
+            # Ensure complete teardown of any stray servers to avoid stale state
+            try:
+                subprocess.run(["pkill", "-f", "sglang.launch_server"], check=False)
+            except Exception:
+                pass
 
         # this is not optional-- if you set max_model_len to a high number to capture all sequences, you will OOM when training
         import pandas as pd
         import numpy as np
         df = pd.read_parquet(str(out_parquet))
+        # Loud failure if all weights are zero (silent inference failure)
+        if "sample_weight" in df.columns and len(df) > 0 and not (df["sample_weight"] > 0).any():
+            raise RuntimeError("All rollout sample weights are zero. This likely indicates inference failures or server issues.")
         lengths = df["input_ids"].apply(lambda x: len(x))
         pct95 = int(np.percentile(lengths, 95))
         # Filter rows longer than pct95

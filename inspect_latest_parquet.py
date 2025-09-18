@@ -70,10 +70,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--model", type=str, default=None, help="Tokenizer source (path or HF id). If omitted, detect from SGLang server.")
     ap.add_argument("--parquet", type=str, default=None, help="Explicit parquet path to inspect. If omitted, auto-detect latest train.parquet under logs/.")
+    ap.add_argument("--file", type=str, default=None, help="Alias for --parquet; path to a specific parquet file to inspect.")
     args = ap.parse_args()
 
     repo_root = Path(__file__).parent
-    parquet_path = Path(args.parquet) if args.parquet else find_latest_train_parquet(repo_root)
+    parquet_cli = args.file or args.parquet
+    parquet_path = Path(parquet_cli) if parquet_cli else find_latest_train_parquet(repo_root)
     if parquet_path is None or not parquet_path.exists():
         raise FileNotFoundError("Could not find any train.parquet under logs/ or repo.")
 
