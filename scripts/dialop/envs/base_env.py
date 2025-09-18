@@ -91,7 +91,7 @@ class DialogueEnv:
         # Disallow accepting/rejecting unless there is an active FULL proposal
         if self.game.proposal is None or not getattr(self.game, "is_full_proposal", False):
             raise GameError(
-                "You can only [accept] or [reject] after your partner sends a full proposal."
+                "You can only [accept] or [reject] after your partner sends a full proposal, explicitly using the [propose] tag. If you agree with the implied proposal, you can submit a proposal yourself. If you disagree, you can send a message explaining why."
             )
         done, infos = self.game.proposal_response(
             {"accept": is_accept}, from_player)
