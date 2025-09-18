@@ -143,6 +143,8 @@ def main():
     ap.add_argument("--max-new-tokens", type=int, default=8192)
     # Use a large default; external server's KV cache is governed by mem fraction, not this cap
     ap.add_argument("--max-model-len", type=int, default=32768)
+    # GRPO grouping size (k). Rewards will be transformed to relative rewards within each group.
+    ap.add_argument("--group-size", type=int, default=8)
     ap.add_argument("--seed", type=int, default=42)
     args = ap.parse_args()
 
@@ -178,6 +180,31 @@ def main():
                     "game_info": json.dumps(result["game_info"]),
                 }
             )
+
+    # Shuffle rows before grouping to avoid putting both perspectives of a game in the same group
+    if len(rows) > 1:
+        order = np.random.permutation(len(rows))
+        rows = [rows[i] for i in order]
+
+    # Convert absolute rewards to GRPO relative rewards in groups of k
+    k = max(1, int(args.group_size))
+    total = len(rows)
+    full_groups = total // k
+    if full_groups == 0:
+        print(f"Warning: not enough samples ({total}) to form a full group of size {k}; leaving weights unchanged.")
+    else:
+        remainder = total - full_groups * k
+        if remainder > 0:
+            print(f"Dropping {remainder} leftover samples to form full groups of size {k} for GRPO.")
+        # Only keep full groups
+        rows = rows[: full_groups * k]
+        for g in range(full_groups):
+            start = g * k
+            end = start + k
+            group_rewards = [float(rows[j]["sample_weight"]) for j in range(start, end)]
+            baseline = float(np.mean(group_rewards))
+            for j in range(start, end):
+                rows[j]["sample_weight"] = float(group_rewards[j - start] - baseline)
 
     # Save parquet
     df = pd.DataFrame(rows)

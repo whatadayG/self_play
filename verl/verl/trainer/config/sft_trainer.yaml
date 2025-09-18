@@ -54,7 +54,7 @@ trainer:
   default_hdfs_dir: null
   project_name: gsm8k-sft
   experiment_name: test
-  total_epochs: 4
+  total_epochs: 1
   total_training_steps: null
   logger: [ 'console', 'wandb' ]
   seed: 1
@@ -77,8 +77,8 @@ trainer:
   # Checkpoint configuration
   checkpoint:
     # What to include in saved checkpoints
-    # with 'hf_model' you can save whole model as hf format, now only use sharded model checkpoint to save space
-    save_contents: ["model", "optimizer", "extra"]
+    # with 'hf_model' you can save whole model as hf format
+    save_contents: ["model", "optimizer", "extra", "hf_model"]
 
     # For more flexibility, you can specify the contents to load from the checkpoint.
     load_contents: ${trainer.checkpoint.save_contents}

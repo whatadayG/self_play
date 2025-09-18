@@ -131,7 +131,9 @@ def main():
             "--num-games",
             str(args.sequences_per_round // 2),  # two sequences per game
             "--max-new-tokens",
-            "256",
+            "8192",
+            "--group-size",
+            "8",
             "--temperature",
             "0.7",
             "--top-p",
@@ -185,10 +187,16 @@ def main():
         # Compute rollout performance metrics and log
         try:
             mean_norm_reward = float(kept["sample_weight"].astype(float).mean()) if "sample_weight" in kept.columns else None
+            pos_ratio = float((kept["sample_weight"] > 0).mean()) if "sample_weight" in kept.columns else None
+            zero_ratio = float((kept["sample_weight"] == 0).mean()) if "sample_weight" in kept.columns else None
+            neg_ratio = float((kept["sample_weight"] < 0).mean()) if "sample_weight" in kept.columns else None
             def _get_abs_reward(x):
                 try:
                     gi = json.loads(x)
-                    return gi.get("reward", None)
+                    # prefer normalized if present
+                    if isinstance(gi, dict):
+                        return gi.get("reward", gi.get("normalized_reward", None))
+                    return None
                 except Exception:
                     return None
             abs_vals = kept["game_info"].apply(_get_abs_reward) if "game_info" in kept.columns else []
@@ -197,12 +205,18 @@ def main():
         except Exception:
             mean_norm_reward = None
             mean_abs_reward = None
+            pos_ratio = None
+            zero_ratio = None
+            neg_ratio = None
         with open(log_file, "a") as lf:
             lf.write(json.dumps({
                 "event": "rollout_metrics",
                 "timestamp": time.time(),
                 "mean_norm_reward": mean_norm_reward,
                 "mean_abs_reward": mean_abs_reward,
+                "weight_pos_ratio": pos_ratio,
+                "weight_zero_ratio": zero_ratio,
+                "weight_neg_ratio": neg_ratio,
             }) + "\n")
         if wb is not None:
             wb.log({
@@ -215,6 +229,8 @@ def main():
             })
 
         # 3) Run SFT with weights-aware dataset (pretokenized path expects weights)
+        # TODO: one problem with this is that the optimizer state is reset at every SFT.
+        # hopefully this is not too much a problem.
         print("Running SFT training...")
         # Use existing SFT launcher, overriding train/val files to our parquet
         # HACK: Force SFT to run on 2 GPUs due to observed 4-GPU NCCL hang.
@@ -237,7 +253,8 @@ def main():
             f"data.val_files={str(train_parquet_for_sft)}",
             f"model.partial_pretrain={current_model}",
             "trainer.total_epochs=1",
-            "trainer.save_freq=200",
+            # Save only at the end: rely on default end-of-training save; no mid-training save
+            "trainer.save_freq=-1",
             "trainer.test_freq=200",
             f"data.max_length={max_len_arg}",
             # Switch dataset class to pretokenized
@@ -273,16 +290,19 @@ def main():
             }) + "\n")
 
         # 4) Update model path to the latest SFT checkpoint for next round
-        # We use the default FSDP checkpoint directory under save_path
-        # The SFT trainer writes checkpoints to default_local_dir; we passed save_path for that.
-        # Find the latest global_step directory.
+        # Prefer the Hugging Face subdirectory if present for robust loading (config/tokenizer present)
         latest = None
         for p in Path(save_path).glob("global_step_*"):
             latest = p if (latest is None or p.stat().st_mtime > latest.stat().st_mtime) else latest
         if latest is None:
             print("Warning: no SFT checkpoint found; keeping current model for next round.")
         else:
-            current_model = str(latest)
+            hf_dir = latest / "huggingface"
+            if hf_dir.is_dir():
+                current_model = str(hf_dir)
+            else:
+                print(f"Warning: HF directory not found under {latest}, falling back to checkpoint root")
+                current_model = str(latest)
         with open(log_file, "a") as lf:
             lf.write(json.dumps({
                 "event": "round_complete",
