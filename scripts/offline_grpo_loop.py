@@ -9,14 +9,41 @@ from pathlib import Path
 import requests
 
 
-def start_sglang_server(model_path: str, gpus: str = "0,1,2,3", tp: int = 4, mem_util: float = 0.6) -> subprocess.Popen:
+def start_sglang_server(model_path: str, gpus: str = "0,1,2,3", tp: int = 4, mem_util: float = 0.6, port: int = 8000) -> subprocess.Popen:
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = gpus
-    env["MODEL_PATH"] = model_path
-    env["TP_SIZE"] = str(tp)
-    env["GPU_MEMORY_UTILIZATION"] = str(mem_util)
-    # Prefer 0.4 static via mem-fraction-static inside script
-    cmd = ["bash", "scripts/start_sglang_server.sh"]
+    
+    # Kill any existing server on the port
+    try:
+        result = subprocess.run(["lsof", "-ti:" + str(port)], capture_output=True, text=True)
+        if result.stdout.strip():
+            pids = result.stdout.strip().split('\n')
+            for pid in pids:
+                try:
+                    subprocess.run(["kill", "-9", pid], check=False)
+                except Exception:
+                    pass
+            # Wait a bit for processes to die
+            time.sleep(1)
+    except Exception:
+        pass  # No process on port or lsof not available
+    
+    # Prefer test_venv python if available (same as used for generate_rollouts.py)
+    test_py = "/home/nickatomlin/georgiazhou/self_play/test_venv/bin/python"
+    python_bin = test_py if os.path.exists(test_py) else sys.executable
+    
+    cmd = [
+        python_bin, "-m", "sglang.launch_server",
+        "--model-path", model_path,
+        "--port", str(port),
+        "--host", "127.0.0.1",
+        "--tp", str(tp),
+        "--trust-remote-code",
+        "--mem-fraction-static", str(mem_util),
+        "--dtype", "bfloat16",
+        "--enable-torch-compile"
+    ]
+    
     return subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
 
 
@@ -57,14 +84,53 @@ def run_tee(cmd: list[str], logfile: Path, env=None):
                 raise subprocess.CalledProcessError(proc.returncode, cmd)
 
 
-def wait_for_sglang(server_url: str, timeout_sec: int = 900, interval_sec: int = 5) -> None:
+def wait_for_sglang(server_url: str, server_proc: subprocess.Popen, timeout_sec: int = 900, interval_sec: int = 5) -> None:
     """Poll the SGLang OpenAI-compatible /v1/models endpoint until ready or timeout."""
     base = server_url.rstrip("/")
     if not base.endswith("/v1"):
         base = base + "/v1"
     deadline = time.time() + timeout_sec
     last_err = None
+    server_output_lines = []
+    
     while time.time() < deadline:
+        # Check if server process has died
+        if server_proc.poll() is not None:
+            # Collect any remaining output
+            if server_proc.stdout:
+                try:
+                    remaining = server_proc.stdout.read()
+                    if remaining:
+                        server_output_lines.append(remaining)
+                except Exception:
+                    pass
+            output = "".join(server_output_lines)
+            raise RuntimeError(f"SGLang server process died with exit code {server_proc.returncode}. Output:\n{output}")
+        
+        # Collect server output for debugging
+        if server_proc.stdout:
+            try:
+                # Non-blocking read of available output
+                import select
+                while True:
+                    ready, _, _ = select.select([server_proc.stdout], [], [], 0)
+                    if not ready:
+                        break
+                    line = server_proc.stdout.readline()
+                    if line:
+                        server_output_lines.append(line)
+                        # Keep only last 100 lines to avoid memory issues
+                        if len(server_output_lines) > 100:
+                            server_output_lines.pop(0)
+                    else:
+                        break
+            except (ImportError, AttributeError):
+                # select not available (e.g. Windows) - skip non-blocking read
+                pass
+            except Exception:
+                pass
+        
+        # Try to connect to the server
         try:
             r = requests.get(f"{base}/models", timeout=10)
             r.raise_for_status()
@@ -77,9 +143,13 @@ def wait_for_sglang(server_url: str, timeout_sec: int = 900, interval_sec: int =
                 return
         except Exception as e:
             last_err = e
+        
         print("[offline_grpo] waiting for SGLang server...", flush=True)
         time.sleep(interval_sec)
-    raise TimeoutError(f"SGLang server at {base} did not become ready within {timeout_sec}s. Last error: {last_err}")
+    
+    # Timeout reached
+    output = "".join(server_output_lines)
+    raise TimeoutError(f"SGLang server at {base} did not become ready within {timeout_sec}s. Last error: {last_err}\nServer output:\n{output}")
 
 
 def main():
@@ -133,12 +203,12 @@ def main():
         # 1) Start SGLang server
         print("Starting SGLang server...")
         server_proc = start_sglang_server(
-            model_path=current_model, gpus=args.gpus, tp=args.tp, mem_util=0.6
+            model_path=current_model, gpus=args.gpus, tp=args.tp, mem_util=0.6, port=args.server_port
         )
         # Wait for server to come up by polling /v1/models
         server_url = f"http://127.0.0.1:{args.server_port}"
         try:
-            wait_for_sglang(server_url, timeout_sec=args.server_wait_seconds, interval_sec=5)
+            wait_for_sglang(server_url, server_proc, timeout_sec=args.server_wait_seconds, interval_sec=5)
         except Exception as e:
             print(f"Error waiting for SGLang server: {e}")
             kill_process_tree(server_proc)
@@ -201,7 +271,7 @@ def main():
             kill_process_tree(server_proc)
             # Ensure complete teardown of any stray servers to avoid stale state
             try:
-                subprocess.run(["pkill", "-f", "sglang.launch_server"], check=False)
+                subprocess.run(["pkill", "-f", "sglang"], check=False)
             except Exception:
                 pass
 
