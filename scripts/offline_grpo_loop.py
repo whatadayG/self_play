@@ -180,7 +180,6 @@ def main():
     ap.add_argument("--model-path", default="/home/nickatomlin/georgiazhou/self_play/checkpoints/sft_qwen3_8b/global_step_4800_merged")
     ap.add_argument("--save-root", default="")
     ap.add_argument("--gpus", default="0,1,2,3")
-    ap.add_argument("--tp", type=int, default=4)
     ap.add_argument("--server-port", type=int, default=8000)
     ap.add_argument("--server-wait-seconds", type=int, default=900, help="Max seconds to wait for SGLang server readiness")
     ap.add_argument("--wandb-project", default="offline-grpo")
@@ -191,6 +190,9 @@ def main():
     ap.add_argument("--server-log-level", type=str, default="debug", help="SGLang server log level: debug|info|warning|error")
     ap.add_argument("--server-enable-torch-compile", action="store_true", help="Enable torch.compile in SGLang server (may slow startup)")
     args = ap.parse_args()
+    gpu_string = args.gpus
+    gpu_list = [g for g in gpu_string.split(",") if g]
+    tp = len(gpu_list)
 
     # Default save_root: logs/offline_grpo/YYYYmmdd_HHMMSS
     if args.save_root:
@@ -213,8 +215,8 @@ def main():
             wb.config.update({
                 "rounds": args.rounds,
                 "sequences_per_round": args.sequences_per_round,
-                "gpus": args.gpus,
-                "tp": args.tp,
+                "gpus": gpu_string,
+                "tp": tp,
                 "model_start": current_model,
                 "server_mem_fraction": args.server_mem_fraction,
                 "server_log_level": args.server_log_level,
@@ -231,7 +233,7 @@ def main():
         # 1) Start SGLang server
         print("Starting SGLang server...")
         server_proc = start_sglang_server(
-            model_path=current_model, gpus=args.gpus, tp=args.tp, mem_util=args.server_mem_fraction, port=args.server_port,
+            model_path=current_model, gpus=gpu_string, tp=tp, mem_util=args.server_mem_fraction, port=args.server_port,
             enable_torch_compile=args.server_enable_torch_compile, log_level=args.server_log_level
         )
         # Wait for server to come up by polling /v1/models
@@ -284,8 +286,8 @@ def main():
                 "event": "server_started",
                 "timestamp": time.time(),
                 "model": current_model,
-                "gpus": args.gpus,
-                "tp": args.tp,
+                "gpus": gpu_string,
+                "tp": tp,
             }) + "\n")
         try:
             run(gen_cmd)
@@ -381,15 +383,14 @@ def main():
         # Use existing SFT launcher, overriding train/val files to our parquet
         # HACK: Force SFT to run on 2 GPUs due to observed 4-GPU NCCL hang.
         # If fewer than 2 GPUs were provided, fall back to available count.
-        gpu_ids = [g.strip() for g in args.gpus.split(",") if g.strip()]
-        if len(gpu_ids) >= 2:
+        if len(gpu_list) >= 2:
             # Use logical GPU indices (0,1) since CUDA_VISIBLE_DEVICES was already set for SGLang
-            sft_visible = "0,1"
+            sft_visible = ",".join(gpu_list[:2])
             nproc = 2
         else:
             # For single GPU, use logical index 0
-            sft_visible = "0"
-            nproc = max(1, len(gpu_ids))
+            sft_visible = str(gpu_list[0])
+            nproc = 1
         print(f"[HACK] Forcing SFT to use {nproc} GPU(s): CUDA_VISIBLE_DEVICES={sft_visible}")
         save_path = str(round_dir / "checkpoints")
         sft_cmd = [

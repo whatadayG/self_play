@@ -30,9 +30,10 @@ torchrun --nnodes=1 --nproc_per_node=$nproc_per_node --rdzv_endpoint=localhost:2
     trainer.default_local_dir=$save_path \
     trainer.project_name=multiturn-sft \
     trainer.experiment_name=multiturn_qwen3_8b_len10k_b32 \
-    trainer.logger='["console"]' \
+    trainer.logger='["console", "wandb"]' \
     trainer.total_epochs=10 $@ \
     trainer.save_freq=300 \
     trainer.test_freq=100 \
     trainer.n_gpus_per_node=2 \
+
     use_remove_padding=true
