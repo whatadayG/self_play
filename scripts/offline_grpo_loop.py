@@ -176,7 +176,7 @@ def wait_for_sglang(server_url: str, server_proc: subprocess.Popen, timeout_sec:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rounds", type=int, default=1)
-    ap.add_argument("--sequences-per-round", type=int, default=512)
+    ap.add_argument("--sequences-per-round", type=int, default=1024)
     ap.add_argument("--model-path", default="/home/nickatomlin/georgiazhou/self_play/checkpoints/sft_qwen3_8b/global_step_4800_merged")
     ap.add_argument("--save-root", default="")
     ap.add_argument("--gpus", default="0,1,2,3")

@@ -142,7 +142,7 @@ def process_game_result(result: Dict[str, Any], max_model_len: int) -> List[Dict
     for player_name in ["player-1", "player-2"]:
         p = result["players"][player_name]
         input_ids, attention_mask, position_ids, response_loss_mask = tensorize_player(p, max_model_len)
-        # Single-sample group: use absolute normalized reward as weight (equivalent to GRPO with k=1)
+        # Use absolute normalized reward as weight (will be converted to relative in GRPO grouping)
         w = float(result["normalized_reward"])
         rows.append(
             {
@@ -152,6 +152,7 @@ def process_game_result(result: Dict[str, Any], max_model_len: int) -> List[Dict
                 "loss_mask": np.array(response_loss_mask, dtype=np.int64),
                 "sample_weight": w,
                 "game_info": json.dumps(result["game_info"]),
+                "game_id": result["game_id"],  # Add game_id for grouping
             }
         )
     return rows
@@ -162,14 +163,14 @@ def main():
     ap.add_argument("--server-url", required=True)
     ap.add_argument("--model-id", default="Qwen/Qwen3-8B-Instruct")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--num-games", type=int, default=512)
+    ap.add_argument("--num-games", type=int, default=256, help="Number of unique games to play (each will be played 8 times)")
     ap.add_argument("--temperature", type=float, default=0.7)
     ap.add_argument("--top-p", type=float, default=0.9)
     ap.add_argument("--max-new-tokens", type=int, default=8192)
     # Use a large default; external server's KV cache is governed by mem fraction, not this cap
     ap.add_argument("--max-model-len", type=int, default=32768)
     # GRPO grouping size (k). Rewards will be transformed to relative rewards within each group.
-    ap.add_argument("--group-size", type=int, default=8)
+    ap.add_argument("--group-size", type=int, default=8, help="Number of times to play each game (creates groups of 2*k sequences)")
     ap.add_argument("--seed", type=int, default=42)
     # Parallelization settings
     ap.add_argument("--max-workers", type=int, default=1024, help="Maximum number of concurrent games to run")
@@ -189,7 +190,9 @@ def main():
         "max_new_tokens": args.max_new_tokens,
     }
 
-    print(f"Starting generation of {args.num_games} games with {args.max_workers} workers...")
+    # Calculate total games to play: num_games * group_size
+    total_games = args.num_games * args.group_size
+    print(f"Starting generation of {total_games} total games ({args.num_games} unique games × {args.group_size} plays each) with {args.max_workers} workers...")
     start_time = time.time()
     
     # Thread-safe list to collect results
@@ -210,56 +213,74 @@ def main():
 
     # Use ThreadPoolExecutor for parallel game generation
     with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
-        # Submit all games
-        future_to_game_id = {
-            executor.submit(run_one_game, player_cfg, args.model_id, instructions, i): i 
-            for i in range(args.num_games)
-        }
+        # Submit all games: for each unique game, play it group_size times
+        future_to_game_info = {}
+        game_counter = 0
+        for unique_game_id in range(args.num_games):
+            for play_id in range(args.group_size):
+                game_id = game_counter
+                future = executor.submit(run_one_game, player_cfg, args.model_id, instructions, game_id)
+                future_to_game_info[future] = {
+                    "game_id": game_id,
+                    "unique_game_id": unique_game_id,
+                    "play_id": play_id
+                }
+                game_counter += 1
         
         # Process completed games as they finish
-        for future in as_completed(future_to_game_id):
-            game_id = future_to_game_id[future]
+        for future in as_completed(future_to_game_info):
+            game_info = future_to_game_info[future]
             try:
                 result = future.result()
                 rows = process_game_result(result, args.max_model_len)
                 safe_append_rows(rows)
                 
                 completed = increment_completed()
-                if completed % args.progress_interval == 0 or completed == args.num_games:
+                if completed % args.progress_interval == 0 or completed == total_games:
                     elapsed = time.time() - start_time
                     rate = completed / elapsed if elapsed > 0 else 0
-                    print(f"Completed {completed}/{args.num_games} games ({rate:.1f} games/sec)")
+                    print(f"Completed {completed}/{total_games} games ({rate:.1f} games/sec)")
                     
             except Exception as e:
-                print(f"Game {game_id} failed: {e}")
+                print(f"Game {game_info['game_id']} failed: {e}")
                 # Continue with other games even if one fails
 
     print(f"Generation completed in {time.time() - start_time:.1f}s")
 
-    # Shuffle rows before grouping to avoid putting both perspectives of a game in the same group
-    if len(all_rows) > 1:
-        order = np.random.permutation(len(all_rows))
-        all_rows = [all_rows[i] for i in order]
-
-    # Convert absolute rewards to GRPO relative rewards in groups of k
-    k = max(1, int(args.group_size))
+    # Group sequences by unique game sets for GRPO normalization
+    # Each unique game was played group_size times, creating 2*group_size sequences per unique game
+    print(f"Grouping sequences for GRPO normalization...")
+    
+    # Sort rows by unique_game_id to ensure proper grouping
+    all_rows.sort(key=lambda x: x["game_id"] // args.group_size)
+    
+    # Apply GRPO normalization within each group of 2*group_size sequences
+    sequences_per_group = 2 * args.group_size  # 2 players × group_size plays
     total = len(all_rows)
-    full_groups = total // k
+    full_groups = total // sequences_per_group
+    
     if full_groups == 0:
-        print(f"Warning: not enough samples ({total}) to form a full group of size {k}; leaving weights unchanged.")
+        print(f"Warning: not enough samples ({total}) to form a full group of size {sequences_per_group}; leaving weights unchanged.")
     else:
-        remainder = total - full_groups * k
+        remainder = total - full_groups * sequences_per_group
         if remainder > 0:
-            print(f"Dropping {remainder} leftover samples to form full groups of size {k} for GRPO.")
+            print(f"Dropping {remainder} leftover samples to form full groups of size {sequences_per_group} for GRPO.")
         # Only keep full groups
-        all_rows = all_rows[: full_groups * k]
+        all_rows = all_rows[: full_groups * sequences_per_group]
+        
         for g in range(full_groups):
-            start = g * k
-            end = start + k
+            start = g * sequences_per_group
+            end = start + sequences_per_group
             group_rewards = [float(all_rows[j]["sample_weight"]) for j in range(start, end)]
             baseline = float(np.mean(group_rewards))
             for j in range(start, end):
                 all_rows[j]["sample_weight"] = float(group_rewards[j - start] - baseline)
+        
+        print(f"Applied GRPO normalization to {full_groups} groups of {sequences_per_group} sequences each")
+
+    # Remove game_id from final output (it was only needed for grouping)
+    for row in all_rows:
+        del row["game_id"]
 
     # Save parquet
     df = pd.DataFrame(all_rows)
