@@ -176,7 +176,7 @@ def wait_for_sglang(server_url: str, server_proc: subprocess.Popen, timeout_sec:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rounds", type=int, default=1)
-    ap.add_argument("--sequences-per-round", type=int, default=1024)
+    ap.add_argument("--games-per-round", type=int, default=128)
     ap.add_argument("--model-path", default="/home/nickatomlin/georgiazhou/self_play/checkpoints/sft_qwen3_8b/global_step_4800_merged")
     ap.add_argument("--save-root", default="")
     ap.add_argument("--gpus", default="0,1,2,3")
@@ -214,7 +214,7 @@ def main():
         if wb is not None:
             wb.config.update({
                 "rounds": args.rounds,
-                "sequences_per_round": args.sequences_per_round,
+                "games_per_round": args.games_per_round,
                 "gpus": gpu_string,
                 "tp": tp,
                 "model_start": current_model,
@@ -267,7 +267,7 @@ def main():
             "--out",
             str(out_parquet),
             "--num-games",
-            str(args.sequences_per_round // 2),  # two sequences per game
+            str(args.games_per_round // 2),  # two sequences per game
             "--max-new-tokens",
             "8192",
             "--group-size",
