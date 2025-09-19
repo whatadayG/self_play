@@ -5,6 +5,8 @@ import argparse
 import time
 from pathlib import Path
 from typing import Any, Dict, List
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 import numpy as np
 import pandas as pd
@@ -21,7 +23,7 @@ from dialop.sglang_model_player import SGLangModelPlayer, SGLangConfig
 from dialop.envs.optimization import OptimizationEnv
 
 
-def run_one_game(player_cfg: dict, model_id: str, instructions: str) -> Dict[str, Any]:
+def run_one_game(player_cfg: dict, model_id: str, instructions: str, game_id: int = 0) -> Dict[str, Any]:
     # Build two players sharing the same server config
     console = type("_C", (), {"print": lambda *args, **kwargs: None, "rule": lambda *args, **kwargs: None})()
     cfg = SGLangConfig(
@@ -102,6 +104,7 @@ def run_one_game(player_cfg: dict, model_id: str, instructions: str) -> Dict[str
 
     # Build two sequences (one per player's perspective)
     result = {
+        "game_id": game_id,
         "players": {"player-1": p1, "player-2": p2},
         "reward": obs.get("info", {}).get("score", 0.0) if done else 0.0,
         "normalized_reward": obs.get("info", {}).get("score_norm", 0.0) if done else 0.0,
@@ -132,6 +135,28 @@ def tensorize_player(player, max_model_len: int):
     return input_ids, attention_mask, position_ids, response_loss_mask
 
 
+def process_game_result(result: Dict[str, Any], max_model_len: int) -> List[Dict[str, Any]]:
+    """Process a single game result into training samples for both players."""
+    rows = []
+    # two sequences (player-1 and player-2)
+    for player_name in ["player-1", "player-2"]:
+        p = result["players"][player_name]
+        input_ids, attention_mask, position_ids, response_loss_mask = tensorize_player(p, max_model_len)
+        # Single-sample group: use absolute normalized reward as weight (equivalent to GRPO with k=1)
+        w = float(result["normalized_reward"])
+        rows.append(
+            {
+                "input_ids": np.array(input_ids, dtype=np.int64),
+                "attention_mask": np.array(attention_mask, dtype=np.int64),
+                "position_ids": np.array(position_ids, dtype=np.int64),
+                "loss_mask": np.array(response_loss_mask, dtype=np.int64),
+                "sample_weight": w,
+                "game_info": json.dumps(result["game_info"]),
+            }
+        )
+    return rows
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--server-url", required=True)
@@ -146,6 +171,9 @@ def main():
     # GRPO grouping size (k). Rewards will be transformed to relative rewards within each group.
     ap.add_argument("--group-size", type=int, default=8)
     ap.add_argument("--seed", type=int, default=42)
+    # Parallelization settings
+    ap.add_argument("--max-workers", type=int, default=1024, help="Maximum number of concurrent games to run")
+    ap.add_argument("--progress-interval", type=int, default=64, help="Print progress every N completed games")
     args = ap.parse_args()
 
     np.random.seed(args.seed)
@@ -161,34 +189,61 @@ def main():
         "max_new_tokens": args.max_new_tokens,
     }
 
-    rows: List[Dict[str, Any]] = []
-    for i in range(args.num_games):
-        result = run_one_game(player_cfg, args.model_id, instructions)
-        # two sequences (player-1 and player-2)
-        for player_name in ["player-1", "player-2"]:
-            p = result["players"][player_name]
-            input_ids, attention_mask, position_ids, response_loss_mask = tensorize_player(p, args.max_model_len)
-            # Single-sample group: use absolute normalized reward as weight (equivalent to GRPO with k=1)
-            w = float(result["normalized_reward"])
-            rows.append(
-                {
-                    "input_ids": np.array(input_ids, dtype=np.int64),
-                    "attention_mask": np.array(attention_mask, dtype=np.int64),
-                    "position_ids": np.array(position_ids, dtype=np.int64),
-                    "loss_mask": np.array(response_loss_mask, dtype=np.int64),
-                    "sample_weight": w,
-                    "game_info": json.dumps(result["game_info"]),
-                }
-            )
+    print(f"Starting generation of {args.num_games} games with {args.max_workers} workers...")
+    start_time = time.time()
+    
+    # Thread-safe list to collect results
+    all_rows: List[Dict[str, Any]] = []
+    rows_lock = threading.Lock()
+    completed_games = 0
+    completed_lock = threading.Lock()
+
+    def safe_append_rows(new_rows: List[Dict[str, Any]]):
+        with rows_lock:
+            all_rows.extend(new_rows)
+
+    def increment_completed():
+        nonlocal completed_games
+        with completed_lock:
+            completed_games += 1
+            return completed_games
+
+    # Use ThreadPoolExecutor for parallel game generation
+    with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
+        # Submit all games
+        future_to_game_id = {
+            executor.submit(run_one_game, player_cfg, args.model_id, instructions, i): i 
+            for i in range(args.num_games)
+        }
+        
+        # Process completed games as they finish
+        for future in as_completed(future_to_game_id):
+            game_id = future_to_game_id[future]
+            try:
+                result = future.result()
+                rows = process_game_result(result, args.max_model_len)
+                safe_append_rows(rows)
+                
+                completed = increment_completed()
+                if completed % args.progress_interval == 0 or completed == args.num_games:
+                    elapsed = time.time() - start_time
+                    rate = completed / elapsed if elapsed > 0 else 0
+                    print(f"Completed {completed}/{args.num_games} games ({rate:.1f} games/sec)")
+                    
+            except Exception as e:
+                print(f"Game {game_id} failed: {e}")
+                # Continue with other games even if one fails
+
+    print(f"Generation completed in {time.time() - start_time:.1f}s")
 
     # Shuffle rows before grouping to avoid putting both perspectives of a game in the same group
-    if len(rows) > 1:
-        order = np.random.permutation(len(rows))
-        rows = [rows[i] for i in order]
+    if len(all_rows) > 1:
+        order = np.random.permutation(len(all_rows))
+        all_rows = [all_rows[i] for i in order]
 
     # Convert absolute rewards to GRPO relative rewards in groups of k
     k = max(1, int(args.group_size))
-    total = len(rows)
+    total = len(all_rows)
     full_groups = total // k
     if full_groups == 0:
         print(f"Warning: not enough samples ({total}) to form a full group of size {k}; leaving weights unchanged.")
@@ -197,17 +252,17 @@ def main():
         if remainder > 0:
             print(f"Dropping {remainder} leftover samples to form full groups of size {k} for GRPO.")
         # Only keep full groups
-        rows = rows[: full_groups * k]
+        all_rows = all_rows[: full_groups * k]
         for g in range(full_groups):
             start = g * k
             end = start + k
-            group_rewards = [float(rows[j]["sample_weight"]) for j in range(start, end)]
+            group_rewards = [float(all_rows[j]["sample_weight"]) for j in range(start, end)]
             baseline = float(np.mean(group_rewards))
             for j in range(start, end):
-                rows[j]["sample_weight"] = float(group_rewards[j - start] - baseline)
+                all_rows[j]["sample_weight"] = float(group_rewards[j - start] - baseline)
 
     # Save parquet
-    df = pd.DataFrame(rows)
+    df = pd.DataFrame(all_rows)
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_parquet(str(out_path))
