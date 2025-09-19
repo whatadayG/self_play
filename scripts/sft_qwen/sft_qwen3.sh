@@ -33,7 +33,7 @@ torchrun --nnodes=1 --nproc_per_node=$nproc_per_node --rdzv_endpoint=localhost:2
     trainer.logger='["console", "wandb"]' \
     trainer.total_epochs=10 $@ \
     trainer.save_freq=300 \
-    trainer.test_freq=100 \
+    trainer.test_freq=10000 \
     trainer.n_gpus_per_node=2 \
 
     use_remove_padding=true
