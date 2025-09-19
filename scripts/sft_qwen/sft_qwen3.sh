@@ -19,9 +19,9 @@ torchrun --nnodes=1 --nproc_per_node=$nproc_per_node \
     data.multiturn.enable=true \
     data.multiturn.messages_key=messages \
     data.max_length=5000 \
-    data.truncation=right \
-    data.micro_batch_size_per_gpu=4 \
-    data.train_batch_size=16 \
+    data.truncation=error \
+    data.micro_batch_size_per_gpu=2 \
+    data.train_batch_size=4 \
     model.partial_pretrain=Qwen/Qwen3-8B \
     model.strategy='fsdp' \
     model.trust_remote_code=true \
@@ -37,4 +37,5 @@ torchrun --nnodes=1 --nproc_per_node=$nproc_per_node \
     trainer.total_epochs=10 $@ \
     trainer.save_freq=300 \
     trainer.test_freq=100 \
+    trainer.n_gpus_per_node=2 \
     use_remove_padding=true

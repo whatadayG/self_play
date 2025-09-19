@@ -313,6 +313,8 @@ def main():
             raise RuntimeError("All rollout sample weights are zero. This likely indicates inference failures or server issues.")
         lengths = df["input_ids"].apply(lambda x: len(x))
         pct95 = int(np.percentile(lengths, 95))
+        if pct95 > 5000:
+            pct95 = 5000
         # Filter rows longer than pct95
         kept = df[lengths <= pct95]
         trimmed_path = round_dir / "train_trimmed.parquet"
@@ -400,8 +402,8 @@ def main():
             f"model.partial_pretrain={current_model}",
             "trainer.total_epochs=1",
             # Save only at the end: rely on default end-of-training save; no mid-training save
-            "trainer.save_freq=-1",
-            "trainer.test_freq=200",
+            "trainer.save_freq=500",
+            "trainer.test_freq=100",
             f"data.max_length={max_len_arg}",
             # Switch dataset class to pretokenized
             "data.custom_cls.path=verl/verl/utils/dataset/pretokenized_sft_dataset.py",
