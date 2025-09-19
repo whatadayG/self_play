@@ -9,15 +9,24 @@ from pathlib import Path
 import requests
 
 
-def start_sglang_server(model_path: str, gpus: str = "0,1,2,3", tp: int = 4, mem_util: float = 0.6, port: int = 8000) -> subprocess.Popen:
+def start_sglang_server(model_path: str, gpus: str = "0,1,2,3", tp: int = 4, mem_util: float = 0.6, port: int = 8000, enable_torch_compile: bool = True, log_level: str = "info") -> subprocess.Popen:
+    # Auto-adjust TP size to match number of available GPUs
+    num_gpus = len([g.strip() for g in gpus.split(",") if g.strip()])
+    if tp > num_gpus:
+        print(f"[offline_grpo] WARNING: Requested TP={tp} but only {num_gpus} GPUs available. Adjusting TP to {num_gpus}", flush=True)
+        tp = num_gpus
+
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = gpus
+
+    print(f"[offline_grpo] Preparing to launch SGLang server: model_path={model_path}, gpus={gpus}, tp={tp}, mem_util={mem_util}, port={port}, torch_compile={enable_torch_compile}, log_level={log_level}", flush=True)
     
     # Kill any existing server on the port
     try:
         result = subprocess.run(["lsof", "-ti:" + str(port)], capture_output=True, text=True)
         if result.stdout.strip():
             pids = result.stdout.strip().split('\n')
+            print(f"[offline_grpo] Port {port} is in use by PIDs: {pids}. Sending SIGKILL...", flush=True)
             for pid in pids:
                 try:
                     subprocess.run(["kill", "-9", pid], check=False)
@@ -25,12 +34,16 @@ def start_sglang_server(model_path: str, gpus: str = "0,1,2,3", tp: int = 4, mem
                     pass
             # Wait a bit for processes to die
             time.sleep(1)
+            print(f"[offline_grpo] Port {port} cleanup done.", flush=True)
+        else:
+            print(f"[offline_grpo] Port {port} appears free.", flush=True)
     except Exception:
         pass  # No process on port or lsof not available
     
     # Prefer test_venv python if available (same as used for generate_rollouts.py)
     test_py = "/home/nickatomlin/georgiazhou/self_play/test_venv/bin/python"
     python_bin = test_py if os.path.exists(test_py) else sys.executable
+    print(f"[offline_grpo] Using Python interpreter: {python_bin}", flush=True)
     
     cmd = [
         python_bin, "-m", "sglang.launch_server",
@@ -41,10 +54,18 @@ def start_sglang_server(model_path: str, gpus: str = "0,1,2,3", tp: int = 4, mem
         "--trust-remote-code",
         "--mem-fraction-static", str(mem_util),
         "--dtype", "bfloat16",
-        "--enable-torch-compile"
+        "--log-level", str(log_level),
+        "--disable-cuda-graph",
     ]
+    if enable_torch_compile:
+        cmd.append("--enable-torch-compile")
+    print("[offline_grpo] Launch command:", " ".join(cmd), flush=True)
+    print(f"[offline_grpo] CUDA_VISIBLE_DEVICES={env.get('CUDA_VISIBLE_DEVICES','')}", flush=True)
     
-    return subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    # Pipe server output directly to our stdout - much simpler!
+    proc = subprocess.Popen(cmd, env=env, stdout=sys.stdout, stderr=sys.stderr, text=True)
+    print(f"[offline_grpo] SGLang server process started with PID={proc.pid}", flush=True)
+    return proc
 
 
 def kill_process_tree(proc: subprocess.Popen):
@@ -91,44 +112,35 @@ def wait_for_sglang(server_url: str, server_proc: subprocess.Popen, timeout_sec:
         base = base + "/v1"
     deadline = time.time() + timeout_sec
     last_err = None
-    server_output_lines = []
+    start_time = time.time()
+    last_http_error_log_time = 0.0
+    http_error_log_interval = 10.0
+    print(f"[offline_grpo] Waiting for SGLang readiness at {base}/models (timeout={timeout_sec}s, check every {interval_sec}s)", flush=True)
+    
+    # Parse host/port for port-listening diagnostics
+    host = "127.0.0.1"
+    port = 80
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(server_url)
+        host = parsed.hostname or host
+        port = parsed.port or 80
+    except Exception:
+        pass
+    
+    import socket
+    def _is_port_listening(h: str, p: int) -> bool:
+        try:
+            with socket.create_connection((h, p), timeout=0.2):
+                return True
+        except Exception:
+            return False
     
     while time.time() < deadline:
         # Check if server process has died
         if server_proc.poll() is not None:
-            # Collect any remaining output
-            if server_proc.stdout:
-                try:
-                    remaining = server_proc.stdout.read()
-                    if remaining:
-                        server_output_lines.append(remaining)
-                except Exception:
-                    pass
-            output = "".join(server_output_lines)
-            raise RuntimeError(f"SGLang server process died with exit code {server_proc.returncode}. Output:\n{output}")
-        
-        # Collect server output for debugging
-        if server_proc.stdout:
-            try:
-                # Non-blocking read of available output
-                import select
-                while True:
-                    ready, _, _ = select.select([server_proc.stdout], [], [], 0)
-                    if not ready:
-                        break
-                    line = server_proc.stdout.readline()
-                    if line:
-                        server_output_lines.append(line)
-                        # Keep only last 100 lines to avoid memory issues
-                        if len(server_output_lines) > 100:
-                            server_output_lines.pop(0)
-                    else:
-                        break
-            except (ImportError, AttributeError):
-                # select not available (e.g. Windows) - skip non-blocking read
-                pass
-            except Exception:
-                pass
+            print(f"[offline_grpo] Server process exited early with code {server_proc.returncode}", flush=True)
+            raise RuntimeError(f"SGLang server process died with exit code {server_proc.returncode}")
         
         # Try to connect to the server
         try:
@@ -137,19 +149,28 @@ def wait_for_sglang(server_url: str, server_proc: subprocess.Popen, timeout_sec:
             data = r.json()
             # Require at least one model entry
             if isinstance(data, dict) and data.get("data"):
+                elapsed = int(time.time() - start_time)
+                print(f"[offline_grpo] SGLang server is ready after {elapsed}s.", flush=True)
                 return
             # Some versions return list
             if isinstance(data, list) and len(data) > 0:
+                elapsed = int(time.time() - start_time)
+                print(f"[offline_grpo] SGLang server is ready after {elapsed}s.", flush=True)
                 return
         except Exception as e:
             last_err = e
+            now = time.time()
+            if now - last_http_error_log_time >= http_error_log_interval:
+                last_http_error_log_time = now
+                elapsed = int(now - start_time)
+                port_listening = _is_port_listening(host, port)
+                print(f"[offline_grpo] Still waiting ({elapsed}s). Last HTTP error: {repr(last_err)}. proc_alive={server_proc.poll() is None}, port_listening={port_listening}", flush=True)
         
-        print("[offline_grpo] waiting for SGLang server...", flush=True)
         time.sleep(interval_sec)
     
     # Timeout reached
-    output = "".join(server_output_lines)
-    raise TimeoutError(f"SGLang server at {base} did not become ready within {timeout_sec}s. Last error: {last_err}\nServer output:\n{output}")
+    print(f"[offline_grpo] Timeout after {timeout_sec}s waiting for SGLang server at {base}. Last error: {last_err}", flush=True)
+    raise TimeoutError(f"SGLang server at {base} did not become ready within {timeout_sec}s. Last error: {last_err}")
 
 
 def main():
@@ -165,6 +186,10 @@ def main():
     ap.add_argument("--wandb-project", default="offline-grpo")
     ap.add_argument("--wandb-entity", default=None)
     ap.add_argument("--wandb-run-name", default=None)
+    # New server control flags
+    ap.add_argument("--server-mem-fraction", type=float, default=0.85, help="Static GPU memory fraction reserved by server (mem_fraction_static)")
+    ap.add_argument("--server-log-level", type=str, default="debug", help="SGLang server log level: debug|info|warning|error")
+    ap.add_argument("--server-enable-torch-compile", action="store_true", help="Enable torch.compile in SGLang server (may slow startup)")
     args = ap.parse_args()
 
     # Default save_root: logs/offline_grpo/YYYYmmdd_HHMMSS
@@ -191,6 +216,9 @@ def main():
                 "gpus": args.gpus,
                 "tp": args.tp,
                 "model_start": current_model,
+                "server_mem_fraction": args.server_mem_fraction,
+                "server_log_level": args.server_log_level,
+                "server_enable_torch_compile": args.server_enable_torch_compile,
             }, allow_val_change=True)
     except Exception:
         wb = None
@@ -203,7 +231,8 @@ def main():
         # 1) Start SGLang server
         print("Starting SGLang server...")
         server_proc = start_sglang_server(
-            model_path=current_model, gpus=args.gpus, tp=args.tp, mem_util=0.6, port=args.server_port
+            model_path=current_model, gpus=args.gpus, tp=args.tp, mem_util=args.server_mem_fraction, port=args.server_port,
+            enable_torch_compile=args.server_enable_torch_compile, log_level=args.server_log_level
         )
         # Wait for server to come up by polling /v1/models
         server_url = f"http://127.0.0.1:{args.server_port}"
@@ -352,10 +381,12 @@ def main():
         # If fewer than 2 GPUs were provided, fall back to available count.
         gpu_ids = [g.strip() for g in args.gpus.split(",") if g.strip()]
         if len(gpu_ids) >= 2:
-            sft_visible = ",".join(gpu_ids[:2])
+            # Use logical GPU indices (0,1) since CUDA_VISIBLE_DEVICES was already set for SGLang
+            sft_visible = "0,1"
             nproc = 2
         else:
-            sft_visible = ",".join(gpu_ids)
+            # For single GPU, use logical index 0
+            sft_visible = "0"
             nproc = max(1, len(gpu_ids))
         print(f"[HACK] Forcing SFT to use {nproc} GPU(s): CUDA_VISIBLE_DEVICES={sft_visible}")
         save_path = str(round_dir / "checkpoints")
