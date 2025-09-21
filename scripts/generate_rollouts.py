@@ -160,7 +160,7 @@ def process_game_result(result: Dict[str, Any], max_model_len: int) -> List[Dict
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--server-url", required=True)
+    ap.add_argument("--server-url", default="http://127.0.0.1:30001", help="URL of the SGLang server (default: http://127.0.0.1:30001)")
     ap.add_argument("--model-id", default="Qwen/Qwen3-8B-Instruct")
     ap.add_argument("--out", required=True)
     ap.add_argument("--num-games", type=int, default=256, help="Number of unique games to play (each will be played 8 times)")
