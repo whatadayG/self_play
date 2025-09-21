@@ -89,62 +89,20 @@ def analyze_run_state(save_root: Path) -> Tuple[int, str, Optional[str], Dict[st
     checkpoints_dir = latest_round_dir / "checkpoints"
     sft_log = latest_round_dir / "sft_train.log"
     
-    # Check if SFT training has completed by comparing expected steps vs last checkpoint step
+    # Check if SFT training has completed by looking for checkpoints
     has_checkpoints = checkpoints_dir.exists() and any(checkpoints_dir.glob("global_step_*"))
     has_sft_log = sft_log.exists() and sft_log.stat().st_size > 0
-
-    def _latest_ckpt_step(path: Path) -> int:
-        latest = -1
-        if not path.exists():
-            return latest
-        for p in path.glob("global_step_*"):
-            try:
-                step = int(p.name.split("global_step_")[-1])
-                if step > latest:
-                    latest = step
-            except Exception:
-                continue
-        return latest
-
-    def _expected_total_steps(trimmed_parquet: Path, global_batch_size: int = 2, total_epochs: int = 1) -> int:
-        try:
-            if not trimmed_parquet.exists():
-                return -1
-            df = pd.read_parquet(trimmed_parquet)
-            num_samples = int(len(df))
-            if num_samples <= 0 or global_batch_size <= 0:
-                return -1
-            steps_per_epoch = num_samples // global_batch_size  # drop_last=True in trainer
-            return steps_per_epoch * total_epochs
-        except Exception:
-            return -1
-
-    # If we have trimmed data, we can decide whether training finished based on steps
-    if train_trimmed_parquet.exists():
-        latest_step = _latest_ckpt_step(checkpoints_dir)
-        expected_steps = _expected_total_steps(train_trimmed_parquet, global_batch_size=2, total_epochs=1)
-        state_info.update({
-            "latest_ckpt_step": latest_step,
-            "expected_total_steps": expected_steps,
-        })
-
-        # Consider training complete only if we've reached or exceeded expected steps
-        if expected_steps > 0 and latest_step >= expected_steps:
-            if not current_model:
-                current_model = find_latest_model_from_round(latest_round_dir)
-            return round_num, 'finish_round', current_model, state_info
-        elif train_parquet.exists():
-            # Rollout complete, need to do (or resume) SFT
-            return round_num, 'training', current_model, state_info
-
-    # Fallback decisions based on file presence
+    
     if has_checkpoints and has_sft_log:
+        # SFT is complete, finish the round
         if not current_model:
             current_model = find_latest_model_from_round(latest_round_dir)
         return round_num, 'finish_round', current_model, state_info
     elif train_parquet.exists() and train_trimmed_parquet.exists():
+        # Rollout complete, need to do SFT
         return round_num, 'training', current_model, state_info
     else:
+        # Rollout incomplete or not started
         return round_num, 'rollout', current_model, state_info
 
 
@@ -154,21 +112,11 @@ def find_latest_model_from_round(round_dir: Path) -> Optional[str]:
     if not checkpoints_dir.exists():
         return None
     
-    # Find the checkpoint with the largest global step (fallback to mtime)
+    # Find the latest checkpoint
     latest = None
-    latest_step = -1
     for p in checkpoints_dir.glob("global_step_*"):
         if p.is_dir():
-            try:
-                step = int(p.name.split("global_step_")[-1])
-            except Exception:
-                step = -1
-            if step > latest_step:
-                latest = p
-                latest_step = step
-            elif step == -1 and latest is None:
-                # fallback first time if parsing failed
-                latest = p
+            latest = p if (latest is None or p.stat().st_mtime > latest.stat().st_mtime) else latest
     
     if latest is None:
         return None
@@ -281,7 +229,7 @@ def resume_rollout_generation(round_dir: Path, target_sequences: int, current_mo
             pass
 
 
-def start_sglang_server(model_path: str, gpus: str = "0,1,2,3", tp: int = 4, mem_util: float = 0.6, port: int = 30001, enable_torch_compile: bool = True, log_level: str = "info") -> subprocess.Popen:
+def start_sglang_server(model_path: str, gpus: str = "0,1,2,3", tp: int = 4, mem_util: float = 0.6, port: int = 8000, enable_torch_compile: bool = True, log_level: str = "info") -> subprocess.Popen:
     # Auto-adjust TP size to match number of available GPUs
     num_gpus = len([g.strip() for g in gpus.split(",") if g.strip()])
     if tp > num_gpus:
@@ -293,6 +241,7 @@ def start_sglang_server(model_path: str, gpus: str = "0,1,2,3", tp: int = 4, mem
 
     print(f"[offline_grpo] Preparing to launch SGLang server: model_path={model_path}, gpus={gpus}, tp={tp}, mem_util={mem_util}, port={port}, torch_compile={enable_torch_compile}, log_level={log_level}", flush=True)
     
+    """
     # Kill any existing server on the port
     try:
         result = subprocess.run(["lsof", "-ti:" + str(port)], capture_output=True, text=True)
@@ -311,6 +260,7 @@ def start_sglang_server(model_path: str, gpus: str = "0,1,2,3", tp: int = 4, mem
             print(f"[offline_grpo] Port {port} appears free.", flush=True)
     except Exception:
         pass  # No process on port or lsof not available
+    """
     
     # Prefer test_venv python if available (same as used for generate_rollouts.py)
     test_py = "/home/nickatomlin/georgiazhou/self_play/test_venv/bin/python"
@@ -452,7 +402,7 @@ def main():
     ap.add_argument("--model-path", default="/home/nickatomlin/georgiazhou/self_play/checkpoints/sft_qwen3_8b/global_step_4800_merged")
     ap.add_argument("--save-root", default="")
     ap.add_argument("--gpus", default="0,1,2,3")
-    ap.add_argument("--server-port", type=int, default=30001)
+    ap.add_argument("--server-port", type=int, default=8000)
     ap.add_argument("--server-wait-seconds", type=int, default=900, help="Max seconds to wait for SGLang server readiness")
     ap.add_argument("--wandb-project", default="offline-grpo")
     ap.add_argument("--wandb-entity", default=None)
@@ -556,11 +506,6 @@ def main():
             if pct95 > 5000:
                 pct95 = 5000
             max_len_arg = str(pct95)
-            # Compute expected total training steps based on dataset size and global batch size (=2)
-            try:
-                expected_total_steps = int(len(df) // 2) * 1
-            except Exception:
-                expected_total_steps = -1
             
             # Setup SFT training
             if len(gpu_list) >= 2:
@@ -588,9 +533,6 @@ def main():
                 f"trainer.project_name={args.wandb_project}",
                 f"trainer.experiment_name={save_root.name}_round_{current_round}_resume",
             ]
-            if expected_total_steps and expected_total_steps > 0:
-                sft_cmd.append(f"trainer.total_training_steps={expected_total_steps}")
-                sft_cmd.append("trainer.resume_mode=auto")
             
             # Setup environment
             sft_env = os.environ.copy()
@@ -856,14 +798,6 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
             f"trainer.project_name={args.wandb_project}",
             f"trainer.experiment_name={save_root.name}_round_{r}_2gpu_hack",
         ]
-        # Ensure we will train exactly as many steps as the dataset suggests (len(parquet)//global_batch_size)
-        try:
-            expected_total_steps = int(len(kept) // 2) * 1
-        except Exception:
-            expected_total_steps = -1
-        if expected_total_steps and expected_total_steps > 0:
-            sft_cmd.append(f"trainer.total_training_steps={expected_total_steps}")
-            sft_cmd.append("trainer.resume_mode=auto")
         
         sft_env = os.environ.copy()
         test_bin = "/home/nickatomlin/georgiazhou/self_play/test_venv/bin"
