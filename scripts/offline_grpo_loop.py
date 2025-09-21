@@ -7,9 +7,281 @@ import argparse
 import subprocess
 from pathlib import Path
 import requests
+import pandas as pd
+import numpy as np
+from typing import Tuple, Optional, Dict, Any
 
 
-def start_sglang_server(model_path: str, gpus: str = "0,1,2,3", tp: int = 4, mem_util: float = 0.6, port: int = 8000, enable_torch_compile: bool = True, disable_cuda_graph: bool = False, log_level: str = "info") -> subprocess.Popen:
+def find_most_recent_run(base_logs_dir: str = "/home/nickatomlin/georgiazhou/self_play/logs/offline_grpo") -> Optional[Path]:
+    """Find the most recent run directory based on timestamp."""
+    base_path = Path(base_logs_dir)
+    if not base_path.exists():
+        return None
+    
+    # Find all timestamp directories
+    run_dirs = []
+    for item in base_path.iterdir():
+        if item.is_dir() and item.name.replace("_", "").isdigit():
+            run_dirs.append(item)
+    
+    if not run_dirs:
+        return None
+    
+    # Sort by modification time (most recent first)
+    run_dirs.sort(key=lambda x: x.stat().st_mtime, reverse=True)
+    return run_dirs[0]
+
+
+def find_run_by_name(run_name: str, base_logs_dir: str = "/home/nickatomlin/georgiazhou/self_play/logs/offline_grpo") -> Optional[Path]:
+    """Find a run directory by name or timestamp."""
+    base_path = Path(base_logs_dir)
+    if not base_path.exists():
+        return None
+    
+    # Try exact match first
+    run_path = base_path / run_name
+    if run_path.exists() and run_path.is_dir():
+        return run_path
+    
+    # Try partial match for timestamp
+    for item in base_path.iterdir():
+        if item.is_dir() and run_name in item.name:
+            return item
+    
+    return None
+
+
+def analyze_run_state(save_root: Path) -> Tuple[int, str, Optional[str], Dict[str, Any]]:
+    """
+    Analyze the state of an existing run to determine where to resume.
+    
+    Returns:
+        - current_round: The round to resume from
+        - phase: 'rollout', 'training', 'finish_round'
+        - current_model: Path to the current model to use
+        - state_info: Additional state information
+    """
+    if not save_root.exists():
+        return 0, 'rollout', None, {}
+    
+    # Find all round directories
+    round_dirs = sorted([d for d in save_root.iterdir() if d.is_dir() and d.name.startswith("round_")])
+    
+    if not round_dirs:
+        return 0, 'rollout', None, {}
+    
+    # Check the latest round directory
+    latest_round_dir = round_dirs[-1]
+    round_num = int(latest_round_dir.name.split("_")[1])
+    
+    state_info = {"round_dir": latest_round_dir}
+    
+    # Determine current model from previous rounds
+    current_model = None
+    if round_num > 0:
+        prev_round_dir = save_root / f"round_{round_num-1:03d}"
+        if prev_round_dir.exists():
+            current_model = find_latest_model_from_round(prev_round_dir)
+    
+    # Check actual files to determine state (robust approach)
+    train_parquet = latest_round_dir / "train.parquet"
+    train_trimmed_parquet = latest_round_dir / "train_trimmed.parquet"
+    checkpoints_dir = latest_round_dir / "checkpoints"
+    sft_log = latest_round_dir / "sft_train.log"
+    
+    # Check if SFT training has completed by comparing expected steps vs last checkpoint step
+    has_checkpoints = checkpoints_dir.exists() and any(checkpoints_dir.glob("global_step_*"))
+    has_sft_log = sft_log.exists() and sft_log.stat().st_size > 0
+
+    def _latest_ckpt_step(path: Path) -> int:
+        latest = -1
+        if not path.exists():
+            return latest
+        for p in path.glob("global_step_*"):
+            try:
+                step = int(p.name.split("global_step_")[-1])
+                if step > latest:
+                    latest = step
+            except Exception:
+                continue
+        return latest
+
+    def _expected_total_steps(trimmed_parquet: Path, global_batch_size: int = 2, total_epochs: int = 1) -> int:
+        try:
+            if not trimmed_parquet.exists():
+                return -1
+            df = pd.read_parquet(trimmed_parquet)
+            num_samples = int(len(df))
+            if num_samples <= 0 or global_batch_size <= 0:
+                return -1
+            steps_per_epoch = num_samples // global_batch_size  # drop_last=True in trainer
+            return steps_per_epoch * total_epochs
+        except Exception:
+            return -1
+
+    # If we have trimmed data, we can decide whether training finished based on steps
+    if train_trimmed_parquet.exists():
+        latest_step = _latest_ckpt_step(checkpoints_dir)
+        expected_steps = _expected_total_steps(train_trimmed_parquet, global_batch_size=2, total_epochs=1)
+        state_info.update({
+            "latest_ckpt_step": latest_step,
+            "expected_total_steps": expected_steps,
+        })
+
+        # Consider training complete only if we've reached or exceeded expected steps
+        if expected_steps > 0 and latest_step >= expected_steps:
+            if not current_model:
+                current_model = find_latest_model_from_round(latest_round_dir)
+            return round_num, 'finish_round', current_model, state_info
+        elif train_parquet.exists():
+            # Rollout complete, need to do (or resume) SFT
+            return round_num, 'training', current_model, state_info
+
+    # Fallback decisions based on file presence
+    if has_checkpoints and has_sft_log:
+        if not current_model:
+            current_model = find_latest_model_from_round(latest_round_dir)
+        return round_num, 'finish_round', current_model, state_info
+    elif train_parquet.exists() and train_trimmed_parquet.exists():
+        return round_num, 'training', current_model, state_info
+    else:
+        return round_num, 'rollout', current_model, state_info
+
+
+def find_latest_model_from_round(round_dir: Path) -> Optional[str]:
+    """Find the latest model from a completed round."""
+    checkpoints_dir = round_dir / "checkpoints"
+    if not checkpoints_dir.exists():
+        return None
+    
+    # Find the checkpoint with the largest global step (fallback to mtime)
+    latest = None
+    latest_step = -1
+    for p in checkpoints_dir.glob("global_step_*"):
+        if p.is_dir():
+            try:
+                step = int(p.name.split("global_step_")[-1])
+            except Exception:
+                step = -1
+            if step > latest_step:
+                latest = p
+                latest_step = step
+            elif step == -1 and latest is None:
+                # fallback first time if parsing failed
+                latest = p
+    
+    if latest is None:
+        return None
+    
+    # Prefer HuggingFace subdirectory
+    hf_dir = latest / "huggingface"
+    if hf_dir.is_dir():
+        return str(hf_dir)
+    else:
+        return str(latest)
+
+
+def resume_rollout_generation(round_dir: Path, target_sequences: int, current_model: str, args) -> bool:
+    """
+    Resume rollout generation if needed.
+    
+    Returns True if rollouts were generated/completed, False if nothing was done.
+    """
+    train_parquet = round_dir / "train.parquet"
+    train_trimmed_parquet = round_dir / "train_trimmed.parquet"
+    
+    # Check if we already have enough data
+    existing_sequences = 0
+    if train_trimmed_parquet.exists():
+        try:
+            df = pd.read_parquet(train_trimmed_parquet)
+            existing_sequences = len(df)
+            print(f"Found {existing_sequences} existing sequences in trimmed data")
+        except Exception as e:
+            print(f"Error reading existing trimmed data: {e}")
+            existing_sequences = 0
+    elif train_parquet.exists():
+        try:
+            df = pd.read_parquet(train_parquet)
+            existing_sequences = len(df)
+            print(f"Found {existing_sequences} existing sequences in raw data")
+        except Exception as e:
+            print(f"Error reading existing raw data: {e}")
+            existing_sequences = 0
+    
+    needed_sequences = target_sequences - existing_sequences
+    if needed_sequences <= 0:
+        print(f"Already have {existing_sequences} sequences (target: {target_sequences}), skipping rollout generation")
+        return True
+    
+    print(f"Need {needed_sequences} additional sequences (have: {existing_sequences}, target: {target_sequences})")
+    
+    # Generate additional rollouts
+    additional_parquet = round_dir / "train_additional.parquet"
+    needed_games = max(1, needed_sequences // 2)  # two sequences per game
+    
+    # Start server and generate
+    gpu_string = args.gpus
+    gpu_list = [g for g in gpu_string.split(",") if g]
+    tp = len(gpu_list)
+    
+    server_proc = start_sglang_server(
+        model_path=current_model, gpus=gpu_string, tp=tp, 
+        mem_util=args.server_mem_fraction, port=args.server_port,
+        enable_torch_compile=args.server_enable_torch_compile, 
+        log_level=args.server_log_level
+    )
+    
+    server_url = f"http://127.0.0.1:{args.server_port}"
+    try:
+        wait_for_sglang(server_url, server_proc, timeout_sec=args.server_wait_seconds, interval_sec=5)
+        
+        # Generate additional rollouts
+        test_py = "/home/nickatomlin/georgiazhou/self_play/test_venv/bin/python"
+        python_bin = test_py if os.path.exists(test_py) else sys.executable
+        gen_cmd = [
+            python_bin,
+            "scripts/generate_rollouts.py",
+            "--server-url", server_url,
+            "--model-id", current_model,
+            "--out", str(additional_parquet),
+            "--num-games", str(needed_games),
+            "--max-new-tokens", "8192",
+            "--group-size", "8",
+            "--temperature", "0.7",
+            "--top-p", "0.9",
+            "--max-model-len", "32768",
+        ]
+        
+        run(gen_cmd)
+        
+        # Combine with existing data
+        dfs_to_combine = []
+        if train_parquet.exists():
+            dfs_to_combine.append(pd.read_parquet(train_parquet))
+        if additional_parquet.exists():
+            dfs_to_combine.append(pd.read_parquet(additional_parquet))
+        
+        if dfs_to_combine:
+            combined_df = pd.concat(dfs_to_combine, ignore_index=True)
+            combined_df.to_parquet(train_parquet)
+            print(f"Combined data: {len(combined_df)} total sequences")
+            
+            # Clean up additional file
+            if additional_parquet.exists():
+                additional_parquet.unlink()
+        
+        return True
+        
+    finally:
+        kill_process_tree(server_proc)
+        try:
+            subprocess.run(["pkill", "-f", "sglang"], check=False)
+        except Exception:
+            pass
+
+
+def start_sglang_server(model_path: str, gpus: str = "0,1,2,3", tp: int = 4, mem_util: float = 0.6, port: int = 30001, enable_torch_compile: bool = True, log_level: str = "info") -> subprocess.Popen:
     # Auto-adjust TP size to match number of available GPUs
     num_gpus = len([g.strip() for g in gpus.split(",") if g.strip()])
     if tp > num_gpus:
@@ -19,7 +291,7 @@ def start_sglang_server(model_path: str, gpus: str = "0,1,2,3", tp: int = 4, mem
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = gpus
 
-    print(f"[offline_grpo] Preparing to launch SGLang server: model_path={model_path}, gpus={gpus}, tp={tp}, mem_util={mem_util}, port={port}, torch_compile={enable_torch_compile}, disable_cuda_graph={disable_cuda_graph}, log_level={log_level}", flush=True)
+    print(f"[offline_grpo] Preparing to launch SGLang server: model_path={model_path}, gpus={gpus}, tp={tp}, mem_util={mem_util}, port={port}, torch_compile={enable_torch_compile}, log_level={log_level}", flush=True)
     
     # Kill any existing server on the port
     try:
@@ -55,11 +327,10 @@ def start_sglang_server(model_path: str, gpus: str = "0,1,2,3", tp: int = 4, mem
         "--mem-fraction-static", str(mem_util),
         "--dtype", "bfloat16",
         "--log-level", str(log_level),
+        "--disable-cuda-graph",
     ]
     if enable_torch_compile:
         cmd.append("--enable-torch-compile")
-    if disable_cuda_graph:
-        cmd.append("--disable-cuda-graph")
     print("[offline_grpo] Launch command:", " ".join(cmd), flush=True)
     print(f"[offline_grpo] CUDA_VISIBLE_DEVICES={env.get('CUDA_VISIBLE_DEVICES','')}", flush=True)
     
@@ -181,7 +452,7 @@ def main():
     ap.add_argument("--model-path", default="/home/nickatomlin/georgiazhou/self_play/checkpoints/sft_qwen3_8b/global_step_4800_merged")
     ap.add_argument("--save-root", default="")
     ap.add_argument("--gpus", default="0,1,2,3")
-    ap.add_argument("--server-port", type=int, default=8000)
+    ap.add_argument("--server-port", type=int, default=30001)
     ap.add_argument("--server-wait-seconds", type=int, default=900, help="Max seconds to wait for SGLang server readiness")
     ap.add_argument("--wandb-project", default="offline-grpo")
     ap.add_argument("--wandb-entity", default=None)
@@ -189,30 +460,219 @@ def main():
     # New server control flags
     ap.add_argument("--server-mem-fraction", type=float, default=0.85, help="Static GPU memory fraction reserved by server (mem_fraction_static)")
     ap.add_argument("--server-log-level", type=str, default="debug", help="SGLang server log level: debug|info|warning|error")
-    ap.add_argument("--no-torch-compile", action="store_true", help="Disable torch.compile in SGLang server (enabled by default)")
-    ap.add_argument("--disable-cuda-graph", action="store_true", help="Disable CUDA graphs in SGLang server (enabled by default)")
+    ap.add_argument("--server-enable-torch-compile", action="store_true", help="Enable torch.compile in SGLang server (may slow startup)")
+    
+    # Resume functionality arguments
+    ap.add_argument("--resume", default="", help="Resume from specific run (timestamp/directory name). If empty, resumes from most recent run.")
+    ap.add_argument("--no-resume", action="store_true", help="Force start a new run, disable auto-resume")
+    
     args = ap.parse_args()
     gpu_string = args.gpus
     gpu_list = [g for g in gpu_string.split(",") if g]
     tp = len(gpu_list)
 
-    # Default save_root: logs/offline_grpo/YYYYmmdd_HHMMSS
-    if args.save_root:
-        save_root = Path(args.save_root)
-    else:
-        ts = time.strftime("%Y%m%d_%H%M%S")
-        save_root = Path(f"/home/nickatomlin/georgiazhou/self_play/logs/offline_grpo/{ts}")
-    save_root.mkdir(parents=True, exist_ok=True)
-
+    # Handle resume logic
+    save_root = None
     current_model = args.model_path
+    start_round = 0
+    
+    if not args.no_resume:
+        # Try to find existing run to resume
+        if args.resume:
+            # Resume from specific run
+            save_root = find_run_by_name(args.resume)
+            if save_root is None:
+                print(f"Warning: Could not find run '{args.resume}', starting new run")
+            else:
+                print(f"Resuming from specified run: {save_root}")
+        else:
+            # Resume from most recent run
+            save_root = find_most_recent_run()
+            if save_root is not None:
+                print(f"Auto-resuming from most recent run: {save_root}")
+    
+    # Analyze existing run state if resuming
+    if save_root is not None:
+        current_round, phase, resume_model, state_info = analyze_run_state(save_root)
+        if resume_model:
+            current_model = resume_model
+        start_round = current_round
+        
+        print(f"Resume analysis: round={current_round}, phase={phase}, model={current_model}")
+        
+        # Handle special resume phases
+        if phase == 'rollout':
+            round_dir = save_root / f"round_{current_round:03d}"
+            round_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Try to resume rollout generation
+            success = resume_rollout_generation(round_dir, args.games_per_round, current_model, args)
+            if success:
+                # Process the data (trim, etc.)
+                train_parquet = round_dir / "train.parquet"
+                if train_parquet.exists():
+                    df = pd.read_parquet(str(train_parquet))
+                    if "sample_weight" in df.columns and len(df) > 0 and not (df["sample_weight"] > 0).any():
+                        raise RuntimeError("All rollout sample weights are zero. This likely indicates inference failures or server issues.")
+                    
+                    lengths = df["input_ids"].apply(lambda x: len(x))
+                    pct95 = int(np.percentile(lengths, 95))
+                    if pct95 > 5000:
+                        pct95 = 5000
+                    
+                    kept = df[lengths <= pct95]
+                    trimmed_path = round_dir / "train_trimmed.parquet"
+                    kept.to_parquet(str(trimmed_path))
+                    print(f"Trimmed to 95th percentile length={pct95}, kept {len(kept)}/{len(df)} samples -> {trimmed_path}")
+                    
+                    # Log trim completion
+                    log_file = round_dir / "progress.log"
+                    with open(log_file, "a") as lf:
+                        lf.write(json.dumps({
+                            "event": "trim_done",
+                            "timestamp": time.time(),
+                            "pct95": pct95,
+                            "kept": int(len(kept)),
+                            "total": int(len(df))
+                        }) + "\n")
+                    
+                    # Update phase to training
+                    phase = 'training'
+        
+        if phase == 'training':
+            round_dir = save_root / f"round_{current_round:03d}"
+            
+            # Run SFT training
+            print("Resuming SFT training...")
+            train_trimmed_parquet = round_dir / "train_trimmed.parquet"
+            
+            if not train_trimmed_parquet.exists():
+                raise RuntimeError(f"Training data not found: {train_trimmed_parquet}")
+            
+            # Read training data to get max length
+            df = pd.read_parquet(train_trimmed_parquet)
+            lengths = df["input_ids"].apply(lambda x: len(x))
+            pct95 = int(np.percentile(lengths, 95))
+            if pct95 > 5000:
+                pct95 = 5000
+            max_len_arg = str(pct95)
+            # Compute expected total training steps based on dataset size and global batch size (=2)
+            try:
+                expected_total_steps = int(len(df) // 2) * 1
+            except Exception:
+                expected_total_steps = -1
+            
+            # Setup SFT training
+            if len(gpu_list) >= 2:
+                sft_visible = ",".join(gpu_list[:2])
+                nproc = 2
+            else:
+                sft_visible = str(gpu_list[0])
+                nproc = 1
+            
+            print(f"Running SFT training with {nproc} GPU(s): CUDA_VISIBLE_DEVICES={sft_visible}")
+            
+            save_path = str(round_dir / "checkpoints")
+            sft_cmd = [
+                "bash", "scripts/sft_qwen/sft_qwen3.sh",
+                str(nproc), save_path,
+                f"data.train_files={str(train_trimmed_parquet)}",
+                f"data.val_files={str(train_trimmed_parquet)}",
+                f"model.partial_pretrain={current_model}",
+                "trainer.total_epochs=1",
+                "trainer.save_freq=500",
+                "trainer.test_freq=100",
+                f"data.max_length={max_len_arg}",
+                "data.custom_cls.path=verl/verl/utils/dataset/pretokenized_sft_dataset.py",
+                "data.custom_cls.name=PreTokenizedSFTDataset",
+                f"trainer.project_name={args.wandb_project}",
+                f"trainer.experiment_name={save_root.name}_round_{current_round}_resume",
+            ]
+            if expected_total_steps and expected_total_steps > 0:
+                sft_cmd.append(f"trainer.total_training_steps={expected_total_steps}")
+                sft_cmd.append("trainer.resume_mode=auto")
+            
+            # Setup environment
+            sft_env = os.environ.copy()
+            test_bin = "/home/nickatomlin/georgiazhou/self_play/test_venv/bin"
+            if os.path.isdir(test_bin):
+                sft_env["PATH"] = f"{test_bin}:{sft_env.get('PATH','')}"
+            if sft_visible:
+                sft_env["CUDA_VISIBLE_DEVICES"] = sft_visible
+            
+            # Run SFT training
+            sft_log = round_dir / "sft_train.log"
+            run_tee(sft_cmd, logfile=sft_log, env=sft_env)
+            
+            # Log completion and update model
+            log_file = round_dir / "progress.log"
+            with open(log_file, "a") as lf:
+                lf.write(json.dumps({
+                    "event": "sft_done",
+                    "timestamp": time.time(),
+                    "save_path": save_path
+                }) + "\n")
+            
+            # Update current model
+            latest_model = find_latest_model_from_round(round_dir)
+            if latest_model:
+                current_model = latest_model
+            
+            # Mark round complete
+            with open(log_file, "a") as lf:
+                lf.write(json.dumps({
+                    "event": "round_complete",
+                    "timestamp": time.time(),
+                    "next_model": current_model
+                }) + "\n")
+            
+            # Move to next round
+            start_round = current_round + 1
+        
+        elif phase == 'finish_round':
+            round_dir = save_root / f"round_{current_round:03d}"
+            
+            # Just update the model and mark round complete
+            latest_model = find_latest_model_from_round(round_dir)
+            if latest_model:
+                current_model = latest_model
+            
+            log_file = round_dir / "progress.log"
+            with open(log_file, "a") as lf:
+                lf.write(json.dumps({
+                    "event": "round_complete",
+                    "timestamp": time.time(),
+                    "next_model": current_model
+                }) + "\n")
+            
+            start_round = current_round + 1
+    
+    # If no existing run or starting fresh
+    if save_root is None:
+        if args.save_root:
+            save_root = Path(args.save_root)
+        else:
+            ts = time.strftime("%Y%m%d_%H%M%S")
+            save_root = Path(f"/home/nickatomlin/georgiazhou/self_play/logs/offline_grpo/{ts}")
+        save_root.mkdir(parents=True, exist_ok=True)
+        print(f"Starting new run: {save_root}")
 
-    # Initialize outer-loop wandb run (best-effort)
+    # Run the main loop
+    run_offline_grpo_loop(args, save_root, current_model, start_round)
+
+
+def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round: int = 0):
+    """Main loop for offline GRPO training."""
+    gpu_string = args.gpus
+    gpu_list = [g for g in gpu_string.split(",") if g]
+    tp = len(gpu_list)
+
+    # Initialize wandb run
     wb = None
     try:
         import wandb as _wandb
         run_name = args.wandb_run_name or save_root.name
         wb = _wandb.init(project=args.wandb_project, entity=args.wandb_entity, name=run_name, reinit=False)
-        # Log initial config snapshot
         if wb is not None:
             wb.config.update({
                 "rounds": args.rounds,
@@ -222,13 +682,13 @@ def main():
                 "model_start": current_model,
                 "server_mem_fraction": args.server_mem_fraction,
                 "server_log_level": args.server_log_level,
-                "server_enable_torch_compile": not args.no_torch_compile,
-                "server_disable_cuda_graph": args.disable_cuda_graph,
+                "server_enable_torch_compile": args.server_enable_torch_compile,
+                "resumed_from_round": start_round,
             }, allow_val_change=True)
     except Exception:
         wb = None
 
-    for r in range(args.rounds):
+    for r in range(start_round, args.rounds):
         print(f"=== Round {r} ===")
         round_dir = save_root / f"round_{r:03d}"
         round_dir.mkdir(parents=True, exist_ok=True)
@@ -237,16 +697,15 @@ def main():
         print("Starting SGLang server...")
         server_proc = start_sglang_server(
             model_path=current_model, gpus=gpu_string, tp=tp, mem_util=args.server_mem_fraction, port=args.server_port,
-            enable_torch_compile=not args.no_torch_compile, disable_cuda_graph=args.disable_cuda_graph, log_level=args.server_log_level
+            enable_torch_compile=args.server_enable_torch_compile, log_level=args.server_log_level
         )
-        # Wait for server to come up by polling /v1/models
+        
         server_url = f"http://127.0.0.1:{args.server_port}"
         try:
             wait_for_sglang(server_url, server_proc, timeout_sec=args.server_wait_seconds, interval_sec=5)
         except Exception as e:
             print(f"Error waiting for SGLang server: {e}")
             kill_process_tree(server_proc)
-            # Best effort: kill any lingering server processes
             try:
                 subprocess.run(["pkill", "-f", "sglang.launch_server"], check=False)
             except Exception:
@@ -255,34 +714,22 @@ def main():
 
         # 2) Generate rollouts
         print("Generating rollouts...")
-        # crude dynamic length: let generator cap to large max_model_len; after writing Parquet, compute 95th pct length
         out_parquet = round_dir / "train.parquet"
-        # Prefer test_venv's python to ensure proper deps
         test_py = "/home/nickatomlin/georgiazhou/self_play/test_venv/bin/python"
         python_bin = test_py if os.path.exists(test_py) else sys.executable
         gen_cmd = [
-            python_bin,
-            "scripts/generate_rollouts.py",
-            "--server-url",
-            server_url,
-            "--model-id",
-            current_model,
-            "--out",
-            str(out_parquet),
-            "--num-games",
-            str(args.games_per_round // 2),  # two sequences per game
-            "--max-new-tokens",
-            "8192",
-            "--group-size",
-            "8",
-            "--temperature",
-            "0.7",
-            "--top-p",
-            "0.9",
-            "--max-model-len",
-            "32768",
+            python_bin, "scripts/generate_rollouts.py",
+            "--server-url", server_url,
+            "--model-id", current_model,
+            "--out", str(out_parquet),
+            "--num-games", str(args.games_per_round // 2),
+            "--max-new-tokens", "8192",
+            "--group-size", "8",
+            "--temperature", "0.7",
+            "--top-p", "0.9",
+            "--max-model-len", "32768",
         ]
-        # Log round progress to file
+        
         log_file = round_dir / "progress.log"
         with open(log_file, "a") as lf:
             lf.write(json.dumps({
@@ -292,6 +739,7 @@ def main():
                 "gpus": gpu_string,
                 "tp": tp,
             }) + "\n")
+        
         try:
             run(gen_cmd)
             with open(log_file, "a") as lf:
@@ -303,30 +751,29 @@ def main():
         finally:
             print("Stopping SGLang server...")
             kill_process_tree(server_proc)
-            # Ensure complete teardown of any stray servers to avoid stale state
             try:
                 subprocess.run(["pkill", "-f", "sglang"], check=False)
             except Exception:
                 pass
 
-        # this is not optional-- if you set max_model_len to a high number to capture all sequences, you will OOM when training
-        import pandas as pd
-        import numpy as np
+        # Process and trim data
         df = pd.read_parquet(str(out_parquet))
-        # Loud failure if all weights are zero (silent inference failure)
         if "sample_weight" in df.columns and len(df) > 0 and not (df["sample_weight"] > 0).any():
             raise RuntimeError("All rollout sample weights are zero. This likely indicates inference failures or server issues.")
+        
         lengths = df["input_ids"].apply(lambda x: len(x))
         pct95 = int(np.percentile(lengths, 95))
         if pct95 > 5000:
             pct95 = 5000
-        # Filter rows longer than pct95
+        
         kept = df[lengths <= pct95]
         trimmed_path = round_dir / "train_trimmed.parquet"
         kept.to_parquet(str(trimmed_path))
         print(f"Trimmed to 95th percentile length={pct95}, kept {len(kept)}/{len(df)} samples -> {trimmed_path}")
+        
         train_parquet_for_sft = trimmed_path
         max_len_arg = str(pct95)
+        
         with open(log_file, "a") as lf:
             lf.write(json.dumps({
                 "event": "trim_done",
@@ -335,21 +782,23 @@ def main():
                 "kept": int(len(kept)),
                 "total": int(len(df))
             }) + "\n")
-        # Compute rollout performance metrics and log
+
+        # Compute and log metrics
         try:
             mean_norm_reward = float(kept["sample_weight"].astype(float).mean()) if "sample_weight" in kept.columns else None
             pos_ratio = float((kept["sample_weight"] > 0).mean()) if "sample_weight" in kept.columns else None
             zero_ratio = float((kept["sample_weight"] == 0).mean()) if "sample_weight" in kept.columns else None
             neg_ratio = float((kept["sample_weight"] < 0).mean()) if "sample_weight" in kept.columns else None
+            
             def _get_abs_reward(x):
                 try:
                     gi = json.loads(x)
-                    # prefer normalized if present
                     if isinstance(gi, dict):
                         return gi.get("reward", gi.get("normalized_reward", None))
                     return None
                 except Exception:
                     return None
+            
             abs_vals = kept["game_info"].apply(_get_abs_reward) if "game_info" in kept.columns else []
             abs_vals = [v for v in abs_vals if isinstance(v, (int, float))]
             mean_abs_reward = float(np.mean(abs_vals)) if len(abs_vals) > 0 else None
@@ -359,6 +808,7 @@ def main():
             pos_ratio = None
             zero_ratio = None
             neg_ratio = None
+        
         with open(log_file, "a") as lf:
             lf.write(json.dumps({
                 "event": "rollout_metrics",
@@ -369,6 +819,7 @@ def main():
                 "weight_zero_ratio": zero_ratio,
                 "weight_neg_ratio": neg_ratio,
             }) + "\n")
+        
         if wb is not None:
             wb.log({
                 "round": r,
@@ -379,51 +830,48 @@ def main():
                 "rollout/mean_abs_reward": mean_abs_reward,
             })
 
-        # 3) Run SFT with weights-aware dataset (pretokenized path expects weights)
-        # TODO: one problem with this is that the optimizer state is reset at every SFT.
-        # hopefully this is not too much a problem.
+        # 3) Run SFT training
         print("Running SFT training...")
-        # Use existing SFT launcher, overriding train/val files to our parquet
-        # HACK: Force SFT to run on 2 GPUs due to observed 4-GPU NCCL hang.
-        # If fewer than 2 GPUs were provided, fall back to available count.
         if len(gpu_list) >= 2:
-            # Use logical GPU indices (0,1) since CUDA_VISIBLE_DEVICES was already set for SGLang
             sft_visible = ",".join(gpu_list[:2])
             nproc = 2
         else:
-            # For single GPU, use logical index 0
             sft_visible = str(gpu_list[0])
             nproc = 1
+        
         print(f"[HACK] Forcing SFT to use {nproc} GPU(s): CUDA_VISIBLE_DEVICES={sft_visible}")
         save_path = str(round_dir / "checkpoints")
         sft_cmd = [
-            "bash",
-            "scripts/sft_qwen/sft_qwen3.sh",
-            str(nproc),
-            save_path,
+            "bash", "scripts/sft_qwen/sft_qwen3.sh",
+            str(nproc), save_path,
             f"data.train_files={str(train_parquet_for_sft)}",
             f"data.val_files={str(train_parquet_for_sft)}",
             f"model.partial_pretrain={current_model}",
             "trainer.total_epochs=1",
-            # Save only at the end: rely on default end-of-training save; no mid-training save
             "trainer.save_freq=500",
-            "trainer.test_freq=100000", # validation calculation seems to take forever
+            "trainer.test_freq=100",
             f"data.max_length={max_len_arg}",
-            # Switch dataset class to pretokenized
             "data.custom_cls.path=verl/verl/utils/dataset/pretokenized_sft_dataset.py",
             "data.custom_cls.name=PreTokenizedSFTDataset",
-            # Make each SFT a distinct run in wandb, but within the same project
             f"trainer.project_name={args.wandb_project}",
             f"trainer.experiment_name={save_root.name}_round_{r}_2gpu_hack",
         ]
-        # Ensure torchrun/python from test_venv are available
+        # Ensure we will train exactly as many steps as the dataset suggests (len(parquet)//global_batch_size)
+        try:
+            expected_total_steps = int(len(kept) // 2) * 1
+        except Exception:
+            expected_total_steps = -1
+        if expected_total_steps and expected_total_steps > 0:
+            sft_cmd.append(f"trainer.total_training_steps={expected_total_steps}")
+            sft_cmd.append("trainer.resume_mode=auto")
+        
         sft_env = os.environ.copy()
         test_bin = "/home/nickatomlin/georgiazhou/self_play/test_venv/bin"
         if os.path.isdir(test_bin):
             sft_env["PATH"] = f"{test_bin}:{sft_env.get('PATH','')}"
-        # HACK: Restrict SFT to 2 GPUs to avoid NCCL hang
         if sft_visible:
             sft_env["CUDA_VISIBLE_DEVICES"] = sft_visible
+        
         with open(log_file, "a") as lf:
             lf.write(json.dumps({
                 "event": "sft_hack_2gpus",
@@ -431,9 +879,10 @@ def main():
                 "visible_gpus": sft_visible,
                 "nproc": nproc,
             }) + "\n")
-        # Tee SFT stdout/err to per-round log file
+        
         sft_log = round_dir / "sft_train.log"
         run_tee(sft_cmd, logfile=sft_log, env=sft_env)
+        
         with open(log_file, "a") as lf:
             lf.write(json.dumps({
                 "event": "sft_done",
@@ -441,11 +890,11 @@ def main():
                 "save_path": save_path
             }) + "\n")
 
-        # 4) Update model path to the latest SFT checkpoint for next round
-        # Prefer the Hugging Face subdirectory if present for robust loading (config/tokenizer present)
+        # 4) Update model path for next round
         latest = None
         for p in Path(save_path).glob("global_step_*"):
             latest = p if (latest is None or p.stat().st_mtime > latest.stat().st_mtime) else latest
+        
         if latest is None:
             print("Warning: no SFT checkpoint found; keeping current model for next round.")
         else:
@@ -455,6 +904,7 @@ def main():
             else:
                 print(f"Warning: HF directory not found under {latest}, falling back to checkpoint root")
                 current_model = str(latest)
+        
         with open(log_file, "a") as lf:
             lf.write(json.dumps({
                 "event": "round_complete",
@@ -467,5 +917,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
