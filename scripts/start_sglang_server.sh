@@ -12,9 +12,13 @@ fi
 
 MODEL_PATH=${MODEL_PATH:-"/home/nickatomlin/georgiazhou/self_play/checkpoints/sft_qwen3_8b/global_step_4800_merged/"}
 PORT=${PORT:-8000}
-TP_SIZE=${TP_SIZE:-2}  # Tensor parallel size
+TP_SIZE=${TP_SIZE:-4}  # Tensor parallel size
 GPU_MEMORY_UTILIZATION=${GPU_MEMORY_UTILIZATION:-0.9}
 export CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-"0,1,2,3"}
+# Restrict NCCL P2P to NVLink pairs to avoid cross-bridge P2P stalls on GPUs 4-7
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+
+export NCCL_P2P_LEVEL=NVL
 
 echo "Starting SGLang server..."
 echo "Model: $MODEL_PATH"
@@ -33,7 +37,7 @@ python -m sglang.launch_server \
     --trust-remote-code \
     --mem-fraction-static $GPU_MEMORY_UTILIZATION \
     --dtype bfloat16 \
-    --enable-torch-compile \
+#     --enable-torch-compile \
 
 # Store the PID
 SERVER_PID=$!

@@ -27,8 +27,8 @@ torchrun --nnodes=1 --nproc_per_node=$nproc_per_node --rdzv_endpoint=localhost:2
     data.multiturn.messages_key=messages \
     data.max_length=5000 \
     data.truncation=error \
-    data.micro_batch_size_per_gpu=2 \
-    data.train_batch_size=16 \
+    data.micro_batch_size_per_gpu=3 \
+    data.train_batch_size=12 \
     model.partial_pretrain=Qwen/Qwen3-8B \
     model.trust_remote_code=true \
     model.fsdp_config.model_dtype=bf16 \

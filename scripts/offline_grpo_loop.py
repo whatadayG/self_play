@@ -402,6 +402,8 @@ def start_sglang_server(
 
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = gpus
+    # Ensure NCCL avoids cross-bridge P2P; constrain to NVLink pairs
+    env.setdefault("NCCL_P2P_LEVEL", "NVL")
 
     print(
         f"[offline_grpo] Preparing to launch SGLang server: model_path={model_path}, gpus={gpus}, tp={tp}, mem_util={mem_util}, port={port}, torch_compile={enable_torch_compile}, cuda_graph={'disabled' if disable_cuda_graph else 'enabled'}, log_level={log_level}",
@@ -443,7 +445,8 @@ def start_sglang_server(
         "--trust-remote-code",
         "--mem-fraction-static", str(mem_util),
         "--dtype", "bfloat16",
-        "--log-level", str(log_level),
+        "--log-level", str(log_level)
+        
     ]
     if enable_torch_compile:
         cmd.append("--enable-torch-compile")
@@ -451,6 +454,7 @@ def start_sglang_server(
         cmd.append("--disable-cuda-graph")
     print("[offline_grpo] Launch command:", " ".join(cmd), flush=True)
     print(f"[offline_grpo] CUDA_VISIBLE_DEVICES={env.get('CUDA_VISIBLE_DEVICES','')}", flush=True)
+    print(f"[offline_grpo] NCCL_P2P_LEVEL={env.get('NCCL_P2P_LEVEL','')}", flush=True)
     
     # Pipe server output directly to our stdout - much simpler!
     proc = subprocess.Popen(cmd, env=env, stdout=sys.stdout, stderr=sys.stderr, text=True)
