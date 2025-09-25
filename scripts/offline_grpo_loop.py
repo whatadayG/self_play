@@ -325,10 +325,14 @@ def resume_rollout_generation(round_dir: Path, target_sequences: int, current_mo
     tp = len(gpu_list)
     
     server_proc = start_sglang_server(
-        model_path=current_model, gpus=gpu_string, tp=tp, 
-        mem_util=args.server_mem_fraction, port=args.server_port,
-        enable_torch_compile=args.server_enable_torch_compile, 
-        log_level=args.server_log_level
+        model_path=current_model,
+        gpus=gpu_string,
+        tp=tp,
+        mem_util=args.server_mem_fraction,
+        port=args.server_port,
+        enable_torch_compile=args.server_enable_torch_compile,
+        disable_cuda_graph=args.server_disable_cuda_graph,
+        log_level=args.server_log_level,
     )
     
     server_url = f"http://127.0.0.1:{args.server_port}"
@@ -380,7 +384,16 @@ def resume_rollout_generation(round_dir: Path, target_sequences: int, current_mo
             pass
 
 
-def start_sglang_server(model_path: str, gpus: str = "0,1,2,3", tp: int = 4, mem_util: float = 0.6, port: int = 8000, enable_torch_compile: bool = True, log_level: str = "info") -> subprocess.Popen:
+def start_sglang_server(
+    model_path: str,
+    gpus: str = "0,1,2,3",
+    tp: int = 4,
+    mem_util: float = 0.6,
+    port: int = 8000,
+    enable_torch_compile: bool = True,
+    disable_cuda_graph: bool = False,
+    log_level: str = "info",
+) -> subprocess.Popen:
     # Auto-adjust TP size to match number of available GPUs
     num_gpus = len([g.strip() for g in gpus.split(",") if g.strip()])
     if tp > num_gpus:
@@ -390,7 +403,10 @@ def start_sglang_server(model_path: str, gpus: str = "0,1,2,3", tp: int = 4, mem
     env = os.environ.copy()
     env["CUDA_VISIBLE_DEVICES"] = gpus
 
-    print(f"[offline_grpo] Preparing to launch SGLang server: model_path={model_path}, gpus={gpus}, tp={tp}, mem_util={mem_util}, port={port}, torch_compile={enable_torch_compile}, log_level={log_level}", flush=True)
+    print(
+        f"[offline_grpo] Preparing to launch SGLang server: model_path={model_path}, gpus={gpus}, tp={tp}, mem_util={mem_util}, port={port}, torch_compile={enable_torch_compile}, cuda_graph={'disabled' if disable_cuda_graph else 'enabled'}, log_level={log_level}",
+        flush=True,
+    )
     
     """
     # Kill any existing server on the port
@@ -428,10 +444,11 @@ def start_sglang_server(model_path: str, gpus: str = "0,1,2,3", tp: int = 4, mem
         "--mem-fraction-static", str(mem_util),
         "--dtype", "bfloat16",
         "--log-level", str(log_level),
-        "--disable-cuda-graph",
     ]
     if enable_torch_compile:
         cmd.append("--enable-torch-compile")
+    if disable_cuda_graph:
+        cmd.append("--disable-cuda-graph")
     print("[offline_grpo] Launch command:", " ".join(cmd), flush=True)
     print(f"[offline_grpo] CUDA_VISIBLE_DEVICES={env.get('CUDA_VISIBLE_DEVICES','')}", flush=True)
     
@@ -561,7 +578,10 @@ def main():
     # New server control flags
     ap.add_argument("--server-mem-fraction", type=float, default=0.85, help="Static GPU memory fraction reserved by server (mem_fraction_static)")
     ap.add_argument("--server-log-level", type=str, default="debug", help="SGLang server log level: debug|info|warning|error")
-    ap.add_argument("--server-enable-torch-compile", action="store_true", help="Enable torch.compile in SGLang server (may slow startup)")
+    # Default: torch.compile enabled; provide flags to disable
+    ap.add_argument("--server-disable-torch-compile", dest="server_enable_torch_compile", action="store_false", help="Disable torch.compile in SGLang server")
+    ap.add_argument("--server-disable-cuda-graph", dest="server_disable_cuda_graph", action="store_true", help="Disable CUDA graph in SGLang server")
+    ap.set_defaults(server_enable_torch_compile=True, server_disable_cuda_graph=False)
     
     # Resume functionality arguments
     ap.add_argument("--resume", default="", help="Resume from specific run (timestamp/directory name). If empty, resumes from most recent run.")
@@ -827,8 +847,14 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
         # 1) Start SGLang server
         print("Starting SGLang server...")
         server_proc = start_sglang_server(
-            model_path=current_model, gpus=gpu_string, tp=tp, mem_util=args.server_mem_fraction, port=args.server_port,
-            enable_torch_compile=args.server_enable_torch_compile, log_level=args.server_log_level
+            model_path=current_model,
+            gpus=gpu_string,
+            tp=tp,
+            mem_util=args.server_mem_fraction,
+            port=args.server_port,
+            enable_torch_compile=args.server_enable_torch_compile,
+            disable_cuda_graph=args.server_disable_cuda_graph,
+            log_level=args.server_log_level,
         )
         
         server_url = f"http://127.0.0.1:{args.server_port}"
