@@ -582,6 +582,10 @@ def main():
     gpu_list = [g for g in gpu_string.split(",") if g]
     tp = len(gpu_list)
 
+    # If branching is requested, force a new run (disable resume semantics)
+    if args.branch_from:
+        args.no_resume = True
+
     # Handle resume logic
     save_root = None
     current_model = args.model_path
@@ -776,6 +780,11 @@ def main():
                 branch_run(src_run=src, dst_run=save_root, rounds_to_link=args.branch_rounds_to_link)
                 # Set start_round to the next round after linked ones
                 start_round = max(start_round, args.branch_rounds_to_link)
+                # Prefer using the last linked round's model as starting model
+                if start_round > 0:
+                    prev_model = find_latest_model_from_round(save_root / f"round_{start_round-1:03d}")
+                    if prev_model:
+                        current_model = prev_model
             else:
                 print(f"Warning: --branch-from path not found: {src}")
 
