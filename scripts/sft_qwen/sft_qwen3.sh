@@ -12,6 +12,13 @@ save_path=$2
 # Shift the arguments so $@ refers to the rest
 shift 2
 
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
+export NCCL_DEBUG=INFO
+# Restrict NCCL P2P to NVLink pairs to avoid cross-bridge P2P stalls on GPUs 4-7
+export NCCL_P2P_LEVEL=NVL
+# Alternatively, to force socket/shm only, uncomment the next line:
+# export NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1
+
 torchrun --nnodes=1 --nproc_per_node=$nproc_per_node --rdzv_endpoint=localhost:29400 \
      -m verl.trainer.fsdp_sft_trainer \
     data.train_files=/home/nickatomlin/georgiazhou/self_play/scripts/sft_qwen/sft_qwen3_10k/sft_qwen3_10k_train.parquet \
@@ -20,8 +27,8 @@ torchrun --nnodes=1 --nproc_per_node=$nproc_per_node --rdzv_endpoint=localhost:2
     data.multiturn.messages_key=messages \
     data.max_length=5000 \
     data.truncation=error \
-    data.micro_batch_size_per_gpu=1 \
-    data.train_batch_size=2 \
+    data.micro_batch_size_per_gpu=2 \
+    data.train_batch_size=16 \
     model.partial_pretrain=Qwen/Qwen3-8B \
     model.trust_remote_code=true \
     model.fsdp_config.model_dtype=bf16 \
@@ -34,6 +41,7 @@ torchrun --nnodes=1 --nproc_per_node=$nproc_per_node --rdzv_endpoint=localhost:2
     trainer.total_epochs=10 $@ \
     trainer.save_freq=-1 \
     trainer.test_freq=10000 \
-    trainer.n_gpus_per_node=2 \
-
     use_remove_padding=true
+
+    # trainer.n_gpus_per_node=2 \
+
