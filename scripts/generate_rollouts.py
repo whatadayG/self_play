@@ -112,6 +112,7 @@ def run_one_game(player_cfg: dict, model_id: str, instructions: str, game_id: in
             "num_messages": obs.get("info", {}).get("num_msgs", turn),
             "completed": done,
             "turn_count": turn,
+            "game_normalized_reward": obs.get("info", {}).get("score_norm", 0.0) if done else 0.0,
         },
         "clean_conversation": clean_conversation,
         "full_conversation": full_conversation,
@@ -151,6 +152,10 @@ def process_game_result(result: Dict[str, Any], max_model_len: int) -> List[Dict
                 "position_ids": np.array(position_ids, dtype=np.int64),
                 "loss_mask": np.array(response_loss_mask, dtype=np.int64),
                 "sample_weight": w,
+                # Store game-normalized reward explicitly
+                "game_normalized_reward": float(
+                    result.get("game_info", {}).get("game_normalized_reward", result.get("normalized_reward", 0.0))
+                ),
                 "game_info": json.dumps(result["game_info"]),
                 "game_id": result["game_id"],  # Add game_id for grouping
             }
