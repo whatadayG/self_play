@@ -32,6 +32,147 @@ def find_most_recent_run(base_logs_dir: str = "/home/nickatomlin/georgiazhou/sel
     return run_dirs[0]
 
 
+def _extract_reward_series_from_df(df: pd.DataFrame) -> Optional[np.ndarray]:
+    """Extract the per-sample game-normalized reward series from a dataframe, if present.
+
+    Tries the following in order:
+    - column 'game_normalized_reward'
+    - column 'normalized_reward'
+    - parse 'game_info' JSON for 'game_normalized_reward' or 'normalized_reward'
+    Returns None if unavailable.
+    """
+    try:
+        if "game_normalized_reward" in df.columns:
+            return df["game_normalized_reward"].astype(float).to_numpy()
+        if "normalized_reward" in df.columns:
+            return df["normalized_reward"].astype(float).to_numpy()
+        if "game_info" in df.columns:
+            def _from_game_info(x: Any) -> Optional[float]:
+                try:
+                    gi = json.loads(x) if isinstance(x, str) else (x if isinstance(x, dict) else None)
+                    if isinstance(gi, dict):
+                        if "game_normalized_reward" in gi:
+                            return float(gi.get("game_normalized_reward"))
+                        if "normalized_reward" in gi:
+                            return float(gi.get("normalized_reward"))
+                    return None
+                except Exception:
+                    return None
+            vals = [v for v in df["game_info"].apply(_from_game_info).tolist() if isinstance(v, (int, float))]
+            return np.array(vals, dtype=float) if len(vals) == len(df) else None
+    except Exception:
+        return None
+    return None
+
+
+def compute_reward_stats(values: np.ndarray) -> Dict[str, Any]:
+    """Compute summary statistics for a reward array.
+
+    Returns a dict with keys: count, mean, std, min, max, p10, p20, ..., p90.
+    """
+    stats: Dict[str, Any] = {}
+    if values is None or len(values) == 0:
+        return {"count": 0}
+    v = np.asarray(values, dtype=float)
+    stats["count"] = int(v.size)
+    stats["mean"] = float(np.mean(v))
+    stats["std"] = float(np.std(v, ddof=0))
+    stats["min"] = float(np.min(v))
+    stats["max"] = float(np.max(v))
+    for q in range(10, 100, 10):
+        stats[f"p{q}"] = float(np.percentile(v, q))
+    return stats
+
+
+def write_stats_file(stats: Dict[str, Any], out_path: Path) -> None:
+    """Write stats to a small human-readable text file."""
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w") as f:
+        if stats.get("count", 0) == 0:
+            f.write("count: 0\n")
+            f.write("mean: N/A\n")
+            return
+        f.write(f"count: {stats['count']}\n")
+        f.write(f"mean: {stats['mean']:.6f}\n")
+        f.write(f"std: {stats['std']:.6f}\n")
+        f.write(f"min: {stats['min']:.6f}\n")
+        for q in range(10, 100, 10):
+            key = f"p{q}"
+            if key in stats:
+                f.write(f"{q}%: {stats[key]:.6f}\n")
+        f.write(f"max: {stats['max']:.6f}\n")
+
+
+def compute_and_save_stats(parquet_path: Path, out_path: Path) -> Dict[str, Any]:
+    """Load a parquet, compute reward stats, and write to out_path. Returns stats dict."""
+    try:
+        df = pd.read_parquet(str(parquet_path))
+        values = _extract_reward_series_from_df(df)
+        stats = compute_reward_stats(values if values is not None else np.array([]))
+        write_stats_file(stats, out_path)
+        return stats
+    except Exception as e:
+        # best-effort write
+        with open(out_path, "w") as f:
+            f.write(f"Error computing stats: {e}\n")
+        return {"count": 0}
+
+
+def read_mean_from_stats(stats_path: Path) -> Optional[float]:
+    """Parse mean value from an existing stats.txt file."""
+    if not stats_path.exists():
+        return None
+    try:
+        with open(stats_path, "r") as f:
+            for line in f:
+                if line.startswith("mean:"):
+                    try:
+                        return float(line.split(":", 1)[1].strip())
+                    except Exception:
+                        return None
+    except Exception:
+        return None
+    return None
+
+
+def branch_run(src_run: Path, dst_run: Path, rounds_to_link: int = 2) -> None:
+    """Create a new run directory that branches from src_run, symlinking early rounds.
+
+    For each of the first `rounds_to_link` rounds, symlink the existing parquet(s) and checkpoints
+    into the new run directory and compute stats.txt for the trimmed parquet if available, else the raw parquet.
+    """
+    dst_run.mkdir(parents=True, exist_ok=True)
+    for r in range(rounds_to_link):
+        src_round = src_run / f"round_{r:03d}"
+        dst_round = dst_run / f"round_{r:03d}"
+        dst_round.mkdir(parents=True, exist_ok=True)
+        if not src_round.exists():
+            continue
+        # Symlink key files if present
+        for name in ["train.parquet", "train_trimmed.parquet"]:
+            s = src_round / name
+            d = dst_round / name
+            if s.exists() and not d.exists():
+                try:
+                    os.symlink(os.fspath(s), os.fspath(d))
+                except FileExistsError:
+                    pass
+        # Symlink checkpoints directory
+        src_ckpt = src_round / "checkpoints"
+        dst_ckpt = dst_round / "checkpoints"
+        if src_ckpt.exists() and not dst_ckpt.exists():
+            try:
+                os.symlink(os.fspath(src_ckpt), os.fspath(dst_ckpt))
+            except FileExistsError:
+                pass
+        # Compute stats for existing parquet(s)
+        parquet = dst_round / "train_trimmed.parquet"
+        if not parquet.exists():
+            parquet = dst_round / "train.parquet"
+        stats_path = dst_round / "stats.txt"
+        if parquet.exists() and not stats_path.exists():
+            compute_and_save_stats(parquet, stats_path)
+
 def find_run_by_name(run_name: str, base_logs_dir: str = "/home/nickatomlin/georgiazhou/self_play/logs/offline_grpo") -> Optional[Path]:
     """Find a run directory by name or timestamp."""
     base_path = Path(base_logs_dir)
@@ -128,6 +269,16 @@ def find_latest_model_from_round(round_dir: Path) -> Optional[str]:
     else:
         return str(latest)
 
+
+def find_latest_model_before_round(save_root: Path, upto_round_exclusive: int) -> Optional[str]:
+    """Return the latest HF model path from the most recent completed round strictly before upto_round_exclusive."""
+    for rn in range(upto_round_exclusive - 1, -1, -1):
+        rd = save_root / f"round_{rn:03d}"
+        if rd.exists():
+            m = find_latest_model_from_round(rd)
+            if m is not None:
+                return m
+    return None
 
 def resume_rollout_generation(round_dir: Path, target_sequences: int, current_model: str, args) -> bool:
     """
@@ -398,7 +549,7 @@ def wait_for_sglang(server_url: str, server_proc: subprocess.Popen, timeout_sec:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rounds", type=int, default=1)
-    ap.add_argument("--games-per-round", type=int, default=128)
+    ap.add_argument("--games-per-round", type=int, default=64)
     ap.add_argument("--model-path", default="/home/nickatomlin/georgiazhou/self_play/checkpoints/sft_qwen3_8b/global_step_4800_merged")
     ap.add_argument("--save-root", default="")
     ap.add_argument("--gpus", default="0,1,2,3")
@@ -415,6 +566,16 @@ def main():
     # Resume functionality arguments
     ap.add_argument("--resume", default="", help="Resume from specific run (timestamp/directory name). If empty, resumes from most recent run.")
     ap.add_argument("--no-resume", action="store_true", help="Force start a new run, disable auto-resume")
+
+    # Resampling/eval control (default: enabled; pass --disable-resample to turn off)
+    ap.add_argument("--enable-resample", action="store_true", help="Enable resample logic based on rolling window of means (default: enabled)")
+    ap.add_argument("--disable-resample", dest="enable_resample", action="store_false", help="Disable resample logic")
+    ap.add_argument("--resample-window", type=int, default=2, help="How many previous rounds' means to compare against (default: 2)")
+    ap.set_defaults(enable_resample=True)
+
+    # Branching support
+    ap.add_argument("--branch-from", type=str, default="", help="Existing run name/path to branch from (symlink early rounds)")
+    ap.add_argument("--branch-rounds-to-link", type=int, default=2, help="How many early rounds to link into the new run")
     
     args = ap.parse_args()
     gpu_string = args.gpus
@@ -458,6 +619,14 @@ def main():
             # Try to resume rollout generation
             success = resume_rollout_generation(round_dir, args.games_per_round, current_model, args)
             if success:
+                # Compute stats for produced/combined rollouts
+                train_parquet = round_dir / "train.parquet"
+                stats_path = round_dir / "stats.txt"
+                if train_parquet.exists():
+                    try:
+                        compute_and_save_stats(train_parquet, stats_path)
+                    except Exception as e:
+                        print(f"Warning: failed to compute stats for {train_parquet}: {e}")
                 # Process the data (trim, etc.)
                 train_parquet = round_dir / "train.parquet"
                 if train_parquet.exists():
@@ -527,6 +696,7 @@ def main():
                 "trainer.total_epochs=1",
                 "trainer.save_freq=500",
                 "trainer.test_freq=100",
+                "trainer.checkpoint.save_contents=[\"hf_model\"]",
                 f"data.max_length={max_len_arg}",
                 "data.custom_cls.path=verl/verl/utils/dataset/pretokenized_sft_dataset.py",
                 "data.custom_cls.name=PreTokenizedSFTDataset",
@@ -589,7 +759,7 @@ def main():
             
             start_round = current_round + 1
     
-    # If no existing run or starting fresh
+    # If no existing run or starting fresh (also handle branching)
     if save_root is None:
         if args.save_root:
             save_root = Path(args.save_root)
@@ -598,6 +768,16 @@ def main():
             save_root = Path(f"/home/nickatomlin/georgiazhou/self_play/logs/offline_grpo/{ts}")
         save_root.mkdir(parents=True, exist_ok=True)
         print(f"Starting new run: {save_root}")
+
+        if args.branch_from:
+            src = find_run_by_name(args.branch_from) or Path(args.branch_from)
+            if src.exists():
+                print(f"Branching from {src} into {save_root} (link first {args.branch_rounds_to_link} rounds)")
+                branch_run(src_run=src, dst_run=save_root, rounds_to_link=args.branch_rounds_to_link)
+                # Set start_round to the next round after linked ones
+                start_round = max(start_round, args.branch_rounds_to_link)
+            else:
+                print(f"Warning: --branch-from path not found: {src}")
 
     # Run the main loop
     run_offline_grpo_loop(args, save_root, current_model, start_round)
@@ -698,6 +878,21 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
             except Exception:
                 pass
 
+        # Compute and write stats for the produced rollouts
+        stats_path = round_dir / "stats.txt"
+        try:
+            stats = compute_and_save_stats(out_parquet, stats_path)
+            with open(log_file, "a") as lf:
+                lf.write(json.dumps({
+                    "event": "rollout_stats",
+                    "timestamp": time.time(),
+                    "stats_path": str(stats_path),
+                    "mean": stats.get("mean", None),
+                    "count": stats.get("count", 0)
+                }) + "\n")
+        except Exception as e:
+            print(f"Warning: failed to compute stats for {out_parquet}: {e}")
+
         # Process and trim data
         df = pd.read_parquet(str(out_parquet))
         if "sample_weight" in df.columns and len(df) > 0 and not (df["sample_weight"] > 0).any():
@@ -761,6 +956,54 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
                 "weight_zero_ratio": zero_ratio,
                 "weight_neg_ratio": neg_ratio,
             }) + "\n")
+
+        # Optionally trigger resample: compare mean vs previous N means
+        if args.enable_resample:
+            window = max(1, int(args.resample_window))
+            # current mean refers to performance of previous round's model
+            current_mean = None
+            try:
+                current_mean = stats.get("mean", None)
+            except Exception:
+                pass
+
+            if current_mean is not None and r >= 1:
+                # Read previous window means from stats.txt of previous rounds
+                prev_means: list[float] = []
+                for k in range(1, window + 1):
+                    prev_round = r - k
+                    if prev_round < 0:
+                        break
+                    prev_stats_path = save_root / f"round_{prev_round:03d}" / "stats.txt"
+                    m = read_mean_from_stats(prev_stats_path)
+                    if m is not None:
+                        prev_means.append(m)
+
+                if len(prev_means) == window and all(current_mean < pm for pm in prev_means):
+                    print(f"[resample] Current mean {current_mean:.6f} is lower than all of last {window} means {prev_means}. Rolling back previous round and aborting current.")
+                    # Remove current round directory
+                    try:
+                        import shutil
+                        shutil.rmtree(round_dir, ignore_errors=True)
+                    except Exception:
+                        pass
+                    # Remove previous round directory (redo r-1), and set model to round r-2
+                    prev_round_dir = save_root / f"round_{r-1:03d}"
+                    try:
+                        import shutil
+                        shutil.rmtree(prev_round_dir, ignore_errors=True)
+                    except Exception:
+                        pass
+                    # Determine model from before previous round
+                    fallback_model = find_latest_model_before_round(save_root, upto_round_exclusive=r-1)
+                    new_current_model = fallback_model if fallback_model is not None else args.model_path
+                    # Adjust loop to redo previous round
+                    start_round = max(0, r - 1)
+                    # Update wandb if present
+                    if wb is not None:
+                        wb.log({"resample/triggered": 1, "resample/target_round": start_round})
+                    # Restart loop from (r-1)
+                    return run_offline_grpo_loop(args, save_root, new_current_model, start_round)
         
         if wb is not None:
             wb.log({
@@ -792,6 +1035,7 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
             "trainer.total_epochs=1",
             "trainer.save_freq=500",
             "trainer.test_freq=100",
+            "trainer.checkpoint.save_contents=[\"hf_model\"]",
             f"data.max_length={max_len_arg}",
             "data.custom_cls.path=verl/verl/utils/dataset/pretokenized_sft_dataset.py",
             "data.custom_cls.name=PreTokenizedSFTDataset",
