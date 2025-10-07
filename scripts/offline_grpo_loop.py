@@ -17,8 +17,102 @@ try:
     if scripts_dir not in sys.path:
         sys.path.insert(0, scripts_dir)
     from rollout_pipeline import run_rollout_pipeline
-except Exception:
+    from rollout_stats import RolloutStats
+except Exception as e:
+    print(f"Warning: Could not import rollout modules: {e}")
     run_rollout_pipeline = None  # Will be checked before use
+    RolloutStats = None
+
+
+def parse_sft_metrics(sft_log_path: Path) -> Optional[Dict[str, float]]:
+    """Parse SFT training log to extract initial and final validation loss.
+
+    Args:
+        sft_log_path: Path to sft_train.log
+
+    Returns:
+        Dict with 'initial_val_loss' and 'final_val_loss', or None if parsing fails
+    """
+    try:
+        with open(sft_log_path, "r") as f:
+            lines = f.readlines()
+
+        val_losses = []
+
+        # Find all validation loss entries
+        for line in lines:
+            # Look for the final validation metrics line
+            if "Final validation metrics:" in line and "'val/loss':" in line:
+                try:
+                    # Format: "Final validation metrics: {'val/loss': -0.0046041331804274966}"
+                    loss_str = line.split("'val/loss':")[1].strip().rstrip("}")
+                    loss = float(loss_str)
+                    val_losses.append(loss)
+                except (IndexError, ValueError):
+                    continue
+
+        if len(val_losses) >= 2:
+            return {
+                "initial_val_loss": val_losses[0],
+                "final_val_loss": val_losses[-1],
+            }
+        elif len(val_losses) == 1:
+            # Only one validation run
+            return {
+                "initial_val_loss": val_losses[0],
+                "final_val_loss": val_losses[0],
+            }
+        return None
+
+    except Exception as e:
+        print(f"Warning: Failed to parse SFT log: {e}")
+        return None
+
+
+def log_rollout_to_wandb(wb, round_num: int, stats: "RolloutStats", sft_metrics: Optional[Dict[str, float]] = None) -> None:
+    """Log rollout and SFT statistics to W&B.
+
+    Args:
+        wb: W&B run object (or None to skip logging)
+        round_num: Current round number
+        stats: RolloutStats object with all metrics
+        sft_metrics: Optional dict with SFT training metrics (initial_loss, final_loss)
+    """
+    if wb is None:
+        return
+
+    metrics = {
+        "round": round_num,
+        # CRITICAL: Game performance metrics (actual rewards, not GRPO-normalized)
+        "game/reward_mean": stats.game_reward_mean,
+        "game/reward_std": stats.game_reward_std,
+        "game/reward_p10": stats.game_reward_p10,
+        "game/reward_p25": stats.game_reward_p25,
+        "game/reward_p50": stats.game_reward_p50,
+        "game/reward_p75": stats.game_reward_p75,
+        "game/reward_p90": stats.game_reward_p90,
+        "game/perfect_score_ratio": stats.perfect_score_ratio,
+
+        # Filtering impact
+        "filter/kept_ratio": stats.kept_sequences / stats.total_sequences,
+        "filter/trim_threshold": stats.trim_threshold,
+        "filter/perfect_score_ratio_before": stats.perfect_score_ratio,
+        "filter/perfect_score_ratio_after": stats.perfect_score_ratio_after_trim,
+        "filter/perfect_scores_lost": stats.perfect_score_ratio - stats.perfect_score_ratio_after_trim,
+
+        # GRPO diagnostics (should have mean ~0)
+        "grpo/weight_mean": stats.grpo_weight_mean,
+        "grpo/weight_pos_ratio": stats.grpo_weight_pos_ratio,
+        "grpo/weight_neg_ratio": stats.grpo_weight_neg_ratio,
+    }
+
+    # Add SFT metrics if available
+    if sft_metrics is not None:
+        metrics["sft/initial_val_loss"] = sft_metrics["initial_val_loss"]
+        metrics["sft/final_val_loss"] = sft_metrics["final_val_loss"]
+        metrics["sft/val_loss_delta"] = sft_metrics["initial_val_loss"] - sft_metrics["final_val_loss"]
+
+    wb.log(metrics)
 
 
 def find_most_recent_run(base_logs_dir: str = "/home/nickatomlin/georgiazhou/self_play/logs/offline_grpo") -> Optional[Path]:
@@ -26,16 +120,16 @@ def find_most_recent_run(base_logs_dir: str = "/home/nickatomlin/georgiazhou/sel
     base_path = Path(base_logs_dir)
     if not base_path.exists():
         return None
-    
+
     # Find all timestamp directories
     run_dirs = []
     for item in base_path.iterdir():
         if item.is_dir() and item.name.replace("_", "").isdigit():
             run_dirs.append(item)
-    
+
     if not run_dirs:
         return None
-    
+
     # Sort by modification time (most recent first)
     run_dirs.sort(key=lambda x: x.stat().st_mtime, reverse=True)
     return run_dirs[0]
@@ -863,20 +957,22 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
         log_file = round_dir / "progress.log"
 
         # Run rollout pipeline
-        result = run_rollout_pipeline(
+        rollout_stats = run_rollout_pipeline(
             args=args,
             save_root=save_root,
             round_dir=round_dir,
             current_model=current_model,
         )
-        pct95 = int(result.get("pct95", 4096))
-        train_parquet_for_sft = Path(result.get("trimmed_parquet", round_dir / "train_trimmed.parquet"))
-        kept_count = int(result.get("kept", 0))
-        total_count = int(result.get("total", 0))
-        mean_norm_reward = result.get("mean_norm_reward", None)
-        mean_abs_reward = result.get("mean_abs_reward", None)
-        stats = {"mean": result.get("stats_mean", None), "count": total_count}
-        max_len_arg = str(pct95)
+
+        # Extract values needed for SFT and resampling logic
+        train_parquet_for_sft = rollout_stats.trimmed_parquet
+        max_len_arg = str(rollout_stats.trim_threshold)
+
+        # Log to W&B
+        log_rollout_to_wandb(wb, r, rollout_stats)
+
+        # Prepare stats dict for resampling logic (backward compatibility)
+        stats = {"mean": rollout_stats.game_reward_mean, "count": rollout_stats.total_sequences}
 
         # Optionally trigger resample: compare mean vs previous N means
         if args.enable_resample:
@@ -934,29 +1030,7 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
                     # Restart loop from (r-1)
                     return run_offline_grpo_loop(args, save_root, new_current_model, start_round)
         
-        # Normalize counts for logging regardless of code path
-        try:
-            kept_len_for_log = int(kept_count)
-            total_len_for_log = int(total_count)
-        except Exception:
-            try:
-                kept_len_for_log = int(len(kept))
-                total_len_for_log = int(len(df))
-            except Exception:
-                kept_len_for_log = 0
-                total_len_for_log = 0
-
-        if wb is not None:
-            wb.log({
-                "round": r,
-                "rollout/pct95_length": pct95,
-                "rollout/kept": kept_len_for_log,
-                "rollout/total": total_len_for_log,
-                "rollout/mean_norm_reward": mean_norm_reward,
-                "rollout/mean_abs_reward": mean_abs_reward,
-            })
-
-        # 3) Run SFT training
+        # Run SFT training
         print("Running SFT training...")
         if len(gpu_list) >= 2:
             sft_visible = ",".join(gpu_list[:2])
@@ -964,49 +1038,68 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
         else:
             sft_visible = str(gpu_list[0])
             nproc = 1
-        
+
         print(f"[HACK] Forcing SFT to use {nproc} GPU(s): CUDA_VISIBLE_DEVICES={sft_visible}")
         save_path = str(round_dir / "checkpoints")
+        # Calculate test_freq to eval ~2x per epoch
+        # Assuming ~200 samples after trimming, batch_size=12, that's ~17 steps per epoch
+        # So test every ~8-9 steps for 2 evals per epoch
         sft_cmd = [
             "bash", "scripts/sft_qwen/sft_qwen3.sh",
             str(nproc), save_path,
             f"data.train_files={str(train_parquet_for_sft)}",
             f"data.val_files={str(train_parquet_for_sft)}",
             f"model.partial_pretrain={current_model}",
-            "trainer.total_epochs=1",
+            "trainer.total_epochs=5",
             "trainer.save_freq=500",
-            "trainer.test_freq=100",
+            "trainer.test_freq=8",  # Eval ~2x per epoch
             "trainer.checkpoint.save_contents=[\"hf_model\"]",
             f"data.max_length={max_len_arg}",
             "data.custom_cls.path=verl/verl/utils/dataset/pretokenized_sft_dataset.py",
             "data.custom_cls.name=PreTokenizedSFTDataset",
             f"trainer.project_name={args.wandb_project}",
-            f"trainer.experiment_name={save_root.name}_round_{r}_2gpu_hack",
+            f"trainer.experiment_name={save_root.name}_round_{r}",
         ]
-        
+
         sft_env = os.environ.copy()
         test_bin = "/home/nickatomlin/georgiazhou/self_play/test_venv/bin"
         if os.path.isdir(test_bin):
             sft_env["PATH"] = f"{test_bin}:{sft_env.get('PATH','')}"
         if sft_visible:
             sft_env["CUDA_VISIBLE_DEVICES"] = sft_visible
-        
+
+        # Configure SFT to use same W&B run if we have one
+        if wb is not None:
+            sft_env["WANDB_RUN_ID"] = wb.id
+            sft_env["WANDB_RESUME"] = "allow"
+            sft_env["WANDB_PROJECT"] = wb.project
+            print(f"Configuring SFT to log to existing W&B run: {wb.id}")
+
         with open(log_file, "a") as lf:
             lf.write(json.dumps({
-                "event": "sft_hack_2gpus",
+                "event": "sft_start",
                 "timestamp": time.time(),
                 "visible_gpus": sft_visible,
                 "nproc": nproc,
+                "wandb_run_id": wb.id if wb is not None else None,
             }) + "\n")
-        
+
         sft_log = round_dir / "sft_train.log"
         run_tee(sft_cmd, logfile=sft_log, env=sft_env)
-        
+
+        # Parse SFT metrics and log to W&B
+        sft_metrics = parse_sft_metrics(sft_log)
+        if sft_metrics is not None:
+            print(f"SFT metrics: initial_val_loss={sft_metrics['initial_val_loss']:.6f}, final_val_loss={sft_metrics['final_val_loss']:.6f}")
+            # Update W&B with SFT metrics
+            log_rollout_to_wandb(wb, r, rollout_stats, sft_metrics)
+
         with open(log_file, "a") as lf:
             lf.write(json.dumps({
                 "event": "sft_done",
                 "timestamp": time.time(),
-                "save_path": save_path
+                "save_path": save_path,
+                "sft_metrics": sft_metrics,
             }) + "\n")
 
         # 4) Update model path for next round
