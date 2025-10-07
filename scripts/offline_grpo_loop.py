@@ -24,6 +24,96 @@ except Exception as e:
     RolloutStats = None
 
 
+def run_sft_training(
+    *,
+    gpu_string: str,
+    round_dir: Path,
+    train_parquet: Path,
+    current_model: str,
+    max_len_arg: str,
+    wandb_project: str,
+    experiment_name: str,
+    wb = None,
+) -> Path:
+    """Run SFT training and return path to log file.
+
+    Args:
+        gpu_string: Comma-separated GPU IDs (e.g., "0,1,2,3")
+        round_dir: Directory for this round
+        train_parquet: Path to training parquet file
+        current_model: Model checkpoint to start from
+        max_len_arg: Maximum sequence length
+        wandb_project: W&B project name
+        experiment_name: W&B experiment name
+        wb: Optional W&B run object from main loop
+
+    Returns:
+        Path to sft_train.log
+    """
+    # Parse GPU configuration
+    gpu_list = [g.strip() for g in gpu_string.split(",") if g.strip()]
+    num_gpus = len(gpu_list)
+
+    # Use all available GPUs for SFT
+    sft_visible = ",".join(gpu_list)
+    nproc = num_gpus if num_gpus > 0 else 1
+
+    # Determine batch sizes based on available GPUs
+    if num_gpus >= 4:
+        micro_batch_size_per_gpu = 3
+        train_batch_size = 12
+        val_batch_size_per_gpu = 6
+    else:
+        micro_batch_size_per_gpu = 1
+        train_batch_size = 8
+        val_batch_size_per_gpu = 2
+
+    print(f"Running SFT training with {nproc} GPU(s)")
+    print(f"  CUDA_VISIBLE_DEVICES={sft_visible}")
+    print(f"  Batch config: micro_batch_size_per_gpu={micro_batch_size_per_gpu}, train_batch_size={train_batch_size}, val_batch_size_per_gpu={val_batch_size_per_gpu}")
+    print(f"  Effective global batch size: {micro_batch_size_per_gpu * nproc} (per-GPU) * grad_accum_steps → {train_batch_size}")
+
+    save_path = str(round_dir / "checkpoints")
+    sft_cmd = [
+        "bash", "scripts/sft_qwen/sft_qwen3.sh",
+        str(nproc), save_path,
+        f"data.train_files={str(train_parquet)}",
+        f"data.val_files={str(train_parquet)}",
+        f"data.micro_batch_size_per_gpu={micro_batch_size_per_gpu}",
+        f"data.train_batch_size={train_batch_size}",
+        f"data.val_batch_size_per_gpu={val_batch_size_per_gpu}",
+        f"model.partial_pretrain={current_model}",
+        "trainer.total_epochs=10",
+        "trainer.save_freq=500",
+        "trainer.test_freq=50",
+        "trainer.checkpoint.save_contents=[\"hf_model\"]",
+        f"data.max_length={max_len_arg}",
+        "data.custom_cls.path=verl/verl/utils/dataset/pretokenized_sft_dataset.py",
+        "data.custom_cls.name=PreTokenizedSFTDataset",
+        f"trainer.project_name={wandb_project}",
+        f"trainer.experiment_name={experiment_name}",
+    ]
+
+    # Setup environment
+    sft_env = os.environ.copy()
+    test_bin = "/home/nickatomlin/georgiazhou/self_play/test_venv/bin"
+    if os.path.isdir(test_bin):
+        sft_env["PATH"] = f"{test_bin}:{sft_env.get('PATH','')}"
+    if sft_visible:
+        sft_env["CUDA_VISIBLE_DEVICES"] = sft_visible
+
+    # Configure W&B (separate run, same project)
+    if wb is not None:
+        sft_env["WANDB_PROJECT"] = wb.project
+        print(f"Configuring SFT to log to W&B project: {wb.project}")
+
+    # Run SFT training
+    sft_log = round_dir / "sft_train.log"
+    run_tee(sft_cmd, logfile=sft_log, env=sft_env)
+
+    return sft_log
+
+
 def parse_sft_metrics(sft_log_path: Path) -> Optional[Dict[str, float]]:
     """Parse SFT training log to extract initial and final validation loss.
 
@@ -689,9 +779,9 @@ def main():
     ap.add_argument("--server-mem-fraction", type=float, default=0.85, help="Static GPU memory fraction reserved by server (mem_fraction_static)")
     ap.add_argument("--server-log-level", type=str, default="debug", help="SGLang server log level: debug|info|warning|error")
     # Default: torch.compile enabled; provide flags to disable
-    ap.add_argument("--server-disable-torch-compile", dest="server_enable_torch_compile", action="store_false", help="Disable torch.compile in SGLang server")
+    ap.add_argument("--server-enable-torch-compile", dest="server_enable_torch_compile", action="store_true", help="Enable torch.compile in SGLang server")
     ap.add_argument("--server-disable-cuda-graph", dest="server_disable_cuda_graph", action="store_true", help="Disable CUDA graph in SGLang server")
-    ap.set_defaults(server_enable_torch_compile=True, server_disable_cuda_graph=False)
+    ap.set_defaults(server_enable_torch_compile=False, server_disable_cuda_graph=False)
     
     # Resume functionality arguments
     ap.add_argument("--resume", default="", help="Resume from specific run (timestamp/directory name). If empty, resumes from most recent run.")
@@ -809,46 +899,18 @@ def main():
             if pct95 > 5000:
                 pct95 = 5000
             max_len_arg = str(pct95)
-            
-            # Setup SFT training
-            if len(gpu_list) >= 2:
-                sft_visible = ",".join(gpu_list[:2])
-                nproc = 2
-            else:
-                sft_visible = str(gpu_list[0])
-                nproc = 1
-            
-            print(f"Running SFT training with {nproc} GPU(s): CUDA_VISIBLE_DEVICES={sft_visible}")
-            
-            save_path = str(round_dir / "checkpoints")
-            sft_cmd = [
-                "bash", "scripts/sft_qwen/sft_qwen3.sh",
-                str(nproc), save_path,
-                f"data.train_files={str(train_trimmed_parquet)}",
-                f"data.val_files={str(train_trimmed_parquet)}",
-                f"model.partial_pretrain={current_model}",
-                "trainer.total_epochs=1",
-                "trainer.save_freq=500",
-                "trainer.test_freq=100",
-                "trainer.checkpoint.save_contents=[\"hf_model\"]",
-                f"data.max_length={max_len_arg}",
-                "data.custom_cls.path=verl/verl/utils/dataset/pretokenized_sft_dataset.py",
-                "data.custom_cls.name=PreTokenizedSFTDataset",
-                f"trainer.project_name={args.wandb_project}",
-                f"trainer.experiment_name={save_root.name}_round_{current_round}_resume",
-            ]
-            
-            # Setup environment
-            sft_env = os.environ.copy()
-            test_bin = "/home/nickatomlin/georgiazhou/self_play/test_venv/bin"
-            if os.path.isdir(test_bin):
-                sft_env["PATH"] = f"{test_bin}:{sft_env.get('PATH','')}"
-            if sft_visible:
-                sft_env["CUDA_VISIBLE_DEVICES"] = sft_visible
-            
+
             # Run SFT training
-            sft_log = round_dir / "sft_train.log"
-            run_tee(sft_cmd, logfile=sft_log, env=sft_env)
+            sft_log = run_sft_training(
+                gpu_string=args.gpus,
+                round_dir=round_dir,
+                train_parquet=train_trimmed_parquet,
+                current_model=current_model,
+                max_len_arg=max_len_arg,
+                wandb_project=args.wandb_project,
+                experiment_name=f"{save_root.name}_round_{current_round}_resume",
+                wb=None,  # No W&B context in resume
+            )
             
             # Log completion and update model
             log_file = round_dir / "progress.log"
@@ -1032,60 +1094,23 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
         
         # Run SFT training
         print("Running SFT training...")
-        if len(gpu_list) >= 2:
-            sft_visible = ",".join(gpu_list[:2])
-            nproc = 2
-        else:
-            sft_visible = str(gpu_list[0])
-            nproc = 1
-
-        print(f"[HACK] Forcing SFT to use {nproc} GPU(s): CUDA_VISIBLE_DEVICES={sft_visible}")
-        save_path = str(round_dir / "checkpoints")
-        # Calculate test_freq to eval ~2x per epoch
-        # Assuming ~200 samples after trimming, batch_size=12, that's ~17 steps per epoch
-        # So test every ~8-9 steps for 2 evals per epoch
-        sft_cmd = [
-            "bash", "scripts/sft_qwen/sft_qwen3.sh",
-            str(nproc), save_path,
-            f"data.train_files={str(train_parquet_for_sft)}",
-            f"data.val_files={str(train_parquet_for_sft)}",
-            f"model.partial_pretrain={current_model}",
-            "trainer.total_epochs=5",
-            "trainer.save_freq=500",
-            "trainer.test_freq=8",  # Eval ~2x per epoch
-            "trainer.checkpoint.save_contents=[\"hf_model\"]",
-            f"data.max_length={max_len_arg}",
-            "data.custom_cls.path=verl/verl/utils/dataset/pretokenized_sft_dataset.py",
-            "data.custom_cls.name=PreTokenizedSFTDataset",
-            f"trainer.project_name={args.wandb_project}",
-            f"trainer.experiment_name={save_root.name}_round_{r}",
-        ]
-
-        sft_env = os.environ.copy()
-        test_bin = "/home/nickatomlin/georgiazhou/self_play/test_venv/bin"
-        if os.path.isdir(test_bin):
-            sft_env["PATH"] = f"{test_bin}:{sft_env.get('PATH','')}"
-        if sft_visible:
-            sft_env["CUDA_VISIBLE_DEVICES"] = sft_visible
-
-        # Configure SFT to use same W&B run if we have one
-        if wb is not None:
-            sft_env["WANDB_RUN_ID"] = wb.id
-            sft_env["WANDB_RESUME"] = "allow"
-            sft_env["WANDB_PROJECT"] = wb.project
-            print(f"Configuring SFT to log to existing W&B run: {wb.id}")
-
         with open(log_file, "a") as lf:
             lf.write(json.dumps({
                 "event": "sft_start",
                 "timestamp": time.time(),
-                "visible_gpus": sft_visible,
-                "nproc": nproc,
-                "wandb_run_id": wb.id if wb is not None else None,
+                "round": r,
             }) + "\n")
 
-        sft_log = round_dir / "sft_train.log"
-        run_tee(sft_cmd, logfile=sft_log, env=sft_env)
+        sft_log = run_sft_training(
+            gpu_string=args.gpus,
+            round_dir=round_dir,
+            train_parquet=train_parquet_for_sft,
+            current_model=current_model,
+            max_len_arg=max_len_arg,
+            wandb_project=args.wandb_project,
+            experiment_name=f"{save_root.name}_round_{r}",
+            wb=wb,
+        )
 
         # Parse SFT metrics and log to W&B
         sft_metrics = parse_sft_metrics(sft_log)
@@ -1094,6 +1119,7 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
             # Update W&B with SFT metrics
             log_rollout_to_wandb(wb, r, rollout_stats, sft_metrics)
 
+        save_path = str(round_dir / "checkpoints")
         with open(log_file, "a") as lf:
             lf.write(json.dumps({
                 "event": "sft_done",
@@ -1102,7 +1128,7 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
                 "sft_metrics": sft_metrics,
             }) + "\n")
 
-        # 4) Update model path for next round
+        # Update model path for next round
         latest = None
         for p in Path(save_path).glob("global_step_*"):
             latest = p if (latest is None or p.stat().st_mtime > latest.stat().st_mtime) else latest
