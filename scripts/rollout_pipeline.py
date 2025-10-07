@@ -46,6 +46,7 @@ def _start_sglang_server(
     enable_torch_compile: bool,
     disable_cuda_graph: bool,
     log_level: str,
+    log_file: Optional[Path] = None,
 ) -> subprocess.Popen:
     num_gpus = len([g.strip() for g in gpus.split(",") if g.strip()])
     if tp > num_gpus:
@@ -90,6 +91,8 @@ def _start_sglang_server(
         "512",
         "--schedule-policy",
         "lpm",
+        "--max-running-requests",
+        "1024",  # Allow many concurrent requests; SGLang will batch efficiently
     ]
     if enable_torch_compile:
         cmd.append("--enable-torch-compile")
@@ -100,7 +103,17 @@ def _start_sglang_server(
     print(f"[rollout_pipeline] CUDA_VISIBLE_DEVICES={env.get('CUDA_VISIBLE_DEVICES','')}", flush=True)
     print(f"[rollout_pipeline] NCCL_P2P_LEVEL={env.get('NCCL_P2P_LEVEL','')}", flush=True)
 
-    proc = subprocess.Popen(cmd, env=env, stdout=sys.stdout, stderr=sys.stderr, text=True)
+    # Redirect output to log file if provided, otherwise to stdout/stderr
+    if log_file:
+        print(f"[rollout_pipeline] Server output will be logged to: {log_file}", flush=True)
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        f = open(log_file, "w")
+        proc = subprocess.Popen(cmd, env=env, stdout=f, stderr=subprocess.STDOUT, text=True)
+        # Store file handle on proc so it doesn't get closed prematurely
+        proc._log_file = f
+    else:
+        proc = subprocess.Popen(cmd, env=env, stdout=sys.stdout, stderr=sys.stderr, text=True)
+
     print(f"[rollout_pipeline] SGLang server process started with PID={proc.pid}", flush=True)
     return proc
 
@@ -168,79 +181,248 @@ def function_A_start_server_and_generate(
     round_dir: Path,
     current_model: str,
 ) -> Path:
-    """Start SGLang server, generate rollouts via scripts/generate_rollouts.py, log events, stop server.
+    """Start SGLang server(s), generate rollouts via scripts/generate_rollouts.py, log events, stop server(s).
+
+    For 4 GPUs: Uses 2 servers (TP=2 each) to avoid all-reduce overhead.
+    For other GPU counts: Uses single server with appropriate TP.
 
     Returns path to the raw parquet (train.parquet).
     """
     gpu_string = args.gpus
-    tp = len([g for g in gpu_string.split(",") if g])
+    gpu_list = [g.strip() for g in gpu_string.split(",") if g.strip()]
+    num_gpus = len(gpu_list)
 
-    print("Starting SGLang server...")
-    server_proc = _start_sglang_server(
-        model_path=current_model,
-        gpus=gpu_string,
-        tp=tp,
-        mem_util=args.server_mem_fraction,
-        port=args.server_port,
-        enable_torch_compile=args.server_enable_torch_compile,
-        disable_cuda_graph=args.server_disable_cuda_graph,
-        log_level=args.server_log_level,
-    )
-
-    server_url = f"http://127.0.0.1:{args.server_port}"
     log_file = round_dir / "progress.log"
-    with open(log_file, "a") as lf:
-        lf.write(json.dumps({
-            "event": "server_started",
-            "timestamp": time.time(),
-            "model": current_model,
-            "gpus": gpu_string,
-            "tp": tp,
-        }) + "\n")
+    test_py = "/home/nickatomlin/georgiazhou/self_play/test_venv/bin/python"
+    python_bin = test_py if os.path.exists(test_py) else sys.executable
 
-    try:
-        _wait_for_sglang(server_url, server_proc, timeout_sec=args.server_wait_seconds, interval_sec=5)
+    # Special case: 4 GPUs → use 2 servers to avoid cross-bridge all-reduce
+    if num_gpus == 4:
+        print("Detected 4 GPUs: using dual-server mode (2×TP2) for better performance...")
 
-        out_parquet = round_dir / "train.parquet"
-        test_py = "/home/nickatomlin/georgiazhou/self_play/test_venv/bin/python"
-        python_bin = test_py if os.path.exists(test_py) else sys.executable
-        gen_cmd = [
-            python_bin,
-            "scripts/generate_rollouts.py",
-            "--server-url",
-            server_url,
-            "--model-id",
-            current_model,
-            "--out",
-            str(out_parquet),
-            "--num-games",
-            str(args.games_per_round // 2),
-            "--max-new-tokens",
-            "8192",
-            "--group-size",
-            "8",
-            "--temperature",
-            "0.7",
-            "--top-p",
-            "0.9",
-            "--max-model-len",
-            "32768",
-        ]
-        _run(gen_cmd)
+        # Start both servers with separate log files
+        server1_log = round_dir / "sglang_server1.log"
+        server2_log = round_dir / "sglang_server2.log"
+
+        print("Starting server 1 on GPUs 0,1...")
+        server1 = _start_sglang_server(
+            model_path=current_model,
+            gpus=f"{gpu_list[0]},{gpu_list[1]}",
+            tp=2,
+            mem_util=args.server_mem_fraction,
+            port=12345,
+            enable_torch_compile=args.server_enable_torch_compile,
+            disable_cuda_graph=args.server_disable_cuda_graph,
+            log_level=args.server_log_level,
+            log_file=server1_log,
+        )
+
+        print("Starting server 2 on GPUs 2,3...")
+        server2 = _start_sglang_server(
+            model_path=current_model,
+            gpus=f"{gpu_list[2]},{gpu_list[3]}",
+            tp=2,
+            mem_util=args.server_mem_fraction,
+            port=12346,
+            enable_torch_compile=args.server_enable_torch_compile,
+            disable_cuda_graph=args.server_disable_cuda_graph,
+            log_level=args.server_log_level,
+            log_file=server2_log,
+        )
+
         with open(log_file, "a") as lf:
             lf.write(json.dumps({
-                "event": "generation_done",
+                "event": "dual_servers_started",
                 "timestamp": time.time(),
-                "out": str(out_parquet),
+                "model": current_model,
+                "server1_gpus": f"{gpu_list[0]},{gpu_list[1]}",
+                "server2_gpus": f"{gpu_list[2]},{gpu_list[3]}",
             }) + "\n")
-        return out_parquet
-    finally:
-        print("Stopping SGLang server...")
-        _kill_process_tree(server_proc)
+
         try:
-            subprocess.run(["pkill", "-f", "sglang"], check=False)
-        except Exception:
-            pass
+            # Wait for both servers in parallel
+            print("Waiting for both servers to become ready...")
+            import threading
+
+            errors = []
+
+            def wait_server1():
+                try:
+                    _wait_for_sglang("http://127.0.0.1:12345", server1, timeout_sec=args.server_wait_seconds, interval_sec=5)
+                    print("Server 1 ready!")
+                except Exception as e:
+                    errors.append(("server1", e))
+
+            def wait_server2():
+                try:
+                    _wait_for_sglang("http://127.0.0.1:12346", server2, timeout_sec=args.server_wait_seconds, interval_sec=5)
+                    print("Server 2 ready!")
+                except Exception as e:
+                    errors.append(("server2", e))
+
+            t1 = threading.Thread(target=wait_server1)
+            t2 = threading.Thread(target=wait_server2)
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+
+            if errors:
+                error_msg = "; ".join([f"{name}: {err}" for name, err in errors])
+                raise RuntimeError(f"Server startup failed: {error_msg}")
+
+            # Generate on both servers in parallel
+            num_games_per_server = args.games_per_round // 2  # Each server gets half the unique games
+            group_size = 8  # From generate_rollouts.py default
+
+            out1 = round_dir / "train_server1.parquet"
+            out2 = round_dir / "train_server2.parquet"
+
+            print(f"Launching parallel generation: {num_games_per_server} unique games per server...")
+            gen_cmd1 = [
+                python_bin, "scripts/generate_rollouts.py",
+                "--server-url", "http://127.0.0.1:12345",
+                "--model-id", current_model,
+                "--out", str(out1),
+                "--num-games", str(num_games_per_server),
+                "--max-new-tokens", "8192",
+                "--group-size", str(group_size),
+                "--temperature", "0.7",
+                "--top-p", "0.9",
+                "--max-model-len", "32768",
+            ]
+
+            gen_cmd2 = [
+                python_bin, "scripts/generate_rollouts.py",
+                "--server-url", "http://127.0.0.1:12346",
+                "--model-id", current_model,
+                "--out", str(out2),
+                "--num-games", str(num_games_per_server),
+                "--max-new-tokens", "8192",
+                "--group-size", str(group_size),
+                "--temperature", "0.7",
+                "--top-p", "0.9",
+                "--max-model-len", "32768",
+            ]
+
+            # Run both in parallel
+            proc1 = subprocess.Popen(gen_cmd1)
+            proc2 = subprocess.Popen(gen_cmd2)
+
+            # Wait for completion
+            ret1 = proc1.wait()
+            ret2 = proc2.wait()
+
+            if ret1 != 0 or ret2 != 0:
+                raise RuntimeError(f"Generation failed: server1={ret1}, server2={ret2}")
+
+            # Merge parquets and fix game_ids
+            print("Merging outputs from both servers...")
+            df1 = pd.read_parquet(str(out1))
+            df2 = pd.read_parquet(str(out2))
+
+            # Shift server2 game_ids to continue from server1
+            offset = num_games_per_server * group_size
+            print(f"Offsetting server2 game_ids by {offset}...")
+            df2["game_id"] = df2["game_id"] + offset
+
+            # Merge
+            df = pd.concat([df1, df2], ignore_index=True)
+            out_parquet = round_dir / "train.parquet"
+            df.to_parquet(str(out_parquet))
+            print(f"Merged {len(df)} sequences into {out_parquet}")
+
+            # Cleanup temp files
+            out1.unlink()
+            out2.unlink()
+
+            with open(log_file, "a") as lf:
+                lf.write(json.dumps({
+                    "event": "dual_generation_done",
+                    "timestamp": time.time(),
+                    "out": str(out_parquet),
+                    "server1_sequences": len(df1),
+                    "server2_sequences": len(df2),
+                }) + "\n")
+
+            return out_parquet
+
+        finally:
+            print("Stopping both SGLang servers...")
+            _kill_process_tree(server1)
+            _kill_process_tree(server2)
+            try:
+                subprocess.run(["pkill", "-f", "sglang"], check=False)
+            except Exception:
+                pass
+
+    else:
+        # Standard single-server mode
+        tp = num_gpus if num_gpus > 0 else 1
+        print(f"Using single-server mode (TP={tp})...")
+
+        server_proc = _start_sglang_server(
+            model_path=current_model,
+            gpus=gpu_string,
+            tp=tp,
+            mem_util=args.server_mem_fraction,
+            port=args.server_port,
+            enable_torch_compile=args.server_enable_torch_compile,
+            disable_cuda_graph=args.server_disable_cuda_graph,
+            log_level=args.server_log_level,
+        )
+
+        server_url = f"http://127.0.0.1:{args.server_port}"
+        with open(log_file, "a") as lf:
+            lf.write(json.dumps({
+                "event": "server_started",
+                "timestamp": time.time(),
+                "model": current_model,
+                "gpus": gpu_string,
+                "tp": tp,
+            }) + "\n")
+
+        try:
+            _wait_for_sglang(server_url, server_proc, timeout_sec=args.server_wait_seconds, interval_sec=5)
+
+            out_parquet = round_dir / "train.parquet"
+            gen_cmd = [
+                python_bin,
+                "scripts/generate_rollouts.py",
+                "--server-url",
+                server_url,
+                "--model-id",
+                current_model,
+                "--out",
+                str(out_parquet),
+                "--num-games",
+                str(args.games_per_round // 2),
+                "--max-new-tokens",
+                "8192",
+                "--group-size",
+                "8",
+                "--temperature",
+                "0.7",
+                "--top-p",
+                "0.9",
+                "--max-model-len",
+                "32768",
+            ]
+            _run(gen_cmd)
+            with open(log_file, "a") as lf:
+                lf.write(json.dumps({
+                    "event": "generation_done",
+                    "timestamp": time.time(),
+                    "out": str(out_parquet),
+                }) + "\n")
+            return out_parquet
+        finally:
+            print("Stopping SGLang server...")
+            _kill_process_tree(server_proc)
+            try:
+                subprocess.run(["pkill", "-f", "sglang"], check=False)
+            except Exception:
+                pass
 
 
 def _extract_reward_series_from_df(df: pd.DataFrame) -> Optional[np.ndarray]:
@@ -404,9 +586,19 @@ def function_B_generate_trim_and_log(
         pct95 = 5000
 
     kept = df[lengths <= pct95]
-    trimmed_path = round_dir / "train_trimmed.parquet"
-    kept.to_parquet(str(trimmed_path))
-    print(f"Trimmed to 95th percentile length={pct95}, kept {len(kept)}/{len(df)} samples -> {trimmed_path}")
+
+    # Split into train (90%) and val (10%)
+    from sklearn.model_selection import train_test_split
+    train_df, val_df = train_test_split(kept, test_size=0.1, random_state=42)
+
+    train_path = round_dir / "train_trimmed.parquet"
+    val_path = round_dir / "val_trimmed.parquet"
+    train_df.to_parquet(str(train_path))
+    val_df.to_parquet(str(val_path))
+
+    print(f"Trimmed to 95th percentile length={pct95}, kept {len(kept)}/{len(df)} samples")
+    print(f"  Train: {len(train_df)} samples -> {train_path}")
+    print(f"  Val: {len(val_df)} samples -> {val_path}")
 
     # Compute perfect score ratio after trimming
     kept_game_rewards = game_rewards[lengths <= pct95]
@@ -416,10 +608,25 @@ def function_B_generate_trim_and_log(
     examples_path = round_dir / "examples.txt"
     _export_example_games(df, examples_path, n_per_category=5)
 
+    # Check for generation failures
+    from transformers import AutoTokenizer
+    failure_count = 0
+    try:
+        tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-7B-Instruct", trust_remote_code=True)
+        for idx, row in df.iterrows():
+            text = tokenizer.decode(row['input_ids'], skip_special_tokens=False)
+            if 'I need to think about this.' in text:
+                failure_count += 1
+    except Exception as e:
+        print(f"Warning: Could not compute failure rate: {e}")
+
+    failure_ratio = float(failure_count / len(df)) if len(df) > 0 else 0.0
+
     # Create RolloutStats object
     stats = RolloutStats(
         raw_parquet=out_parquet,
-        trimmed_parquet=trimmed_path,
+        trimmed_parquet=train_path,
+        val_parquet=val_path,
         examples_txt=examples_path,
         game_reward_mean=game_reward_mean,
         game_reward_std=game_reward_std,
@@ -437,6 +644,7 @@ def function_B_generate_trim_and_log(
         grpo_weight_pos_ratio=grpo_weight_pos_ratio,
         grpo_weight_neg_ratio=grpo_weight_neg_ratio,
         grpo_weight_zero_ratio=grpo_weight_zero_ratio,
+        failure_ratio=failure_ratio,
     )
 
     # Log to progress.log
@@ -459,9 +667,10 @@ def function_B_generate_trim_and_log(
             "perfect_score_ratio_after_trim": perfect_score_ratio_after_trim,
             "grpo_weight_mean": grpo_weight_mean,
             "grpo_weight_pos_ratio": grpo_weight_pos_ratio,
+            "failure_ratio": failure_ratio,
         }) + "\n")
 
-    print(f"Rollout stats: game_reward_mean={game_reward_mean:.4f}, perfect_score_ratio={perfect_score_ratio:.3f}")
+    print(f"Rollout stats: game_reward_mean={game_reward_mean:.4f}, perfect_score_ratio={perfect_score_ratio:.3f}, failure_ratio={failure_ratio:.2%}")
 
     return stats
 

@@ -147,32 +147,63 @@ class SGLangModelPlayer(BaseModelPlayer):
             "max_tokens": gen_kwargs.get("max_tokens", self.config.max_tokens),
             "n": 1,
         }
-        
-        # Make request via persistent session
-        try:
-            resp = self.session.post(
-                self.completions_url,
-                json=payload,
-                timeout=self.config.timeout
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except requests.exceptions.Timeout:
-            raise RuntimeError(f"SGLang server timeout after {self.config.timeout}s")
-        except requests.exceptions.RequestException as e:
-            raise RuntimeError(f"SGLang server error: {e}")
-        
-        # Extract response
-        if "choices" not in data or not data["choices"]:
-            raise RuntimeError(f"Invalid response from SGLang server: {data}")
-        
-        response_text = data["choices"][0]["message"]["content"]
-        
-        # Get token counts (if provided by server)
-        input_tokens = data.get("usage", {}).get("prompt_tokens", 0)
-        output_tokens = data.get("usage", {}).get("completion_tokens", 0)
-        
-        return response_text, input_tokens, output_tokens
+
+        # Use longer timeout to account for queueing at high concurrency
+        timeout = 180.0
+        max_retries = 5
+        last_exception = None
+
+        for attempt in range(max_retries):
+            try:
+                resp = self.session.post(
+                    self.completions_url,
+                    json=payload,
+                    timeout=timeout
+                )
+                resp.raise_for_status()
+                data = resp.json()
+
+                # Extract response
+                if "choices" not in data or not data["choices"]:
+                    raise RuntimeError(f"Invalid response from SGLang server: {data}")
+
+                response_text = data["choices"][0]["message"]["content"]
+
+                # Get token counts (if provided by server)
+                input_tokens = data.get("usage", {}).get("prompt_tokens", 0)
+                output_tokens = data.get("usage", {}).get("completion_tokens", 0)
+
+                return response_text, input_tokens, output_tokens
+
+            except (requests.exceptions.Timeout, requests.exceptions.RequestException) as e:
+                last_exception = e
+                error_type = type(e).__name__
+                self.console.print(f"[yellow]Attempt {attempt + 1}/{max_retries} failed ({error_type}): {e}[/yellow]")
+                if attempt < max_retries - 1:
+                    continue  # Retry
+                else:
+                    # Final failure after all retries - log loudly
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    error_msg = f"GENERATION FAILED AFTER {max_retries} RETRIES: {error_type} - {e}"
+                    logger.error(error_msg)
+                    self.console.print(f"[red bold]{error_msg}[/red bold]")
+
+                    # Write to disk in log directory if available
+                    log_dir = os.environ.get("ROLLOUT_LOG_DIR", None)
+                    if log_dir:
+                        import time
+                        log_file = os.path.join(log_dir, "generation_failures.log")
+                        try:
+                            with open(log_file, "a") as f:
+                                timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+                                f.write(f"[{timestamp}] {error_msg}\n")
+                                f.write(f"  Payload: {payload}\n\n")
+                        except Exception as write_error:
+                            logger.error(f"Failed to write error log: {write_error}")
+
+                    # Re-raise the original exception with full details
+                    raise last_exception
     
     def _load_tokenizer(self):
         """Load tokenizer if not already loaded."""
@@ -381,12 +412,27 @@ class SGLangModelPlayer(BaseModelPlayer):
             
             logger.debug(f"[SGLangPlayer] Generated {output_tokens} tokens")
             return response_text, input_tokens, output_tokens
-            
+
         except Exception as e:
-            logger.error(f"[SGLangPlayer] Internal generation error: {e}")
-            self.console.print(f"[red]Internal generation error: {e}[/red]")
-            # Return a fallback response
-            return "I need to think about this.", len(prompt_ids), 7
+            error_msg = f"INTERNAL ENGINE GENERATION FAILED: {type(e).__name__} - {e}"
+            logger.error(error_msg)
+            self.console.print(f"[red bold]{error_msg}[/red bold]")
+
+            # Write to disk in log directory if available
+            log_dir = os.environ.get("ROLLOUT_LOG_DIR", None)
+            if log_dir:
+                import time
+                log_file = os.path.join(log_dir, "generation_failures.log")
+                try:
+                    with open(log_file, "a") as f:
+                        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+                        f.write(f"[{timestamp}] {error_msg}\n")
+                        f.write(f"  Input tokens: {len(prompt_ids)}\n\n")
+                except Exception as write_error:
+                    logger.error(f"Failed to write error log: {write_error}")
+
+            # Re-raise the exception to provide full details to outer handler
+            raise e
 
 
 # Backward compatibility alias

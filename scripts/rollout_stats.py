@@ -15,6 +15,7 @@ class RolloutStats:
     # Output files
     raw_parquet: Path
     trimmed_parquet: Path
+    val_parquet: Path
     examples_txt: Path
 
     # Game performance metrics (ACTUAL game rewards, not GRPO-normalized)
@@ -41,11 +42,15 @@ class RolloutStats:
     grpo_weight_neg_ratio: float
     grpo_weight_zero_ratio: float
 
+    # Generation failure tracking
+    failure_ratio: float  # Proportion of sequences with "I need to think about this."
+
     def to_dict(self) -> dict:
         """Convert to dictionary for backward compatibility."""
         return {
             "raw_parquet": str(self.raw_parquet),
             "trimmed_parquet": str(self.trimmed_parquet),
+            "val_parquet": str(self.val_parquet),
             "examples_txt": str(self.examples_txt),
             "pct95": self.trim_threshold,
             "kept": self.kept_sequences,

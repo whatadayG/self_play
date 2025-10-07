@@ -216,13 +216,19 @@ def main():
     ap.add_argument("--group-size", type=int, default=8, help="Number of times to play each game (creates groups of 2*k sequences)")
     ap.add_argument("--seed", type=int, default=42)
     # Parallelization settings
-    ap.add_argument("--num-procs", type=int, default=64, help="Number of worker processes (use up to 32)")
-    ap.add_argument("--threads-per-proc", type=int, default=16, help="Threads per process for issuing requests")
+    ap.add_argument("--num-procs", type=int, default=32, help="Number of worker processes")
+    ap.add_argument("--threads-per-proc", type=int, default=4, help="Threads per process for issuing requests")
     ap.add_argument("--max-workers", type=int, default=1024, help="[deprecated] Ignored; use --num-procs/--threads-per-proc")
     ap.add_argument("--progress-interval", type=int, default=64, help="Print progress every N completed games")
     args = ap.parse_args()
 
     np.random.seed(args.seed)
+
+    # Set log directory for generation failures
+    out_path = Path(args.out)
+    log_dir = str(out_path.parent.resolve())
+    os.environ["ROLLOUT_LOG_DIR"] = log_dir
+    print(f"Generation failure logs will be written to: {log_dir}/generation_failures.log")
 
     # Load instructions used by DialopSelfPlayRollout
     instructions_path = Path(__file__).parent / "dialop" / "envs" / "data" / "optimization.txt"

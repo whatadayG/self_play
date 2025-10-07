@@ -29,6 +29,7 @@ def run_sft_training(
     gpu_string: str,
     round_dir: Path,
     train_parquet: Path,
+    val_parquet: Path,
     current_model: str,
     max_len_arg: str,
     wandb_project: str,
@@ -41,6 +42,7 @@ def run_sft_training(
         gpu_string: Comma-separated GPU IDs (e.g., "0,1,2,3")
         round_dir: Directory for this round
         train_parquet: Path to training parquet file
+        val_parquet: Path to validation parquet file
         current_model: Model checkpoint to start from
         max_len_arg: Maximum sequence length
         wandb_project: W&B project name
@@ -78,20 +80,24 @@ def run_sft_training(
         "bash", "scripts/sft_qwen/sft_qwen3.sh",
         str(nproc), save_path,
         f"data.train_files={str(train_parquet)}",
-        f"data.val_files={str(train_parquet)}",
+        f"data.val_files={str(val_parquet)}",
         f"data.micro_batch_size_per_gpu={micro_batch_size_per_gpu}",
         f"data.train_batch_size={train_batch_size}",
         f"data.val_batch_size_per_gpu={val_batch_size_per_gpu}",
         f"model.partial_pretrain={current_model}",
-        "trainer.total_epochs=10",
+        "trainer.total_epochs=4",
         "trainer.save_freq=500",
-        "trainer.test_freq=50",
+        "trainer.test_freq=40",
         "trainer.checkpoint.save_contents=[\"hf_model\"]",
         f"data.max_length={max_len_arg}",
         "data.custom_cls.path=verl/verl/utils/dataset/pretokenized_sft_dataset.py",
         "data.custom_cls.name=PreTokenizedSFTDataset",
         f"trainer.project_name={wandb_project}",
         f"trainer.experiment_name={experiment_name}",
+        "optim.lr=5e-5",
+        "optim.lr_scheduler=wsd",
+        "+optim.stable_ratio=0.9",
+        "+optim.min_lr_ratio=0.1",
     ]
 
     # Setup environment
@@ -294,6 +300,9 @@ def write_stats_file(stats: Dict[str, Any], out_path: Path) -> None:
             if key in stats:
                 f.write(f"{q}%: {stats[key]:.6f}\n")
         f.write(f"max: {stats['max']:.6f}\n")
+        # Add failure ratio if available
+        if "failure_ratio" in stats and stats["failure_ratio"] is not None:
+            f.write(f"failure_ratio: {stats['failure_ratio']:.4f}\n")
 
 
 def compute_and_save_stats(parquet_path: Path, out_path: Path) -> Dict[str, Any]:
@@ -302,6 +311,21 @@ def compute_and_save_stats(parquet_path: Path, out_path: Path) -> Dict[str, Any]
         df = pd.read_parquet(str(parquet_path))
         values = _extract_reward_series_from_df(df)
         stats = compute_reward_stats(values if values is not None else np.array([]))
+
+        # Compute failure ratio
+        from transformers import AutoTokenizer
+        failure_count = 0
+        try:
+            tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-7B-Instruct", trust_remote_code=True)
+            for idx, row in df.iterrows():
+                text = tokenizer.decode(row['input_ids'], skip_special_tokens=False)
+                if 'I need to think about this.' in text:
+                    failure_count += 1
+            stats["failure_ratio"] = float(failure_count / len(df)) if len(df) > 0 else 0.0
+        except Exception as e:
+            print(f"Warning: Could not compute failure rate: {e}")
+            stats["failure_ratio"] = None
+
         write_stats_file(stats, out_path)
         return stats
     except Exception as e:
@@ -473,15 +497,161 @@ def find_latest_model_before_round(save_root: Path, upto_round_exclusive: int) -
                 return m
     return None
 
+
+def process_rollouts_post_generation(round_dir: Path, save_root: Path, args) -> "RolloutStats":
+    """
+    Process raw rollouts: compute stats, trim, export examples, log metrics.
+    This is called after rollouts are generated (either fresh or resumed).
+
+    Returns RolloutStats object with all metrics.
+    """
+    train_parquet = round_dir / "train.parquet"
+
+    if not train_parquet.exists():
+        raise RuntimeError(f"Expected train.parquet at {train_parquet} but not found")
+
+    # Import rollout_pipeline functions for processing
+    sys.path.insert(0, str(Path(__file__).parent))
+    from rollout_pipeline import _extract_reward_series_from_df, _export_example_games
+    from rollout_stats import RolloutStats
+
+    df = pd.read_parquet(str(train_parquet))
+    if "sample_weight" in df.columns and len(df) > 0 and not (df["sample_weight"] > 0).any():
+        raise RuntimeError("All rollout sample weights are zero. This likely indicates inference failures or server issues.")
+
+    # Extract game-normalized rewards
+    game_rewards = _extract_reward_series_from_df(df)
+    if game_rewards is None or len(game_rewards) == 0:
+        raise RuntimeError("Failed to extract game rewards from data")
+
+    # Compute game performance metrics (before trimming)
+    game_reward_mean = float(np.mean(game_rewards))
+    game_reward_std = float(np.std(game_rewards))
+    game_reward_p10 = float(np.percentile(game_rewards, 10))
+    game_reward_p25 = float(np.percentile(game_rewards, 25))
+    game_reward_p50 = float(np.percentile(game_rewards, 50))
+    game_reward_p75 = float(np.percentile(game_rewards, 75))
+    game_reward_p90 = float(np.percentile(game_rewards, 90))
+
+    # Perfect score ratio (before trimming)
+    perfect_score_ratio = float(np.mean(game_rewards >= 1.0))
+
+    # Compute GRPO weight statistics
+    grpo_weights = df["sample_weight"].astype(float) if "sample_weight" in df.columns else np.zeros(len(df))
+    grpo_weight_mean = float(np.mean(grpo_weights))
+    grpo_weight_pos_ratio = float(np.mean(grpo_weights > 0))
+    grpo_weight_neg_ratio = float(np.mean(grpo_weights < 0))
+    grpo_weight_zero_ratio = float(np.mean(grpo_weights == 0))
+
+    # Check for generation failures
+    from transformers import AutoTokenizer
+    failure_count = 0
+    try:
+        tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-7B-Instruct", trust_remote_code=True)
+        for idx, row in df.iterrows():
+            text = tokenizer.decode(row['input_ids'], skip_special_tokens=False)
+            if 'I need to think about this.' in text:
+                failure_count += 1
+    except Exception as e:
+        print(f"Warning: Could not compute failure rate: {e}")
+
+    failure_ratio = float(failure_count / len(df)) if len(df) > 0 else 0.0
+
+    # Trim by length (p95)
+    lengths = df["input_ids"].apply(lambda x: len(x))
+    pct95 = int(np.percentile(lengths, 95))
+    if pct95 > 5000:
+        pct95 = 5000
+
+    kept = df[lengths <= pct95]
+
+    # Split into train (90%) and val (10%)
+    from sklearn.model_selection import train_test_split
+    train_df, val_df = train_test_split(kept, test_size=0.2, random_state=42)
+
+    train_path = round_dir / "train_trimmed.parquet"
+    val_path = round_dir / "val_trimmed.parquet"
+    train_df.to_parquet(str(train_path))
+    val_df.to_parquet(str(val_path))
+
+    print(f"Trimmed to 95th percentile length={pct95}, kept {len(kept)}/{len(df)} samples")
+    print(f"  Train: {len(train_df)} samples -> {train_path}")
+    print(f"  Val: {len(val_df)} samples -> {val_path}")
+
+    # Compute perfect score ratio after trimming
+    kept_game_rewards = game_rewards[lengths <= pct95]
+    perfect_score_ratio_after_trim = float(np.mean(kept_game_rewards >= 1.0))
+
+    # Export example games
+    examples_path = round_dir / "examples.txt"
+    _export_example_games(df, examples_path, n_per_category=5)
+
+    # Create RolloutStats object
+    stats = RolloutStats(
+        raw_parquet=train_parquet,
+        trimmed_parquet=train_path,
+        val_parquet=val_path,
+        examples_txt=examples_path,
+        game_reward_mean=game_reward_mean,
+        game_reward_std=game_reward_std,
+        game_reward_p10=game_reward_p10,
+        game_reward_p25=game_reward_p25,
+        game_reward_p50=game_reward_p50,
+        game_reward_p75=game_reward_p75,
+        game_reward_p90=game_reward_p90,
+        perfect_score_ratio=perfect_score_ratio,
+        perfect_score_ratio_after_trim=perfect_score_ratio_after_trim,
+        total_sequences=len(df),
+        kept_sequences=len(kept),
+        trim_threshold=pct95,
+        grpo_weight_mean=grpo_weight_mean,
+        grpo_weight_pos_ratio=grpo_weight_pos_ratio,
+        grpo_weight_neg_ratio=grpo_weight_neg_ratio,
+        grpo_weight_zero_ratio=grpo_weight_zero_ratio,
+        failure_ratio=failure_ratio,
+    )
+
+    # Log to progress.log
+    log_file = round_dir / "progress.log"
+    with open(log_file, "a") as lf:
+        lf.write(json.dumps({
+            "event": "trim_done",
+            "timestamp": time.time(),
+            "pct95": pct95,
+            "kept": int(len(kept)),
+            "total": int(len(df)),
+        }) + "\n")
+        lf.write(json.dumps({
+            "event": "rollout_metrics",
+            "timestamp": time.time(),
+            "game_reward_mean": game_reward_mean,
+            "game_reward_std": game_reward_std,
+            "game_reward_p50": game_reward_p50,
+            "perfect_score_ratio": perfect_score_ratio,
+            "perfect_score_ratio_after_trim": perfect_score_ratio_after_trim,
+            "grpo_weight_mean": grpo_weight_mean,
+            "grpo_weight_pos_ratio": grpo_weight_pos_ratio,
+            "failure_ratio": failure_ratio,
+        }) + "\n")
+
+    print(f"Rollout stats: game_reward_mean={game_reward_mean:.4f}, perfect_score_ratio={perfect_score_ratio:.3f}, failure_ratio={failure_ratio:.2%}")
+
+    # Write stats.txt for quick reference
+    stats_file = round_dir / "stats.txt"
+    compute_and_save_stats(train_path, stats_file)
+
+    return stats
+
+
 def resume_rollout_generation(round_dir: Path, target_sequences: int, current_model: str, args) -> bool:
     """
     Resume rollout generation if needed.
-    
+
     Returns True if rollouts were generated/completed, False if nothing was done.
     """
     train_parquet = round_dir / "train.parquet"
     train_trimmed_parquet = round_dir / "train_trimmed.parquet"
-    
+
     # Check if we already have enough data
     existing_sequences = 0
     if train_trimmed_parquet.exists():
@@ -500,81 +670,71 @@ def resume_rollout_generation(round_dir: Path, target_sequences: int, current_mo
         except Exception as e:
             print(f"Error reading existing raw data: {e}")
             existing_sequences = 0
-    
+
     needed_sequences = target_sequences - existing_sequences
     if needed_sequences <= 0:
         print(f"Already have {existing_sequences} sequences (target: {target_sequences}), skipping rollout generation")
         return True
-    
+
     print(f"Need {needed_sequences} additional sequences (have: {existing_sequences}, target: {target_sequences})")
-    
-    # Generate additional rollouts
+
+    # Generate additional rollouts using rollout_pipeline
     additional_parquet = round_dir / "train_additional.parquet"
     needed_games = max(1, needed_sequences // 2)  # two sequences per game
-    
-    # Start server and generate
-    gpu_string = args.gpus
-    gpu_list = [g for g in gpu_string.split(",") if g]
-    tp = len(gpu_list)
-    
-    server_proc = start_sglang_server(
-        model_path=current_model,
-        gpus=gpu_string,
-        tp=tp,
-        mem_util=args.server_mem_fraction,
-        port=args.server_port,
-        enable_torch_compile=args.server_enable_torch_compile,
-        disable_cuda_graph=args.server_disable_cuda_graph,
-        log_level=args.server_log_level,
+
+    # Use rollout pipeline - it handles dual-server logic automatically
+    print(f"Calling rollout_pipeline to generate {needed_games} games...")
+
+    # Create a temporary args-like object for the pipeline
+    import argparse
+    pipeline_args = argparse.Namespace(
+        gpus=args.gpus,
+        games_per_round=needed_games * 2,  # Pipeline expects total sequences (2 per game)
+        server_port=args.server_port,
+        server_wait_seconds=args.server_wait_seconds,
+        server_mem_fraction=args.server_mem_fraction,
+        server_log_level=args.server_log_level,
+        server_enable_torch_compile=args.server_enable_torch_compile,
+        server_disable_cuda_graph=args.server_disable_cuda_graph,
     )
-    
-    server_url = f"http://127.0.0.1:{args.server_port}"
+
+    # Generate via pipeline (automatically uses dual-server for 4 GPUs)
     try:
-        wait_for_sglang(server_url, server_proc, timeout_sec=args.server_wait_seconds, interval_sec=5)
-        
-        # Generate additional rollouts
-        test_py = "/home/nickatomlin/georgiazhou/self_play/test_venv/bin/python"
-        python_bin = test_py if os.path.exists(test_py) else sys.executable
-        gen_cmd = [
-            python_bin,
-            "scripts/generate_rollouts.py",
-            "--server-url", server_url,
-            "--model-id", current_model,
-            "--out", str(additional_parquet),
-            "--num-games", str(needed_games),
-            "--max-new-tokens", "8192",
-            "--group-size", "8",
-            "--temperature", "0.7",
-            "--top-p", "0.9",
-            "--max-model-len", "32768",
-        ]
-        
-        run(gen_cmd)
-        
-        # Combine with existing data
-        dfs_to_combine = []
-        if train_parquet.exists():
-            dfs_to_combine.append(pd.read_parquet(train_parquet))
+        # Import and call the function directly
+        sys.path.insert(0, str(Path(__file__).parent))
+        from rollout_pipeline import function_A_start_server_and_generate
+
+        generated_parquet = function_A_start_server_and_generate(
+            args=pipeline_args,
+            round_dir=round_dir,
+            current_model=current_model,
+        )
+
+        # Rename to additional_parquet for consistency
+        if generated_parquet.exists() and generated_parquet != additional_parquet:
+            generated_parquet.rename(additional_parquet)
+
+    except Exception as e:
+        print(f"Error during rollout generation: {e}")
+        return False
+
+    # Combine with existing data
+    dfs_to_combine = []
+    if train_parquet.exists():
+        dfs_to_combine.append(pd.read_parquet(train_parquet))
+    if additional_parquet.exists():
+        dfs_to_combine.append(pd.read_parquet(additional_parquet))
+
+    if dfs_to_combine:
+        combined_df = pd.concat(dfs_to_combine, ignore_index=True)
+        combined_df.to_parquet(train_parquet)
+        print(f"Combined data: {len(combined_df)} total sequences")
+
+        # Clean up additional file
         if additional_parquet.exists():
-            dfs_to_combine.append(pd.read_parquet(additional_parquet))
-        
-        if dfs_to_combine:
-            combined_df = pd.concat(dfs_to_combine, ignore_index=True)
-            combined_df.to_parquet(train_parquet)
-            print(f"Combined data: {len(combined_df)} total sequences")
-            
-            # Clean up additional file
-            if additional_parquet.exists():
-                additional_parquet.unlink()
-        
-        return True
-        
-    finally:
-        kill_process_tree(server_proc)
-        try:
-            subprocess.run(["pkill", "-f", "sglang"], check=False)
-        except Exception:
-            pass
+            additional_parquet.unlink()
+
+    return True
 
 
 def start_sglang_server(
@@ -642,6 +802,7 @@ def start_sglang_server(
         "--schedule-conservativeness", "1.0",
         "--chunked-prefill-size", "512",
         "--schedule-policy", "lpm",
+        "--max-running-requests", "1024",  # Allow many concurrent requests; SGLang will batch efficiently
 
     ]
     if enable_torch_compile:
@@ -843,44 +1004,10 @@ def main():
             # Try to resume rollout generation
             success = resume_rollout_generation(round_dir, args.games_per_round, current_model, args)
             if success:
-                # Compute stats for produced/combined rollouts
-                train_parquet = round_dir / "train.parquet"
-                stats_path = round_dir / "stats.txt"
-                if train_parquet.exists():
-                    try:
-                        compute_and_save_stats(train_parquet, stats_path)
-                    except Exception as e:
-                        print(f"Warning: failed to compute stats for {train_parquet}: {e}")
-                # Process the data (trim, etc.)
-                train_parquet = round_dir / "train.parquet"
-                if train_parquet.exists():
-                    df = pd.read_parquet(str(train_parquet))
-                    if "sample_weight" in df.columns and len(df) > 0 and not (df["sample_weight"] > 0).any():
-                        raise RuntimeError("All rollout sample weights are zero. This likely indicates inference failures or server issues.")
-                    
-                    lengths = df["input_ids"].apply(lambda x: len(x))
-                    pct95 = int(np.percentile(lengths, 95))
-                    if pct95 > 5000:
-                        pct95 = 5000
-                    
-                    kept = df[lengths <= pct95]
-                    trimmed_path = round_dir / "train_trimmed.parquet"
-                    kept.to_parquet(str(trimmed_path))
-                    print(f"Trimmed to 95th percentile length={pct95}, kept {len(kept)}/{len(df)} samples -> {trimmed_path}")
-                    
-                    # Log trim completion
-                    log_file = round_dir / "progress.log"
-                    with open(log_file, "a") as lf:
-                        lf.write(json.dumps({
-                            "event": "trim_done",
-                            "timestamp": time.time(),
-                            "pct95": pct95,
-                            "kept": int(len(kept)),
-                            "total": int(len(df))
-                        }) + "\n")
-                    
-                    # Update phase to training
-                    phase = 'training'
+                # Process the rollouts (trim, stats, examples, etc.)
+                rollout_stats = process_rollouts_post_generation(round_dir, save_root, args)
+                # Update phase to training
+                phase = 'training'
         
         if phase == 'training':
             round_dir = save_root / f"round_{current_round:03d}"
@@ -900,11 +1027,18 @@ def main():
                 pct95 = 5000
             max_len_arg = str(pct95)
 
+            # Get validation parquet path
+            val_trimmed_parquet = round_dir / "val_trimmed.parquet"
+            if not val_trimmed_parquet.exists():
+                # Fallback to using train as val if split wasn't done
+                val_trimmed_parquet = train_trimmed_parquet
+
             # Run SFT training
             sft_log = run_sft_training(
                 gpu_string=args.gpus,
                 round_dir=round_dir,
                 train_parquet=train_trimmed_parquet,
+                val_parquet=val_trimmed_parquet,
                 current_model=current_model,
                 max_len_arg=max_len_arg,
                 wandb_project=args.wandb_project,
@@ -913,6 +1047,7 @@ def main():
             )
             
             # Log completion and update model
+            save_path = str(round_dir / "checkpoints")
             log_file = round_dir / "progress.log"
             with open(log_file, "a") as lf:
                 lf.write(json.dumps({
@@ -1105,6 +1240,7 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
             gpu_string=args.gpus,
             round_dir=round_dir,
             train_parquet=train_parquet_for_sft,
+            val_parquet=rollout_stats.val_parquet,
             current_model=current_model,
             max_len_arg=max_len_arg,
             wandb_project=args.wandb_project,
