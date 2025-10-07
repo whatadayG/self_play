@@ -11,6 +11,15 @@ import pandas as pd
 import numpy as np
 from typing import Tuple, Optional, Dict, Any
 
+# Make the scripts directory importable so we can load the rollout pipeline
+try:
+    scripts_dir = str(Path(__file__).parent)
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    from rollout_pipeline import run_rollout_pipeline
+except Exception:
+    run_rollout_pipeline = None  # Will be checked before use
+
 
 def find_most_recent_run(base_logs_dir: str = "/home/nickatomlin/georgiazhou/self_play/logs/offline_grpo") -> Optional[Path]:
     """Find the most recent run directory based on timestamp."""
@@ -441,12 +450,15 @@ def start_sglang_server(
         "--model-path", model_path,
         "--port", str(port),
         "--host", "127.0.0.1",
-        "--tp", str(tp),
+        "--tp", "2",
         "--trust-remote-code",
         "--mem-fraction-static", str(mem_util),
         "--dtype", "bfloat16",
-        "--log-level", str(log_level)
-        
+        "--log-level", str(log_level),
+        "--schedule-conservativeness", "1.0",
+        "--chunked-prefill-size", "512",
+        "--schedule-policy", "lpm",
+
     ]
     if enable_torch_compile:
         cmd.append("--enable-torch-compile")
@@ -570,7 +582,7 @@ def wait_for_sglang(server_url: str, server_proc: subprocess.Popen, timeout_sec:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rounds", type=int, default=1)
-    ap.add_argument("--games-per-round", type=int, default=64)
+    ap.add_argument("--games-per-round", type=int, default=256)
     ap.add_argument("--model-path", default="/home/nickatomlin/georgiazhou/self_play/checkpoints/sft_qwen3_8b/global_step_4800_merged")
     ap.add_argument("--save-root", default="")
     ap.add_argument("--gpus", default="0,1,2,3")
@@ -848,153 +860,23 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
         round_dir = save_root / f"round_{r:03d}"
         round_dir.mkdir(parents=True, exist_ok=True)
 
-        # 1) Start SGLang server
-        print("Starting SGLang server...")
-        server_proc = start_sglang_server(
-            model_path=current_model,
-            gpus=gpu_string,
-            tp=tp,
-            mem_util=args.server_mem_fraction,
-            port=args.server_port,
-            enable_torch_compile=args.server_enable_torch_compile,
-            disable_cuda_graph=args.server_disable_cuda_graph,
-            log_level=args.server_log_level,
-        )
-        
-        server_url = f"http://127.0.0.1:{args.server_port}"
-        try:
-            wait_for_sglang(server_url, server_proc, timeout_sec=args.server_wait_seconds, interval_sec=5)
-        except Exception as e:
-            print(f"Error waiting for SGLang server: {e}")
-            kill_process_tree(server_proc)
-            try:
-                subprocess.run(["pkill", "-f", "sglang.launch_server"], check=False)
-            except Exception:
-                pass
-            raise
-
-        # 2) Generate rollouts
-        print("Generating rollouts...")
-        out_parquet = round_dir / "train.parquet"
-        test_py = "/home/nickatomlin/georgiazhou/self_play/test_venv/bin/python"
-        python_bin = test_py if os.path.exists(test_py) else sys.executable
-        gen_cmd = [
-            python_bin, "scripts/generate_rollouts.py",
-            "--server-url", server_url,
-            "--model-id", current_model,
-            "--out", str(out_parquet),
-            "--num-games", str(args.games_per_round // 2),
-            "--max-new-tokens", "8192",
-            "--group-size", "8",
-            "--temperature", "0.7",
-            "--top-p", "0.9",
-            "--max-model-len", "32768",
-        ]
-        
         log_file = round_dir / "progress.log"
-        with open(log_file, "a") as lf:
-            lf.write(json.dumps({
-                "event": "server_started",
-                "timestamp": time.time(),
-                "model": current_model,
-                "gpus": gpu_string,
-                "tp": tp,
-            }) + "\n")
-        
-        try:
-            run(gen_cmd)
-            with open(log_file, "a") as lf:
-                lf.write(json.dumps({
-                    "event": "generation_done",
-                    "timestamp": time.time(),
-                    "out": str(out_parquet)
-                }) + "\n")
-        finally:
-            print("Stopping SGLang server...")
-            kill_process_tree(server_proc)
-            try:
-                subprocess.run(["pkill", "-f", "sglang"], check=False)
-            except Exception:
-                pass
 
-        # Compute and write stats for the produced rollouts
-        stats_path = round_dir / "stats.txt"
-        try:
-            stats = compute_and_save_stats(out_parquet, stats_path)
-            with open(log_file, "a") as lf:
-                lf.write(json.dumps({
-                    "event": "rollout_stats",
-                    "timestamp": time.time(),
-                    "stats_path": str(stats_path),
-                    "mean": stats.get("mean", None),
-                    "count": stats.get("count", 0)
-                }) + "\n")
-        except Exception as e:
-            print(f"Warning: failed to compute stats for {out_parquet}: {e}")
-
-        # Process and trim data
-        df = pd.read_parquet(str(out_parquet))
-        if "sample_weight" in df.columns and len(df) > 0 and not (df["sample_weight"] > 0).any():
-            raise RuntimeError("All rollout sample weights are zero. This likely indicates inference failures or server issues.")
-        
-        lengths = df["input_ids"].apply(lambda x: len(x))
-        pct95 = int(np.percentile(lengths, 95))
-        if pct95 > 5000:
-            pct95 = 5000
-        
-        kept = df[lengths <= pct95]
-        trimmed_path = round_dir / "train_trimmed.parquet"
-        kept.to_parquet(str(trimmed_path))
-        print(f"Trimmed to 95th percentile length={pct95}, kept {len(kept)}/{len(df)} samples -> {trimmed_path}")
-        
-        train_parquet_for_sft = trimmed_path
+        # Run rollout pipeline
+        result = run_rollout_pipeline(
+            args=args,
+            save_root=save_root,
+            round_dir=round_dir,
+            current_model=current_model,
+        )
+        pct95 = int(result.get("pct95", 4096))
+        train_parquet_for_sft = Path(result.get("trimmed_parquet", round_dir / "train_trimmed.parquet"))
+        kept_count = int(result.get("kept", 0))
+        total_count = int(result.get("total", 0))
+        mean_norm_reward = result.get("mean_norm_reward", None)
+        mean_abs_reward = result.get("mean_abs_reward", None)
+        stats = {"mean": result.get("stats_mean", None), "count": total_count}
         max_len_arg = str(pct95)
-        
-        with open(log_file, "a") as lf:
-            lf.write(json.dumps({
-                "event": "trim_done",
-                "timestamp": time.time(),
-                "pct95": pct95,
-                "kept": int(len(kept)),
-                "total": int(len(df))
-            }) + "\n")
-
-        # Compute and log metrics
-        try:
-            mean_norm_reward = float(kept["sample_weight"].astype(float).mean()) if "sample_weight" in kept.columns else None
-            pos_ratio = float((kept["sample_weight"] > 0).mean()) if "sample_weight" in kept.columns else None
-            zero_ratio = float((kept["sample_weight"] == 0).mean()) if "sample_weight" in kept.columns else None
-            neg_ratio = float((kept["sample_weight"] < 0).mean()) if "sample_weight" in kept.columns else None
-            
-            def _get_abs_reward(x):
-                try:
-                    gi = json.loads(x)
-                    if isinstance(gi, dict):
-                        return gi.get("reward", gi.get("normalized_reward", None))
-                    return None
-                except Exception:
-                    return None
-            
-            abs_vals = kept["game_info"].apply(_get_abs_reward) if "game_info" in kept.columns else []
-            abs_vals = [v for v in abs_vals if isinstance(v, (int, float))]
-            mean_abs_reward = float(np.mean(abs_vals)) if len(abs_vals) > 0 else None
-        except Exception:
-            mean_norm_reward = None
-            mean_abs_reward = None
-            pos_ratio = None
-            zero_ratio = None
-            neg_ratio = None
-        
-        with open(log_file, "a") as lf:
-            lf.write(json.dumps({
-                "event": "rollout_metrics",
-                "timestamp": time.time(),
-                "mean_norm_reward": mean_norm_reward,
-                "mean_abs_reward": mean_abs_reward,
-                "weight_pos_ratio": pos_ratio,
-                "weight_zero_ratio": zero_ratio,
-                "weight_neg_ratio": neg_ratio,
-            }) + "\n")
 
         # Optionally trigger resample: compare mean vs previous N means
         if args.enable_resample:
@@ -1020,6 +902,14 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
 
                 if len(prev_means) == window and all(current_mean < pm for pm in prev_means):
                     print(f"[resample] Current mean {current_mean:.6f} is lower than all of last {window} means {prev_means}. Rolling back previous round and aborting current.")
+                    # Write a simple text line to master run directory (not round dir)
+                    try:
+                        master_log = save_root / "resample.log"
+                        ts = time.strftime('%Y-%m-%d %H:%M:%S')
+                        with open(master_log, "a") as mf:
+                            mf.write(f"[{ts}] round={r} current_mean={current_mean:.6f} window={window} prev_means={prev_means} -> rollback r-1 and redo.\n")
+                    except Exception:
+                        pass
                     # Remove current round directory
                     try:
                         import shutil
@@ -1044,12 +934,24 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
                     # Restart loop from (r-1)
                     return run_offline_grpo_loop(args, save_root, new_current_model, start_round)
         
+        # Normalize counts for logging regardless of code path
+        try:
+            kept_len_for_log = int(kept_count)
+            total_len_for_log = int(total_count)
+        except Exception:
+            try:
+                kept_len_for_log = int(len(kept))
+                total_len_for_log = int(len(df))
+            except Exception:
+                kept_len_for_log = 0
+                total_len_for_log = 0
+
         if wb is not None:
             wb.log({
                 "round": r,
                 "rollout/pct95_length": pct95,
-                "rollout/kept": int(len(kept)),
-                "rollout/total": int(len(df)),
+                "rollout/kept": kept_len_for_log,
+                "rollout/total": total_len_for_log,
                 "rollout/mean_norm_reward": mean_norm_reward,
                 "rollout/mean_abs_reward": mean_abs_reward,
             })

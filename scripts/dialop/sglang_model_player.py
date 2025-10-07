@@ -7,6 +7,11 @@ import asyncio
 import requests
 import numpy as np
 from typing import Optional, Tuple, List, Dict, Any
+from requests.adapters import HTTPAdapter
+try:
+    from urllib3.util.retry import Retry  # type: ignore
+except Exception:  # urllib3 may vary by environment
+    Retry = None  # type: ignore
 from rich.console import Console
 from transformers import AutoTokenizer
 
@@ -26,6 +31,7 @@ class SGLangModelPlayer(BaseModelPlayer):
         # New optional parameters for internal engine mode
         engine: Optional[Any] = None,
         processing_class: Optional[Any] = None,
+        optional: Optional[Dict[str, Any]] = None,
     ):
         """Initialize SGLang model player.
         
@@ -42,7 +48,7 @@ class SGLangModelPlayer(BaseModelPlayer):
         self.tokenizer = None  # Will be loaded on demand for external mode
         self.engine = engine
         self.processing_class = processing_class
-        
+        self.optional = optional or {}
         # Validate configuration: exactly one mode should be configured
         # Design intent:
         # - Internal mode: engine and processing_class are provided (for training within verl)
@@ -84,6 +90,25 @@ class SGLangModelPlayer(BaseModelPlayer):
             # Get API key from environment or config
             self.api_key = os.environ.get("SGLANG_API_KEY", self.config.api_key)
             
+            # Create a persistent HTTP session for connection reuse
+            self.session = requests.Session()
+            # Configure adapter with a reasonable pool; retries disabled by default
+            adapter = HTTPAdapter(pool_connections=64, pool_maxsize=256)
+            if Retry is not None:
+                # Optional: very conservative retry policy on transient TCP resets
+                retry = Retry(total=0, backoff_factor=0)
+                adapter = HTTPAdapter(pool_connections=64, pool_maxsize=256, max_retries=retry)
+            self.session.mount("http://", adapter)
+            self.session.mount("https://", adapter)
+            # Default headers
+            self.session.headers.update(
+                {
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Connection": "keep-alive",
+                }
+            )
+
             self.console.print(f"[green]Using SGLang server at {self.base_url} for {self.role}[/green]")
     
     def _generate_text(self, messages: List[Dict[str, str]], **gen_kwargs) -> Tuple[str, int, int]:
@@ -123,18 +148,11 @@ class SGLangModelPlayer(BaseModelPlayer):
             "n": 1,
         }
         
-        # Set headers
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}",
-        }
-        
-        # Make request
+        # Make request via persistent session
         try:
-            resp = requests.post(
+            resp = self.session.post(
                 self.completions_url,
                 json=payload,
-                headers=headers,
                 timeout=self.config.timeout
             )
             resp.raise_for_status()

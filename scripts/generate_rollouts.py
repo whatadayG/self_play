@@ -5,7 +5,7 @@ import argparse
 import time
 from pathlib import Path
 from typing import Any, Dict, List
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
 import threading
 
 import numpy as np
@@ -163,6 +163,44 @@ def process_game_result(result: Dict[str, Any], max_model_len: int) -> List[Dict
     return rows
 
 
+def worker_run_games(
+    game_ids: List[int],
+    player_cfg: Dict[str, Any],
+    model_id: str,
+    instructions: str,
+    max_model_len: int,
+    threads_per_proc: int,
+    seed: int,
+) -> List[Dict[str, Any]]:
+    """Run a batch of games inside a subprocess, using a small thread pool for I/O.
+
+    Returns a list of processed training rows (two rows per completed game).
+    """
+    # Ensure different RNG stream per worker
+    try:
+        np.random.seed(seed + os.getpid())
+    except Exception:
+        np.random.seed(seed)
+
+    rows_accum: List[Dict[str, Any]] = []
+
+    def one(game_id: int) -> List[Dict[str, Any]]:
+        result = run_one_game(player_cfg, model_id, instructions, game_id)
+        return process_game_result(result, max_model_len)
+
+    # Small thread pool to overlap request I/O in this process
+    with ThreadPoolExecutor(max_workers=threads_per_proc) as executor:
+        futures = {executor.submit(one, gid): gid for gid in game_ids}
+        for fut in as_completed(futures):
+            try:
+                rows_accum.extend(fut.result())
+            except Exception:
+                # Skip failed game; continue with others
+                continue
+
+    return rows_accum
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--server-url", default="http://127.0.0.1:30001", help="URL of the SGLang server (default: http://127.0.0.1:30001)")
@@ -178,7 +216,9 @@ def main():
     ap.add_argument("--group-size", type=int, default=8, help="Number of times to play each game (creates groups of 2*k sequences)")
     ap.add_argument("--seed", type=int, default=42)
     # Parallelization settings
-    ap.add_argument("--max-workers", type=int, default=1024, help="Maximum number of concurrent games to run")
+    ap.add_argument("--num-procs", type=int, default=64, help="Number of worker processes (use up to 32)")
+    ap.add_argument("--threads-per-proc", type=int, default=16, help="Threads per process for issuing requests")
+    ap.add_argument("--max-workers", type=int, default=1024, help="[deprecated] Ignored; use --num-procs/--threads-per-proc")
     ap.add_argument("--progress-interval", type=int, default=64, help="Print progress every N completed games")
     args = ap.parse_args()
 
@@ -197,59 +237,58 @@ def main():
 
     # Calculate total games to play: num_games * group_size
     total_games = args.num_games * args.group_size
-    print(f"Starting generation of {total_games} total games ({args.num_games} unique games × {args.group_size} plays each) with {args.max_workers} workers...")
+    print(
+        f"Starting generation of {total_games} total games "
+        f"({args.num_games} unique games × {args.group_size} plays each) "
+        f"with {args.num_procs} processes × {args.threads_per_proc} threads..."
+    )
     start_time = time.time()
     
-    # Thread-safe list to collect results
+    # Build ordered list of game IDs to preserve grouping logic
+    game_ids_all = list(range(total_games))
+
+    # Partition game IDs across processes
+    num_procs = max(1, min(args.num_procs, total_games))
+    chunk_size = (total_games + num_procs - 1) // num_procs
+    game_chunks = [game_ids_all[i : i + chunk_size] for i in range(0, total_games, chunk_size)]
+
     all_rows: List[Dict[str, Any]] = []
-    rows_lock = threading.Lock()
-    completed_games = 0
-    completed_lock = threading.Lock()
 
-    def safe_append_rows(new_rows: List[Dict[str, Any]]):
-        with rows_lock:
-            all_rows.extend(new_rows)
+    with ProcessPoolExecutor(max_workers=num_procs) as pool:
+        futures = [
+            pool.submit(
+                worker_run_games,
+                chunk,
+                player_cfg,
+                args.model_id,
+                instructions,
+                args.max_model_len,
+                args.threads_per_proc,
+                args.seed,
+            )
+            for chunk in game_chunks
+        ]
 
-    def increment_completed():
-        nonlocal completed_games
-        with completed_lock:
-            completed_games += 1
-            return completed_games
-
-    # Use ThreadPoolExecutor for parallel game generation
-    with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
-        # Submit all games: for each unique game, play it group_size times
-        future_to_game_info = {}
-        game_counter = 0
-        for unique_game_id in range(args.num_games):
-            for play_id in range(args.group_size):
-                game_id = game_counter
-                future = executor.submit(run_one_game, player_cfg, args.model_id, instructions, game_id)
-                future_to_game_info[future] = {
-                    "game_id": game_id,
-                    "unique_game_id": unique_game_id,
-                    "play_id": play_id
-                }
-                game_counter += 1
-        
-        # Process completed games as they finish
-        for future in as_completed(future_to_game_info):
-            game_info = future_to_game_info[future]
+        completed_chunks = 0
+        completed_games = 0
+        for fut in as_completed(futures):
             try:
-                result = future.result()
-                rows = process_game_result(result, args.max_model_len)
-                safe_append_rows(rows)
-                
-                completed = increment_completed()
-                if completed % args.progress_interval == 0 or completed == total_games:
-                    elapsed = time.time() - start_time
-                    rate = completed / elapsed if elapsed > 0 else 0
-                    print(f"Completed {completed}/{total_games} games ({rate:.1f} games/sec)")
-                    
+                rows = fut.result()
+                all_rows.extend(rows)
+                # Each game yields two rows
+                completed_in_chunk = len(rows) // 2
+                completed_games += completed_in_chunk
             except Exception as e:
-                print(f"Game {game_info['game_id']} failed: {e}")
-                # Continue with other games even if one fails
-
+                print(f"Worker failed: {e}")
+            finally:
+                completed_chunks += 1
+                if completed_games % args.progress_interval == 0 or completed_games >= total_games:
+                    elapsed = time.time() - start_time
+                    rate = completed_games / elapsed if elapsed > 0 else 0
+                    print(
+                        f"Completed {completed_games}/{total_games} games "
+                        f"({rate:.1f} games/sec) via {completed_chunks}/{len(futures)} workers"
+                    )
     print(f"Generation completed in {time.time() - start_time:.1f}s")
 
     # Group sequences by unique game sets for GRPO normalization
@@ -282,10 +321,6 @@ def main():
                 all_rows[j]["sample_weight"] = float(group_rewards[j - start] - baseline)
         
         print(f"Applied GRPO normalization to {full_groups} groups of {sequences_per_group} sequences each")
-
-    # Remove game_id from final output (it was only needed for grouping)
-    for row in all_rows:
-        del row["game_id"]
 
     # Save parquet
     df = pd.DataFrame(all_rows)
