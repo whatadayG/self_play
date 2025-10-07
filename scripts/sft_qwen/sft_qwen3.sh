@@ -39,10 +39,11 @@ torchrun --nnodes=1 --nproc_per_node=$nproc_per_node --rdzv_endpoint=localhost:2
     trainer.project_name=multiturn-sft \
     trainer.experiment_name=multiturn_qwen3_8b_len10k_b32 \
     trainer.logger='["console", "wandb"]' \
-    trainer.total_epochs=5 $@ \
+    trainer.total_epochs=5 \
     trainer.save_freq=-1 \
     trainer.test_freq=1 \
-    use_remove_padding=true
+    use_remove_padding=true \
+    $@
 
     # trainer.n_gpus_per_node=2 \
 
