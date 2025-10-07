@@ -29,6 +29,7 @@ torchrun --nnodes=1 --nproc_per_node=$nproc_per_node --rdzv_endpoint=localhost:2
     data.truncation=error \
     data.micro_batch_size_per_gpu=3 \
     data.train_batch_size=12 \
+    +data.val_batch_size_per_gpu=6 \
     model.partial_pretrain=Qwen/Qwen3-8B \
     model.trust_remote_code=true \
     model.fsdp_config.model_dtype=bf16 \
@@ -38,9 +39,9 @@ torchrun --nnodes=1 --nproc_per_node=$nproc_per_node --rdzv_endpoint=localhost:2
     trainer.project_name=multiturn-sft \
     trainer.experiment_name=multiturn_qwen3_8b_len10k_b32 \
     trainer.logger='["console", "wandb"]' \
-    trainer.total_epochs=10 $@ \
+    trainer.total_epochs=5 $@ \
     trainer.save_freq=-1 \
-    trainer.test_freq=10 \
+    trainer.test_freq=1 \
     use_remove_padding=true
 
     # trainer.n_gpus_per_node=2 \

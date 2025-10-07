@@ -183,9 +183,11 @@ class FSDPSFTTrainer:
         self.val_sampler = DistributedSampler(
             self.val_dataset, shuffle=False, num_replicas=world_size, rank=rank, drop_last=True
         )
+        # Use separate val_batch_size_per_gpu if specified, otherwise fall back to micro_batch_size_per_gpu
+        val_batch_size_per_gpu = getattr(config.data, 'val_batch_size_per_gpu', config.data.micro_batch_size_per_gpu)
         self.val_dataloader = StatefulDataLoader(
             dataset=self.val_dataset,
-            batch_size=config.data.micro_batch_size_per_gpu,
+            batch_size=val_batch_size_per_gpu,
             sampler=self.val_sampler,
             num_workers=8,
             pin_memory=True,
@@ -507,6 +509,20 @@ class FSDPSFTTrainer:
             step_loss /= self.device_mesh.size(0)
         return {"train/loss": step_loss.detach().item(), "train/lr(1e-3)": lr * 1e3}
 
+    def _offload_optimizer_to_cpu(self):
+        """Move optimizer state to CPU to free GPU memory during evaluation"""
+        for state in self.optimizer.state.values():
+            for k, v in state.items():
+                if torch.is_tensor(v):
+                    state[k] = v.cpu()
+
+    def _load_optimizer_to_gpu(self):
+        """Move optimizer state back to GPU after evaluation"""
+        for state in self.optimizer.state.values():
+            for k, v in state.items():
+                if torch.is_tensor(v):
+                    state[k] = v.to(self.device_name)
+
     def validation_step(self, batch: TensorDict):
         self.fsdp_model.eval()
         with torch.no_grad():
@@ -752,10 +768,21 @@ class FSDPSFTTrainer:
 
                 # early exit or validation step
                 if is_last_step or (self.config.trainer.test_freq > 0 and is_valid_step):
+                    # Optionally offload optimizer state to CPU to free GPU memory for larger eval batches
+                    offload_optimizer_during_eval = getattr(self.config.trainer, 'offload_optimizer_during_eval', True)
+                    if offload_optimizer_during_eval:
+                        self._offload_optimizer_to_cpu()
+                        torch.distributed.barrier()  # Ensure all ranks finish offloading
+
                     # Perform validation
                     val_losses = []
-                    for val_data in self.val_dataloader:
-                        val_data = TensorDict(val_data, batch_size=self.config.data.micro_batch_size_per_gpu).to(
+                    for val_data in tqdm(
+                        self.val_dataloader,
+                        desc="Validation",
+                        disable=rank != 0,
+                    ):
+                        val_batch_size_per_gpu = getattr(self.config.data, 'val_batch_size_per_gpu', self.config.data.micro_batch_size_per_gpu)
+                        val_data = TensorDict(val_data, batch_size=val_batch_size_per_gpu).to(
                             self.device_name
                         )
                         val_loss = self.validation_step(val_data)
@@ -766,6 +793,11 @@ class FSDPSFTTrainer:
                         tracking.log(data=metric, step=global_step)
                         last_valid_metric = metric
                     torch.distributed.barrier()
+
+                    # Reload optimizer state back to GPU for training
+                    if offload_optimizer_during_eval:
+                        self._load_optimizer_to_gpu()
+                        torch.distributed.barrier()  # Ensure all ranks finish reloading
 
                 if is_last_step or (self.config.trainer.save_freq > 0 and is_save_step):
                     self.save_checkpoint(step=global_step)
