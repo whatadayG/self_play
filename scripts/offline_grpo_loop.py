@@ -16,7 +16,7 @@ try:
     scripts_dir = str(Path(__file__).parent)
     if scripts_dir not in sys.path:
         sys.path.insert(0, scripts_dir)
-    from rollout_pipeline import run_rollout_pipeline
+    from rollout_pipeline import run_rollout_pipeline, process_rollouts_post_generation
     from rollout_stats import RolloutStats
 except Exception as e:
     print(f"Warning: Could not import rollout modules: {e}")
@@ -94,7 +94,7 @@ def run_sft_training(
         "data.custom_cls.name=PreTokenizedSFTDataset",
         f"trainer.project_name={wandb_project}",
         f"trainer.experiment_name={experiment_name}",
-        "optim.lr=5e-5",
+        "optim.lr=1e-5",
         "optim.lr_scheduler=wsd",
         "+optim.stable_ratio=0.9",
         "+optim.min_lr_ratio=0.1",
@@ -382,10 +382,10 @@ def branch_run(src_run: Path, dst_run: Path, rounds_to_link: int = 2) -> None:
                 os.symlink(os.fspath(src_ckpt), os.fspath(dst_ckpt))
             except FileExistsError:
                 pass
-        # Compute stats for existing parquet(s)
-        parquet = dst_round / "train_trimmed.parquet"
+        # Compute stats for existing parquet(s) (prefer full rollout set)
+        parquet = dst_round / "train.parquet"
         if not parquet.exists():
-            parquet = dst_round / "train.parquet"
+            parquet = dst_round / "train_trimmed.parquet"
         stats_path = dst_round / "stats.txt"
         if parquet.exists() and not stats_path.exists():
             compute_and_save_stats(parquet, stats_path)
@@ -498,151 +498,6 @@ def find_latest_model_before_round(save_root: Path, upto_round_exclusive: int) -
     return None
 
 
-def process_rollouts_post_generation(round_dir: Path, save_root: Path, args) -> "RolloutStats":
-    """
-    Process raw rollouts: compute stats, trim, export examples, log metrics.
-    This is called after rollouts are generated (either fresh or resumed).
-
-    Returns RolloutStats object with all metrics.
-    """
-    train_parquet = round_dir / "train.parquet"
-
-    if not train_parquet.exists():
-        raise RuntimeError(f"Expected train.parquet at {train_parquet} but not found")
-
-    # Import rollout_pipeline functions for processing
-    sys.path.insert(0, str(Path(__file__).parent))
-    from rollout_pipeline import _extract_reward_series_from_df, _export_example_games
-    from rollout_stats import RolloutStats
-
-    df = pd.read_parquet(str(train_parquet))
-    if "sample_weight" in df.columns and len(df) > 0 and not (df["sample_weight"] > 0).any():
-        raise RuntimeError("All rollout sample weights are zero. This likely indicates inference failures or server issues.")
-
-    # Extract game-normalized rewards
-    game_rewards = _extract_reward_series_from_df(df)
-    if game_rewards is None or len(game_rewards) == 0:
-        raise RuntimeError("Failed to extract game rewards from data")
-
-    # Compute game performance metrics (before trimming)
-    game_reward_mean = float(np.mean(game_rewards))
-    game_reward_std = float(np.std(game_rewards))
-    game_reward_p10 = float(np.percentile(game_rewards, 10))
-    game_reward_p25 = float(np.percentile(game_rewards, 25))
-    game_reward_p50 = float(np.percentile(game_rewards, 50))
-    game_reward_p75 = float(np.percentile(game_rewards, 75))
-    game_reward_p90 = float(np.percentile(game_rewards, 90))
-
-    # Perfect score ratio (before trimming)
-    perfect_score_ratio = float(np.mean(game_rewards >= 1.0))
-
-    # Compute GRPO weight statistics
-    grpo_weights = df["sample_weight"].astype(float) if "sample_weight" in df.columns else np.zeros(len(df))
-    grpo_weight_mean = float(np.mean(grpo_weights))
-    grpo_weight_pos_ratio = float(np.mean(grpo_weights > 0))
-    grpo_weight_neg_ratio = float(np.mean(grpo_weights < 0))
-    grpo_weight_zero_ratio = float(np.mean(grpo_weights == 0))
-
-    # Check for generation failures
-    from transformers import AutoTokenizer
-    failure_count = 0
-    try:
-        tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-7B-Instruct", trust_remote_code=True)
-        for idx, row in df.iterrows():
-            text = tokenizer.decode(row['input_ids'], skip_special_tokens=False)
-            if 'I need to think about this.' in text:
-                failure_count += 1
-    except Exception as e:
-        print(f"Warning: Could not compute failure rate: {e}")
-
-    failure_ratio = float(failure_count / len(df)) if len(df) > 0 else 0.0
-
-    # Trim by length (p95)
-    lengths = df["input_ids"].apply(lambda x: len(x))
-    pct95 = int(np.percentile(lengths, 95))
-    if pct95 > 5000:
-        pct95 = 5000
-
-    kept = df[lengths <= pct95]
-
-    # Split into train (90%) and val (10%)
-    from sklearn.model_selection import train_test_split
-    train_df, val_df = train_test_split(kept, test_size=0.2, random_state=42)
-
-    train_path = round_dir / "train_trimmed.parquet"
-    val_path = round_dir / "val_trimmed.parquet"
-    train_df.to_parquet(str(train_path))
-    val_df.to_parquet(str(val_path))
-
-    print(f"Trimmed to 95th percentile length={pct95}, kept {len(kept)}/{len(df)} samples")
-    print(f"  Train: {len(train_df)} samples -> {train_path}")
-    print(f"  Val: {len(val_df)} samples -> {val_path}")
-
-    # Compute perfect score ratio after trimming
-    kept_game_rewards = game_rewards[lengths <= pct95]
-    perfect_score_ratio_after_trim = float(np.mean(kept_game_rewards >= 1.0))
-
-    # Export example games
-    examples_path = round_dir / "examples.txt"
-    _export_example_games(df, examples_path, n_per_category=5)
-
-    # Create RolloutStats object
-    stats = RolloutStats(
-        raw_parquet=train_parquet,
-        trimmed_parquet=train_path,
-        val_parquet=val_path,
-        examples_txt=examples_path,
-        game_reward_mean=game_reward_mean,
-        game_reward_std=game_reward_std,
-        game_reward_p10=game_reward_p10,
-        game_reward_p25=game_reward_p25,
-        game_reward_p50=game_reward_p50,
-        game_reward_p75=game_reward_p75,
-        game_reward_p90=game_reward_p90,
-        perfect_score_ratio=perfect_score_ratio,
-        perfect_score_ratio_after_trim=perfect_score_ratio_after_trim,
-        total_sequences=len(df),
-        kept_sequences=len(kept),
-        trim_threshold=pct95,
-        grpo_weight_mean=grpo_weight_mean,
-        grpo_weight_pos_ratio=grpo_weight_pos_ratio,
-        grpo_weight_neg_ratio=grpo_weight_neg_ratio,
-        grpo_weight_zero_ratio=grpo_weight_zero_ratio,
-        failure_ratio=failure_ratio,
-    )
-
-    # Log to progress.log
-    log_file = round_dir / "progress.log"
-    with open(log_file, "a") as lf:
-        lf.write(json.dumps({
-            "event": "trim_done",
-            "timestamp": time.time(),
-            "pct95": pct95,
-            "kept": int(len(kept)),
-            "total": int(len(df)),
-        }) + "\n")
-        lf.write(json.dumps({
-            "event": "rollout_metrics",
-            "timestamp": time.time(),
-            "game_reward_mean": game_reward_mean,
-            "game_reward_std": game_reward_std,
-            "game_reward_p50": game_reward_p50,
-            "perfect_score_ratio": perfect_score_ratio,
-            "perfect_score_ratio_after_trim": perfect_score_ratio_after_trim,
-            "grpo_weight_mean": grpo_weight_mean,
-            "grpo_weight_pos_ratio": grpo_weight_pos_ratio,
-            "failure_ratio": failure_ratio,
-        }) + "\n")
-
-    print(f"Rollout stats: game_reward_mean={game_reward_mean:.4f}, perfect_score_ratio={perfect_score_ratio:.3f}, failure_ratio={failure_ratio:.2%}")
-
-    # Write stats.txt for quick reference
-    stats_file = round_dir / "stats.txt"
-    compute_and_save_stats(train_path, stats_file)
-
-    return stats
-
-
 def resume_rollout_generation(round_dir: Path, target_sequences: int, current_model: str, args) -> bool:
     """
     Resume rollout generation if needed.
@@ -689,13 +544,14 @@ def resume_rollout_generation(round_dir: Path, target_sequences: int, current_mo
     import argparse
     pipeline_args = argparse.Namespace(
         gpus=args.gpus,
-        games_per_round=needed_games * 2,  # Pipeline expects total sequences (2 per game)
+        games_per_round=needed_games,  # Number of games to generate
         server_port=args.server_port,
         server_wait_seconds=args.server_wait_seconds,
         server_mem_fraction=args.server_mem_fraction,
         server_log_level=args.server_log_level,
         server_enable_torch_compile=args.server_enable_torch_compile,
         server_disable_cuda_graph=args.server_disable_cuda_graph,
+        dual_server=args.dual_server,
     )
 
     # Generate via pipeline (automatically uses dual-server for 4 GPUs)
@@ -737,106 +593,6 @@ def resume_rollout_generation(round_dir: Path, target_sequences: int, current_mo
     return True
 
 
-def start_sglang_server(
-    model_path: str,
-    gpus: str = "0,1,2,3",
-    tp: int = 4,
-    mem_util: float = 0.6,
-    port: int = 8000,
-    enable_torch_compile: bool = True,
-    disable_cuda_graph: bool = False,
-    log_level: str = "info",
-) -> subprocess.Popen:
-    # Auto-adjust TP size to match number of available GPUs
-    num_gpus = len([g.strip() for g in gpus.split(",") if g.strip()])
-    if tp > num_gpus:
-        print(f"[offline_grpo] WARNING: Requested TP={tp} but only {num_gpus} GPUs available. Adjusting TP to {num_gpus}", flush=True)
-        tp = num_gpus
-
-    env = os.environ.copy()
-    env["CUDA_VISIBLE_DEVICES"] = gpus
-    # Ensure NCCL avoids cross-bridge P2P; constrain to NVLink pairs
-    env.setdefault("NCCL_P2P_LEVEL", "NVL")
-
-    print(
-        f"[offline_grpo] Preparing to launch SGLang server: model_path={model_path}, gpus={gpus}, tp={tp}, mem_util={mem_util}, port={port}, torch_compile={enable_torch_compile}, cuda_graph={'disabled' if disable_cuda_graph else 'enabled'}, log_level={log_level}",
-        flush=True,
-    )
-    
-    """
-    # Kill any existing server on the port
-    try:
-        result = subprocess.run(["lsof", "-ti:" + str(port)], capture_output=True, text=True)
-        if result.stdout.strip():
-            pids = result.stdout.strip().split('\n')
-            print(f"[offline_grpo] Port {port} is in use by PIDs: {pids}. Sending SIGKILL...", flush=True)
-            for pid in pids:
-                try:
-                    subprocess.run(["kill", "-9", pid], check=False)
-                except Exception:
-                    pass
-            # Wait a bit for processes to die
-            time.sleep(1)
-            print(f"[offline_grpo] Port {port} cleanup done.", flush=True)
-        else:
-            print(f"[offline_grpo] Port {port} appears free.", flush=True)
-    except Exception:
-        pass  # No process on port or lsof not available
-    """
-    
-    # Prefer test_venv python if available (same as used for generate_rollouts.py)
-    test_py = "/home/nickatomlin/georgiazhou/self_play/test_venv/bin/python"
-    python_bin = test_py if os.path.exists(test_py) else sys.executable
-    print(f"[offline_grpo] Using Python interpreter: {python_bin}", flush=True)
-    
-    cmd = [
-        python_bin, "-m", "sglang.launch_server",
-        "--model-path", model_path,
-        "--port", str(port),
-        "--host", "127.0.0.1",
-        "--tp", "2",
-        "--trust-remote-code",
-        "--mem-fraction-static", str(mem_util),
-        "--dtype", "bfloat16",
-        "--log-level", str(log_level),
-        "--schedule-conservativeness", "1.0",
-        "--chunked-prefill-size", "512",
-        "--schedule-policy", "lpm",
-        "--max-running-requests", "1024",  # Allow many concurrent requests; SGLang will batch efficiently
-
-    ]
-    if enable_torch_compile:
-        cmd.append("--enable-torch-compile")
-    if disable_cuda_graph:
-        cmd.append("--disable-cuda-graph")
-    print("[offline_grpo] Launch command:", " ".join(cmd), flush=True)
-    print(f"[offline_grpo] CUDA_VISIBLE_DEVICES={env.get('CUDA_VISIBLE_DEVICES','')}", flush=True)
-    print(f"[offline_grpo] NCCL_P2P_LEVEL={env.get('NCCL_P2P_LEVEL','')}", flush=True)
-    
-    # Pipe server output directly to our stdout - much simpler!
-    proc = subprocess.Popen(cmd, env=env, stdout=sys.stdout, stderr=sys.stderr, text=True)
-    print(f"[offline_grpo] SGLang server process started with PID={proc.pid}", flush=True)
-    return proc
-
-
-def kill_process_tree(proc: subprocess.Popen):
-    if proc and proc.poll() is None:
-        try:
-            proc.terminate()
-            try:
-                proc.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-        except Exception:
-            pass
-
-
-def run(cmd: list[str], env=None):
-    print("Running:", " ".join(cmd))
-    result = subprocess.run(cmd, env=env, check=True)
-    return result.returncode
-
-
 def run_tee(cmd: list[str], logfile: Path, env=None):
     print("Running (tee):", " ".join(cmd), "->", str(logfile))
     logfile.parent.mkdir(parents=True, exist_ok=True)
@@ -854,74 +610,6 @@ def run_tee(cmd: list[str], logfile: Path, env=None):
             lf.write(f"===== END (code {proc.returncode}): {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
             if proc.returncode != 0:
                 raise subprocess.CalledProcessError(proc.returncode, cmd)
-
-
-def wait_for_sglang(server_url: str, server_proc: subprocess.Popen, timeout_sec: int = 900, interval_sec: int = 5) -> None:
-    """Poll the SGLang OpenAI-compatible /v1/models endpoint until ready or timeout."""
-    base = server_url.rstrip("/")
-    if not base.endswith("/v1"):
-        base = base + "/v1"
-    deadline = time.time() + timeout_sec
-    last_err = None
-    start_time = time.time()
-    last_http_error_log_time = 0.0
-    http_error_log_interval = 10.0
-    print(f"[offline_grpo] Waiting for SGLang readiness at {base}/models (timeout={timeout_sec}s, check every {interval_sec}s)", flush=True)
-    
-    # Parse host/port for port-listening diagnostics
-    host = "127.0.0.1"
-    port = 80
-    try:
-        from urllib.parse import urlparse
-        parsed = urlparse(server_url)
-        host = parsed.hostname or host
-        port = parsed.port or 80
-    except Exception:
-        pass
-    
-    import socket
-    def _is_port_listening(h: str, p: int) -> bool:
-        try:
-            with socket.create_connection((h, p), timeout=0.2):
-                return True
-        except Exception:
-            return False
-    
-    while time.time() < deadline:
-        # Check if server process has died
-        if server_proc.poll() is not None:
-            print(f"[offline_grpo] Server process exited early with code {server_proc.returncode}", flush=True)
-            raise RuntimeError(f"SGLang server process died with exit code {server_proc.returncode}")
-        
-        # Try to connect to the server
-        try:
-            r = requests.get(f"{base}/models", timeout=10)
-            r.raise_for_status()
-            data = r.json()
-            # Require at least one model entry
-            if isinstance(data, dict) and data.get("data"):
-                elapsed = int(time.time() - start_time)
-                print(f"[offline_grpo] SGLang server is ready after {elapsed}s.", flush=True)
-                return
-            # Some versions return list
-            if isinstance(data, list) and len(data) > 0:
-                elapsed = int(time.time() - start_time)
-                print(f"[offline_grpo] SGLang server is ready after {elapsed}s.", flush=True)
-                return
-        except Exception as e:
-            last_err = e
-            now = time.time()
-            if now - last_http_error_log_time >= http_error_log_interval:
-                last_http_error_log_time = now
-                elapsed = int(now - start_time)
-                port_listening = _is_port_listening(host, port)
-                print(f"[offline_grpo] Still waiting ({elapsed}s). Last HTTP error: {repr(last_err)}. proc_alive={server_proc.poll() is None}, port_listening={port_listening}", flush=True)
-        
-        time.sleep(interval_sec)
-    
-    # Timeout reached
-    print(f"[offline_grpo] Timeout after {timeout_sec}s waiting for SGLang server at {base}. Last error: {last_err}", flush=True)
-    raise TimeoutError(f"SGLang server at {base} did not become ready within {timeout_sec}s. Last error: {last_err}")
 
 
 def main():
@@ -942,6 +630,7 @@ def main():
     # Default: torch.compile enabled; provide flags to disable
     ap.add_argument("--server-enable-torch-compile", dest="server_enable_torch_compile", action="store_true", help="Enable torch.compile in SGLang server")
     ap.add_argument("--server-disable-cuda-graph", dest="server_disable_cuda_graph", action="store_true", help="Disable CUDA graph in SGLang server")
+    ap.add_argument("--dual-server", action="store_true", help="Use dual-server mode (2×TP2) when 4 GPUs available (default: disabled)")
     ap.set_defaults(server_enable_torch_compile=False, server_disable_cuda_graph=False)
     
     # Resume functionality arguments

@@ -86,7 +86,7 @@ def _start_sglang_server(
         "--log-level",
         str(log_level),
         "--schedule-conservativeness",
-        "1.0",
+        "0.5",
         "--chunked-prefill-size",
         "512",
         "--schedule-policy",
@@ -196,8 +196,8 @@ def function_A_start_server_and_generate(
     test_py = "/home/nickatomlin/georgiazhou/self_play/test_venv/bin/python"
     python_bin = test_py if os.path.exists(test_py) else sys.executable
 
-    # Special case: 4 GPUs → use 2 servers to avoid cross-bridge all-reduce
-    if num_gpus == 4:
+    # Special case: 4 GPUs → use 2 servers to avoid cross-bridge all-reduce (if enabled)
+    if num_gpus == 4 and args.dual_server:
         print("Detected 4 GPUs: using dual-server mode (2×TP2) for better performance...")
 
         # Start both servers with separate log files
@@ -396,7 +396,7 @@ def function_A_start_server_and_generate(
                 "--out",
                 str(out_parquet),
                 "--num-games",
-                str(args.games_per_round // 2),
+                str(args.games_per_round),
                 "--max-new-tokens",
                 "8192",
                 "--group-size",
@@ -468,24 +468,23 @@ def _export_example_games(df: pd.DataFrame, output_path: Path, n_per_category: i
         n_per_category: Number of examples per category
     """
     try:
-        # Load tokenizer for decoding (use same as in generate_rollouts.py)
-        from transformers import AutoTokenizer
-        # Get model path from first row's game_info if available, else use default
-        model_path = "Qwen/Qwen2.5-7B-Instruct"  # Default fallback
-        try:
-            tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        except Exception:
-            print(f"Warning: Could not load tokenizer for {model_path}, examples will show raw tokens")
-            tokenizer = None
-
         # Extract rewards
         rewards = _extract_reward_series_from_df(df)
         if rewards is None or len(rewards) == 0:
             print("Warning: No rewards found, skipping example export")
             return
 
+        # Group by game_id to avoid duplicates (each game has 2 sequences)
+        unique_games = df.groupby('game_id').first().reset_index()
+
+        # Extract rewards for unique games
+        game_rewards = _extract_reward_series_from_df(unique_games)
+        if game_rewards is None or len(game_rewards) == 0:
+            print("Warning: No rewards found for unique games, skipping example export")
+            return
+
         # Find indices for best/worst/median games
-        sorted_indices = np.argsort(rewards)
+        sorted_indices = np.argsort(game_rewards)
 
         # Best games (highest rewards)
         best_indices = sorted_indices[-n_per_category:][::-1]
@@ -509,26 +508,38 @@ def _export_example_games(df: pd.DataFrame, output_path: Path, n_per_category: i
                 f.write("=" * 80 + "\n\n")
 
                 for idx in indices:
-                    row = df.iloc[idx]
-                    reward = rewards[idx]
+                    row = unique_games.iloc[idx]
+                    reward = game_rewards[idx]
                     grpo_weight = row.get("sample_weight", None)
                     game_id = row.get("game_id", idx)
 
                     f.write(f"Game ID: {game_id}\n")
                     f.write(f"Reward (game-normalized): {reward:.4f}\n")
                     f.write(f"GRPO Weight (relative): {grpo_weight:.4f}\n")
-                    f.write(f"Sequence Length: {len(row['input_ids'])}\n")
                     f.write("-" * 80 + "\n")
 
-                    # Decode conversation
-                    if tokenizer is not None:
-                        try:
-                            text = _decode_tokens_to_text(row["input_ids"].tolist(), tokenizer)
-                            f.write(f"{text}\n")
-                        except Exception as e:
-                            f.write(f"[Error decoding tokens: {e}]\n")
-                    else:
-                        f.write(f"[Token IDs: {row['input_ids'][:50].tolist()}... (truncated)]\n")
+                    # Parse and format full conversation
+                    try:
+                        full_conv_str = row.get("full_conversation", "[]")
+                        full_conv = json.loads(full_conv_str) if isinstance(full_conv_str, str) else full_conv_str
+
+                        if full_conv:
+                            f.write("\n=== Full Conversation (Including Errors) ===\n\n")
+                            for entry in full_conv:
+                                turn = entry.get("turn", "?")
+                                player = entry.get("player", "?")
+                                message = entry.get("message", "")
+                                retry = entry.get("retry", 0)
+
+                                if player == "error":
+                                    f.write(f"Turn {turn} - ERROR (retry {retry}):\n{message}\n\n")
+                                else:
+                                    retry_str = f" (retry {retry})" if retry > 0 else ""
+                                    f.write(f"Turn {turn} - {player}{retry_str}:\n{message}\n\n")
+                        else:
+                            f.write("[No conversation data available]\n")
+                    except Exception as e:
+                        f.write(f"[Error parsing conversation: {e}]\n")
 
                     f.write("\n" + "=" * 80 + "\n\n")
 
@@ -536,22 +547,32 @@ def _export_example_games(df: pd.DataFrame, output_path: Path, n_per_category: i
 
     except Exception as e:
         print(f"Warning: Failed to export examples: {e}")
+        import traceback
+        traceback.print_exc()
         # Create empty file so pipeline doesn't break
         output_path.touch()
 
 
-def function_B_generate_trim_and_log(
-    *,
-    args,
-    save_root: Path,
-    round_dir: Path,
-    current_model: str,
-) -> RolloutStats:
-    """Call A to generate, then trim to p95, write files, log metrics, and return RolloutStats."""
-    out_parquet = function_A_start_server_and_generate(args=args, round_dir=round_dir, current_model=current_model)
+def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None) -> RolloutStats:
+    """
+    Process raw rollouts: compute stats, trim, export examples, log metrics.
+    This is called after rollouts are generated (either fresh or resumed).
+
+    Args:
+        round_dir: Directory containing train.parquet
+        save_root: Root directory for saving (unused, kept for compatibility)
+        args: Optional args object (unused, kept for compatibility)
+
+    Returns:
+        RolloutStats object with all metrics.
+    """
+    train_parquet = round_dir / "train.parquet"
+
+    if not train_parquet.exists():
+        raise RuntimeError(f"Expected train.parquet at {train_parquet} but not found")
 
     # Load data
-    df = pd.read_parquet(str(out_parquet))
+    df = pd.read_parquet(str(train_parquet))
     if "sample_weight" in df.columns and len(df) > 0 and not (df["sample_weight"] > 0).any():
         raise RuntimeError("All rollout sample weights are zero. This likely indicates inference failures or server issues.")
 
@@ -624,7 +645,7 @@ def function_B_generate_trim_and_log(
 
     # Create RolloutStats object
     stats = RolloutStats(
-        raw_parquet=out_parquet,
+        raw_parquet=train_parquet,
         trimmed_parquet=train_path,
         val_parquet=val_path,
         examples_txt=examples_path,
@@ -672,6 +693,44 @@ def function_B_generate_trim_and_log(
 
     print(f"Rollout stats: game_reward_mean={game_reward_mean:.4f}, perfect_score_ratio={perfect_score_ratio:.3f}, failure_ratio={failure_ratio:.2%}")
 
+    # Write stats.txt for quick reference (use full rollout set, not trimmed)
+    # Import compute_and_save_stats from offline_grpo_loop
+    try:
+        sys.path.insert(0, str(Path(__file__).parent))
+        from offline_grpo_loop import compute_and_save_stats
+        stats_file = round_dir / "stats.txt"
+        compute_and_save_stats(train_parquet, stats_file)
+    except Exception as e:
+        print(f"Warning: Could not write stats.txt: {e}")
+
+    return stats
+
+
+def function_B_generate_trim_and_log(
+    *,
+    args,
+    save_root: Path,
+    round_dir: Path,
+    current_model: str,
+) -> RolloutStats:
+    """Call A to generate, then call post-processing to trim, compute stats, and log.
+
+    This is the main entry point used by offline_grpo_loop.
+    """
+    # Generate raw rollouts
+    out_parquet = function_A_start_server_and_generate(
+        args=args,
+        round_dir=round_dir,
+        current_model=current_model
+    )
+
+    # Process rollouts (trim, stats, examples)
+    stats = process_rollouts_post_generation(
+        round_dir=round_dir,
+        save_root=save_root,
+        args=args
+    )
+
     return stats
 
 
@@ -690,6 +749,7 @@ def main():
     ap.add_argument("--server-log-level", type=str, default="debug")
     ap.add_argument("--server-disable-torch-compile", dest="server_enable_torch_compile", action="store_false")
     ap.add_argument("--server-disable-cuda-graph", dest="server_disable_cuda_graph", action="store_true")
+    ap.add_argument("--dual-server", action="store_true", help="Use dual-server mode (2×TP2) when 4 GPUs available (default: disabled)")
     ap.set_defaults(server_enable_torch_compile=True, server_disable_cuda_graph=False)
     args = ap.parse_args()
 

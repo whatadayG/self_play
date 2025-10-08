@@ -5,8 +5,10 @@ import argparse
 import time
 from pathlib import Path
 from typing import Any, Dict, List
-from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor, as_completed
-import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import multiprocessing
+from multiprocessing import Manager, Process
+import queue
 
 import numpy as np
 import pandas as pd
@@ -158,47 +160,67 @@ def process_game_result(result: Dict[str, Any], max_model_len: int) -> List[Dict
                 ),
                 "game_info": json.dumps(result["game_info"]),
                 "game_id": result["game_id"],  # Add game_id for grouping
+                # Store full conversation including errors for debugging
+                "full_conversation": json.dumps(result.get("full_conversation", [])),
             }
         )
     return rows
 
 
-def worker_run_games(
-    game_ids: List[int],
+def worker_process(
+    task_queue,
+    result_queue,
+    threads_per_proc: int,
     player_cfg: Dict[str, Any],
     model_id: str,
     instructions: str,
     max_model_len: int,
-    threads_per_proc: int,
     seed: int,
-) -> List[Dict[str, Any]]:
-    """Run a batch of games inside a subprocess, using a small thread pool for I/O.
+    process_id: int,
+):
+    """Worker process that runs a thread pool pulling games from shared queue.
 
-    Returns a list of processed training rows (two rows per completed game).
+    Args:
+        task_queue: Shared queue containing game_ids to process
+        result_queue: Shared queue to put results into
+        threads_per_proc: Number of threads to run in this process
+        player_cfg: Player configuration dict
+        model_id: Model identifier
+        instructions: Game instructions
+        max_model_len: Maximum model sequence length
+        seed: Random seed base
+        process_id: ID of this process for seeding
     """
-    # Ensure different RNG stream per worker
-    try:
-        np.random.seed(seed + os.getpid())
-    except Exception:
-        np.random.seed(seed)
+    # Set unique random seed for this process
+    np.random.seed(seed + process_id)
 
-    rows_accum: List[Dict[str, Any]] = []
+    def thread_worker():
+        """Thread worker that pulls game_ids from queue and processes them."""
+        while True:
+            try:
+                game_id = task_queue.get_nowait()
+            except queue.Empty:
+                return  # No more work
 
-    def one(game_id: int) -> List[Dict[str, Any]]:
-        result = run_one_game(player_cfg, model_id, instructions, game_id)
-        return process_game_result(result, max_model_len)
+            try:
+                result = run_one_game(player_cfg, model_id, instructions, game_id)
+                rows = process_game_result(result, max_model_len)
+                result_queue.put(rows)
+            except Exception as e:
+                # Log failure but don't crash the worker
+                print(f"[Process {process_id}] Game {game_id} failed: {e}")
+                # Put empty result to maintain progress tracking
+                result_queue.put([])
 
-    # Small thread pool to overlap request I/O in this process
+    # Run thread pool for this process
     with ThreadPoolExecutor(max_workers=threads_per_proc) as executor:
-        futures = {executor.submit(one, gid): gid for gid in game_ids}
+        futures = [executor.submit(thread_worker) for _ in range(threads_per_proc)]
+        # Wait for all threads to finish
         for fut in as_completed(futures):
             try:
-                rows_accum.extend(fut.result())
-            except Exception:
-                # Skip failed game; continue with others
-                continue
-
-    return rows_accum
+                fut.result()
+            except Exception as e:
+                print(f"[Process {process_id}] Thread crashed: {e}")
 
 
 def main():
@@ -215,11 +237,10 @@ def main():
     # GRPO grouping size (k). Rewards will be transformed to relative rewards within each group.
     ap.add_argument("--group-size", type=int, default=8, help="Number of times to play each game (creates groups of 2*k sequences)")
     ap.add_argument("--seed", type=int, default=42)
-    # Parallelization settings
-    ap.add_argument("--num-procs", type=int, default=32, help="Number of worker processes")
-    ap.add_argument("--threads-per-proc", type=int, default=4, help="Threads per process for issuing requests")
-    ap.add_argument("--max-workers", type=int, default=1024, help="[deprecated] Ignored; use --num-procs/--threads-per-proc")
-    ap.add_argument("--progress-interval", type=int, default=64, help="Print progress every N completed games")
+    # Parallelization settings (PER SERVER/ENGINE)
+    ap.add_argument("--num-procs", type=int, default=32, help="Number of worker processes (per server)")
+    ap.add_argument("--threads-per-proc", type=int, default=8, help="Threads per process for issuing requests")
+    ap.add_argument("--progress-interval", type=int, default=32, help="Print progress every N completed games")
     args = ap.parse_args()
 
     np.random.seed(args.seed)
@@ -243,72 +264,138 @@ def main():
 
     # Calculate total games to play: num_games * group_size
     total_games = args.num_games * args.group_size
+    total_workers = args.num_procs * args.threads_per_proc
     print(
         f"Starting generation of {total_games} total games "
-        f"({args.num_games} unique games × {args.group_size} plays each) "
-        f"with {args.num_procs} processes × {args.threads_per_proc} threads..."
+        f"({args.num_games} unique games × {args.group_size} plays each)"
     )
+    print(
+        f"Worker configuration: {args.num_procs} processes × {args.threads_per_proc} threads = {total_workers} concurrent workers"
+    )
+    print(f"Server: {args.server_url}")
     start_time = time.time()
-    
-    # Build ordered list of game IDs to preserve grouping logic
-    game_ids_all = list(range(total_games))
 
-    # Partition game IDs across processes
-    num_procs = max(1, min(args.num_procs, total_games))
-    chunk_size = (total_games + num_procs - 1) // num_procs
-    game_chunks = [game_ids_all[i : i + chunk_size] for i in range(0, total_games, chunk_size)]
+    # Create shared queues using Manager
+    manager = Manager()
+    task_queue = manager.Queue()
+    result_queue = manager.Queue()
 
-    all_rows: List[Dict[str, Any]] = []
+    # Populate task queue with all game IDs
+    for game_id in range(total_games):
+        task_queue.put(game_id)
 
-    with ProcessPoolExecutor(max_workers=num_procs) as pool:
-        futures = [
-            pool.submit(
-                worker_run_games,
-                chunk,
+    print(f"Populated task queue with {total_games} games")
+
+    # Spawn worker processes
+    processes = []
+    for proc_id in range(args.num_procs):
+        p = Process(
+            target=worker_process,
+            args=(
+                task_queue,
+                result_queue,
+                args.threads_per_proc,
                 player_cfg,
                 args.model_id,
                 instructions,
                 args.max_model_len,
-                args.threads_per_proc,
                 args.seed,
+                proc_id,
             )
-            for chunk in game_chunks
-        ]
+        )
+        p.start()
+        processes.append(p)
 
-        completed_chunks = 0
-        completed_games = 0
-        for fut in as_completed(futures):
-            try:
-                rows = fut.result()
-                all_rows.extend(rows)
-                # Each game yields two rows
-                completed_in_chunk = len(rows) // 2
-                completed_games += completed_in_chunk
-            except Exception as e:
-                print(f"Worker failed: {e}")
-            finally:
-                completed_chunks += 1
-                if completed_games % args.progress_interval == 0 or completed_games >= total_games:
-                    elapsed = time.time() - start_time
-                    rate = completed_games / elapsed if elapsed > 0 else 0
-                    print(
-                        f"Completed {completed_games}/{total_games} games "
-                        f"({rate:.1f} games/sec) via {completed_chunks}/{len(futures)} workers"
-                    )
-    print(f"Generation completed in {time.time() - start_time:.1f}s")
+    print(f"Spawned {len(processes)} worker processes")
+
+    # Collect results as they arrive
+    all_rows: List[Dict[str, Any]] = []
+    completed_games = 0
+    last_progress_time = start_time
+    last_progress_games = 0
+
+    print(f"Starting result collection (updating every {args.progress_interval} games)...\n")
+
+    while completed_games < total_games:
+        try:
+            # Non-blocking check for results with short timeout
+            rows = result_queue.get(timeout=1.0)
+            all_rows.extend(rows)
+            completed_games += len(rows) // 2  # Each game yields 2 rows
+
+            # Progress reporting
+            should_report = (
+                completed_games % args.progress_interval == 0 or
+                completed_games >= total_games or
+                (completed_games > 0 and completed_games - last_progress_games >= args.progress_interval)
+            )
+
+            if should_report:
+                elapsed = time.time() - start_time
+                rate = completed_games / elapsed if elapsed > 0 else 0
+                interval_elapsed = time.time() - last_progress_time
+                games_in_interval = completed_games - last_progress_games
+                interval_rate = games_in_interval / interval_elapsed if interval_elapsed > 0 else 0
+                pct = 100.0 * completed_games / total_games if total_games > 0 else 0
+
+                print(
+                    f"Progress: {completed_games}/{total_games} games ({pct:.1f}%) | "
+                    f"Avg: {rate:.1f} games/s | Recent: {interval_rate:.1f} games/s | "
+                    f"Elapsed: {elapsed:.0f}s"
+                )
+                last_progress_time = time.time()
+                last_progress_games = completed_games
+
+        except queue.Empty:
+            # Periodic status check even when no results arrive
+            elapsed = time.time() - start_time
+            if elapsed - (last_progress_time - start_time) > 30:  # Every 30s if no progress
+                alive = sum(1 for p in processes if p.is_alive())
+                rate = completed_games / elapsed if elapsed > 0 else 0
+                pct = 100.0 * completed_games / total_games if total_games > 0 else 0
+                print(
+                    f"Status: {completed_games}/{total_games} games ({pct:.1f}%) | "
+                    f"{alive}/{len(processes)} processes alive | "
+                    f"Avg rate: {rate:.1f} games/s"
+                )
+                last_progress_time = time.time()
+
+            # Check if all processes are still alive
+            alive = [p.is_alive() for p in processes]
+            if not any(alive) and completed_games < total_games:
+                print(f"\nWarning: All processes terminated but only {completed_games}/{total_games} games completed")
+                break
+
+    # Wait for all processes to finish
+    for p in processes:
+        p.join(timeout=5)
+        if p.is_alive():
+            print(f"Warning: Process {p.pid} still alive, terminating...")
+            p.terminate()
+            p.join()
+
+    total_elapsed = time.time() - start_time
+    final_rate = completed_games / total_elapsed if total_elapsed > 0 else 0
+    print(f"\n{'='*60}")
+    print(f"Generation completed!")
+    print(f"  Time: {total_elapsed:.1f}s")
+    print(f"  Games: {completed_games}/{total_games} ({100.0 * completed_games / total_games:.1f}%)")
+    print(f"  Rows: {len(all_rows)} ({len(all_rows) // 2} games × 2 players)")
+    print(f"  Rate: {final_rate:.1f} games/s")
+    print(f"{'='*60}\n")
 
     # Group sequences by unique game sets for GRPO normalization
     # Each unique game was played group_size times, creating 2*group_size sequences per unique game
     print(f"Grouping sequences for GRPO normalization...")
-    
+
     # Sort rows by unique_game_id to ensure proper grouping
     all_rows.sort(key=lambda x: x["game_id"] // args.group_size)
-    
+
     # Apply GRPO normalization within each group of 2*group_size sequences
     sequences_per_group = 2 * args.group_size  # 2 players × group_size plays
     total = len(all_rows)
     full_groups = total // sequences_per_group
-    
+
     if full_groups == 0:
         print(f"Warning: not enough samples ({total}) to form a full group of size {sequences_per_group}; leaving weights unchanged.")
     else:
@@ -317,7 +404,7 @@ def main():
             print(f"Dropping {remainder} leftover samples to form full groups of size {sequences_per_group} for GRPO.")
         # Only keep full groups
         all_rows = all_rows[: full_groups * sequences_per_group]
-        
+
         for g in range(full_groups):
             start = g * sequences_per_group
             end = start + sequences_per_group
@@ -325,7 +412,7 @@ def main():
             baseline = float(np.mean(group_rewards))
             for j in range(start, end):
                 all_rows[j]["sample_weight"] = float(group_rewards[j - start] - baseline)
-        
+
         print(f"Applied GRPO normalization to {full_groups} groups of {sequences_per_group} sequences each")
 
     # Save parquet
@@ -338,5 +425,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-

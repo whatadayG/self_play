@@ -149,7 +149,7 @@ class SGLangModelPlayer(BaseModelPlayer):
         }
 
         # Use longer timeout to account for queueing at high concurrency
-        timeout = 180.0
+        timeout = 900.0
         max_retries = 5
         last_exception = None
 
