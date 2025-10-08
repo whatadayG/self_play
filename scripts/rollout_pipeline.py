@@ -600,13 +600,63 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
     grpo_weight_neg_ratio = float(np.mean(grpo_weights < 0))
     grpo_weight_zero_ratio = float(np.mean(grpo_weights == 0))
 
-    # Trim by length (p95)
-    lengths = df["input_ids"].apply(lambda x: len(x))
+    # Filter out generation failures BEFORE trimming
+    from transformers import AutoTokenizer
+    failure_mask = np.zeros(len(df), dtype=bool)
+    try:
+        tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-7B-Instruct", trust_remote_code=True)
+        for idx, row in df.iterrows():
+            text = tokenizer.decode(row['input_ids'], skip_special_tokens=False)
+            if 'I need to think about this.' in text:
+                failure_mask[idx] = True
+    except Exception as e:
+        print(f"Warning: Could not filter generation failures: {e}")
+
+    failure_count = int(np.sum(failure_mask))
+    failure_ratio = float(failure_count / len(df)) if len(df) > 0 else 0.0
+
+    # Check if failure rate exceeds acceptable threshold
+    FAILURE_THRESHOLD = 0.05  # 5%
+    if failure_ratio > FAILURE_THRESHOLD:
+        error_msg = (
+            f"FATAL: Generation failure rate ({failure_ratio:.2%}) exceeds threshold ({FAILURE_THRESHOLD:.2%}).\n"
+            f"  Failed: {failure_count}/{len(df)} samples\n"
+            f"  This indicates serious problems with model inference or server stability.\n"
+            f"  Check generation_failures.log for details."
+        )
+        print(f"\n{'='*80}")
+        print(error_msg)
+        print(f"{'='*80}\n")
+
+        # Log to progress.log before crashing
+        log_file = round_dir / "progress.log"
+        with open(log_file, "a") as lf:
+            lf.write(json.dumps({
+                "event": "fatal_high_failure_rate",
+                "timestamp": time.time(),
+                "failure_count": failure_count,
+                "total_sequences": len(df),
+                "failure_ratio": failure_ratio,
+                "threshold": FAILURE_THRESHOLD,
+            }) + "\n")
+
+        raise RuntimeError(error_msg)
+
+    # Remove failed samples
+    df_no_failures = df[~failure_mask].reset_index(drop=True)
+    game_rewards_no_failures = game_rewards[~failure_mask]
+
+    if failure_count > 0:
+        print(f"Filtered out {failure_count} failed generations ({failure_ratio:.2%})")
+        print(f"  Remaining: {len(df_no_failures)}/{len(df)} samples")
+
+    # Trim by length (p95) on non-failed samples
+    lengths = df_no_failures["input_ids"].apply(lambda x: len(x))
     pct95 = int(np.percentile(lengths, 95))
     if pct95 > 5000:
         pct95 = 5000
 
-    kept = df[lengths <= pct95]
+    kept = df_no_failures[lengths <= pct95]
 
     # Split into train (90%) and val (10%)
     from sklearn.model_selection import train_test_split
@@ -617,31 +667,17 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
     train_df.to_parquet(str(train_path))
     val_df.to_parquet(str(val_path))
 
-    print(f"Trimmed to 95th percentile length={pct95}, kept {len(kept)}/{len(df)} samples")
+    print(f"Trimmed to 95th percentile length={pct95}, kept {len(kept)}/{len(df_no_failures)} non-failed samples")
     print(f"  Train: {len(train_df)} samples -> {train_path}")
     print(f"  Val: {len(val_df)} samples -> {val_path}")
 
-    # Compute perfect score ratio after trimming
-    kept_game_rewards = game_rewards[lengths <= pct95]
+    # Compute perfect score ratio after filtering and trimming
+    kept_game_rewards = game_rewards_no_failures[lengths <= pct95]
     perfect_score_ratio_after_trim = float(np.mean(kept_game_rewards >= 1.0))
 
-    # Export example games
+    # Export example games (from original df including failures, for debugging)
     examples_path = round_dir / "examples.txt"
     _export_example_games(df, examples_path, n_per_category=5)
-
-    # Check for generation failures
-    from transformers import AutoTokenizer
-    failure_count = 0
-    try:
-        tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-7B-Instruct", trust_remote_code=True)
-        for idx, row in df.iterrows():
-            text = tokenizer.decode(row['input_ids'], skip_special_tokens=False)
-            if 'I need to think about this.' in text:
-                failure_count += 1
-    except Exception as e:
-        print(f"Warning: Could not compute failure rate: {e}")
-
-    failure_ratio = float(failure_count / len(df)) if len(df) > 0 else 0.0
 
     # Create RolloutStats object
     stats = RolloutStats(
@@ -658,25 +694,27 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
         game_reward_p90=game_reward_p90,
         perfect_score_ratio=perfect_score_ratio,
         perfect_score_ratio_after_trim=perfect_score_ratio_after_trim,
-        total_sequences=len(df),
-        kept_sequences=len(kept),
+        total_sequences=len(df),  # Original count including failures
+        kept_sequences=len(kept),  # After filtering failures AND length trimming
         trim_threshold=pct95,
         grpo_weight_mean=grpo_weight_mean,
         grpo_weight_pos_ratio=grpo_weight_pos_ratio,
         grpo_weight_neg_ratio=grpo_weight_neg_ratio,
         grpo_weight_zero_ratio=grpo_weight_zero_ratio,
-        failure_ratio=failure_ratio,
+        failure_ratio=failure_ratio,  # Ratio of failed generations in raw data
     )
 
     # Log to progress.log
     log_file = round_dir / "progress.log"
     with open(log_file, "a") as lf:
         lf.write(json.dumps({
-            "event": "trim_done",
+            "event": "filter_and_trim_done",
             "timestamp": time.time(),
-            "pct95": pct95,
-            "kept": int(len(kept)),
             "total": int(len(df)),
+            "failed": failure_count,
+            "after_failure_filter": int(len(df_no_failures)),
+            "pct95_threshold": pct95,
+            "after_length_trim": int(len(kept)),
         }) + "\n")
         lf.write(json.dumps({
             "event": "rollout_metrics",
@@ -691,7 +729,12 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
             "failure_ratio": failure_ratio,
         }) + "\n")
 
-    print(f"Rollout stats: game_reward_mean={game_reward_mean:.4f}, perfect_score_ratio={perfect_score_ratio:.3f}, failure_ratio={failure_ratio:.2%}")
+    print(f"\nRollout summary:")
+    print(f"  Total sequences: {len(df)}")
+    print(f"  Failed generations: {failure_count} ({failure_ratio:.2%})")
+    print(f"  After failure filter: {len(df_no_failures)}")
+    print(f"  After length trim (p95={pct95}): {len(kept)}")
+    print(f"  Game reward (raw data): mean={game_reward_mean:.4f}, perfect_score={perfect_score_ratio:.1%}")
 
     # Write stats.txt for quick reference (use full rollout set, not trimmed)
     # Import compute_and_save_stats from offline_grpo_loop
