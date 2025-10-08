@@ -104,6 +104,29 @@ def run_one_game(player_cfg: dict, model_id: str, instructions: str, game_id: in
             turn += 1
             break
 
+    # Collect all logprobs from both players' generations
+    # Each player may have generated multiple times during the game
+    p1_all_logprobs = []
+    p2_all_logprobs = []
+
+    # Iterate through the full conversation to collect logprobs
+    for conv_entry in full_conversation:
+        player = conv_entry["player"]
+        if player == "player-1":
+            player_obj = p1
+        elif player == "player-2":
+            player_obj = p2
+        else:
+            continue  # Skip error entries
+
+        # Get logprobs from the last generation for this turn
+        logprobs = player_obj.get_last_generation_logprobs()
+        if logprobs:
+            if player == "player-1":
+                p1_all_logprobs.extend(logprobs)
+            else:
+                p2_all_logprobs.extend(logprobs)
+
     # Build two sequences (one per player's perspective)
     result = {
         "game_id": game_id,
@@ -118,6 +141,10 @@ def run_one_game(player_cfg: dict, model_id: str, instructions: str, game_id: in
         },
         "clean_conversation": clean_conversation,
         "full_conversation": full_conversation,
+        "policy_logprobs": {
+            "player-1": p1_all_logprobs,
+            "player-2": p2_all_logprobs,
+        },
     }
     return result
 
@@ -147,6 +174,10 @@ def process_game_result(result: Dict[str, Any], max_model_len: int) -> List[Dict
         input_ids, attention_mask, position_ids, response_loss_mask = tensorize_player(p, max_model_len)
         # Use absolute normalized reward as weight (will be converted to relative in GRPO grouping)
         w = float(result["normalized_reward"])
+
+        # Get policy logprobs for this player
+        policy_logprobs = result.get("policy_logprobs", {}).get(player_name, [])
+
         rows.append(
             {
                 "input_ids": np.array(input_ids, dtype=np.int64),
@@ -162,6 +193,8 @@ def process_game_result(result: Dict[str, Any], max_model_len: int) -> List[Dict
                 "game_id": result["game_id"],  # Add game_id for grouping
                 # Store full conversation including errors for debugging
                 "full_conversation": json.dumps(result.get("full_conversation", [])),
+                # Store policy logprobs for KL divergence computation
+                "policy_logprobs": json.dumps(policy_logprobs),
             }
         )
     return rows
@@ -241,6 +274,9 @@ def main():
     ap.add_argument("--num-procs", type=int, default=32, help="Number of worker processes (per server)")
     ap.add_argument("--threads-per-proc", type=int, default=8, help="Threads per process for issuing requests")
     ap.add_argument("--progress-interval", type=int, default=32, help="Print progress every N completed games")
+    # Game termination settings
+    ap.add_argument("--max-turns", type=int, default=10, help="Maximum number of turns per game (default: 10)")
+    ap.add_argument("--max-retries-per-turn", type=int, default=2, help="Maximum retries per turn before terminating (default: 2)")
     args = ap.parse_args()
 
     np.random.seed(args.seed)
@@ -260,6 +296,8 @@ def main():
         "temperature": args.temperature,
         "top_p": args.top_p,
         "max_new_tokens": args.max_new_tokens,
+        "max_turns": getattr(args, 'max_turns', 10),
+        "max_retries_per_turn": getattr(args, 'max_retries_per_turn', 2),
     }
 
     # Calculate total games to play: num_games * group_size
@@ -323,48 +361,30 @@ def main():
             all_rows.extend(rows)
             completed_games += len(rows) // 2  # Each game yields 2 rows
 
-            # Progress reporting
-            should_report = (
-                completed_games % args.progress_interval == 0 or
-                completed_games >= total_games or
-                (completed_games > 0 and completed_games - last_progress_games >= args.progress_interval)
-            )
-
-            if should_report:
-                elapsed = time.time() - start_time
-                rate = completed_games / elapsed if elapsed > 0 else 0
-                interval_elapsed = time.time() - last_progress_time
-                games_in_interval = completed_games - last_progress_games
-                interval_rate = games_in_interval / interval_elapsed if interval_elapsed > 0 else 0
-                pct = 100.0 * completed_games / total_games if total_games > 0 else 0
-
-                print(
-                    f"Progress: {completed_games}/{total_games} games ({pct:.1f}%) | "
-                    f"Avg: {rate:.1f} games/s | Recent: {interval_rate:.1f} games/s | "
-                    f"Elapsed: {elapsed:.0f}s"
-                )
-                last_progress_time = time.time()
-                last_progress_games = completed_games
-
         except queue.Empty:
-            # Periodic status check even when no results arrive
-            elapsed = time.time() - start_time
-            if elapsed - (last_progress_time - start_time) > 30:  # Every 30s if no progress
-                alive = sum(1 for p in processes if p.is_alive())
-                rate = completed_games / elapsed if elapsed > 0 else 0
-                pct = 100.0 * completed_games / total_games if total_games > 0 else 0
-                print(
-                    f"Status: {completed_games}/{total_games} games ({pct:.1f}%) | "
-                    f"{alive}/{len(processes)} processes alive | "
-                    f"Avg rate: {rate:.1f} games/s"
-                )
-                last_progress_time = time.time()
-
             # Check if all processes are still alive
             alive = [p.is_alive() for p in processes]
             if not any(alive) and completed_games < total_games:
                 print(f"\nWarning: All processes terminated but only {completed_games}/{total_games} games completed")
                 break
+
+        # Periodic status update (every 30s, regardless of results)
+        elapsed = time.time() - start_time
+        if elapsed - (last_progress_time - start_time) > 30:  # Every 30s
+            alive = sum(1 for p in processes if p.is_alive())
+            rate = completed_games / elapsed if elapsed > 0 else 0
+            interval_elapsed = time.time() - last_progress_time
+            games_in_interval = completed_games - last_progress_games
+            interval_rate = games_in_interval / interval_elapsed if interval_elapsed > 0 else 0
+            pct = 100.0 * completed_games / total_games if total_games > 0 else 0
+            print(
+                f"Status: {completed_games}/{total_games} games ({pct:.1f}%) | "
+                f"{alive}/{len(processes)} processes alive | "
+                f"Avg: {rate:.1f} games/s | Recent: {interval_rate:.1f} games/s | "
+                f"Elapsed: {elapsed:.0f}s"
+            )
+            last_progress_time = time.time()
+            last_progress_games = completed_games
 
     # Wait for all processes to finish
     for p in processes:

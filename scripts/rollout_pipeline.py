@@ -290,6 +290,8 @@ def function_A_start_server_and_generate(
                 "--temperature", "0.7",
                 "--top-p", "0.9",
                 "--max-model-len", "32768",
+                "--max-turns", str(getattr(args, 'max_turns', 10)),
+                "--max-retries-per-turn", str(getattr(args, 'max_retries_per_turn', 2)),
             ]
 
             gen_cmd2 = [
@@ -303,6 +305,8 @@ def function_A_start_server_and_generate(
                 "--temperature", "0.7",
                 "--top-p", "0.9",
                 "--max-model-len", "32768",
+                "--max-turns", str(getattr(args, 'max_turns', 10)),
+                "--max-retries-per-turn", str(getattr(args, 'max_retries_per_turn', 2)),
             ]
 
             # Run both in parallel
@@ -407,6 +411,10 @@ def function_A_start_server_and_generate(
                 "0.9",
                 "--max-model-len",
                 "32768",
+                "--max-turns",
+                str(getattr(args, 'max_turns', 10)),
+                "--max-retries-per-turn",
+                str(getattr(args, 'max_retries_per_turn', 2)),
             ]
             _run(gen_cmd)
             with open(log_file, "a") as lf:
@@ -561,7 +569,7 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
     Args:
         round_dir: Directory containing train.parquet
         save_root: Root directory for saving (unused, kept for compatibility)
-        args: Optional args object (unused, kept for compatibility)
+        args: Optional args object with reference_model and kl_coef
 
     Returns:
         RolloutStats object with all metrics.
@@ -575,6 +583,82 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
     df = pd.read_parquet(str(train_parquet))
     if "sample_weight" in df.columns and len(df) > 0 and not (df["sample_weight"] > 0).any():
         raise RuntimeError("All rollout sample weights are zero. This likely indicates inference failures or server issues.")
+
+    # Apply KL divergence penalty if reference model is specified
+    if args and hasattr(args, 'reference_model') and args.reference_model:
+        print(f"\n{'='*80}")
+        print(f"Applying KL divergence penalty from reference model...")
+        print(f"  Reference model: {args.reference_model}")
+        print(f"  KL coefficient: {getattr(args, 'kl_coef', 0.1)}")
+        print(f"{'='*80}\n")
+
+        # Compute reference logprobs
+        ref_logprobs_list = compute_reference_logprobs(
+            df=df,
+            reference_model_path=args.reference_model,
+            gpus=args.gpus,
+            server_port=8001,  # Use different port from policy server
+            server_wait_seconds=args.server_wait_seconds,
+            server_mem_fraction=args.server_mem_fraction,
+            server_log_level=args.server_log_level,
+            enable_torch_compile=args.server_enable_torch_compile,
+            disable_cuda_graph=args.server_disable_cuda_graph,
+            round_dir=round_dir,
+        )
+
+        # Calculate KL penalty and adjust rewards
+        kl_coef = getattr(args, 'kl_coef', 0.1)
+        kl_penalties = []
+
+        for idx, row in df.iterrows():
+            # Parse policy logprobs from JSON
+            policy_logprobs = json.loads(row["policy_logprobs"]) if isinstance(row["policy_logprobs"], str) else row["policy_logprobs"]
+            ref_logprobs = ref_logprobs_list[idx]
+
+            # Compute KL divergence: KL = policy_logprob - ref_logprob
+            # Sum over all generated tokens for this sequence
+            if len(policy_logprobs) > 0 and len(ref_logprobs) > 0:
+                # Align lengths (they should match, but be defensive)
+                min_len = min(len(policy_logprobs), len(ref_logprobs))
+                kl_per_token = [
+                    policy_logprobs[i] - ref_logprobs[i]
+                    for i in range(min_len)
+                ]
+                kl_penalty = sum(kl_per_token)
+            else:
+                kl_penalty = 0.0
+
+            kl_penalties.append(kl_penalty)
+
+            # Adjust reward: reward_adjusted = reward - kl_coef * kl_penalty
+            # sample_weight currently holds the raw game reward
+            original_reward = float(row["sample_weight"])
+            adjusted_reward = original_reward - kl_coef * kl_penalty
+            df.at[idx, "sample_weight"] = adjusted_reward
+
+        # Save KL statistics
+        mean_kl = np.mean(kl_penalties)
+        std_kl = np.std(kl_penalties)
+        print(f"\nKL divergence statistics:")
+        print(f"  Mean KL: {mean_kl:.4f}")
+        print(f"  Std KL: {std_kl:.4f}")
+        print(f"  Mean penalty: {kl_coef * mean_kl:.4f}")
+
+        # Log KL stats
+        log_file = round_dir / "progress.log"
+        with open(log_file, "a") as lf:
+            lf.write(json.dumps({
+                "event": "kl_penalty_applied",
+                "timestamp": time.time(),
+                "mean_kl": mean_kl,
+                "std_kl": std_kl,
+                "kl_coef": kl_coef,
+                "mean_penalty": kl_coef * mean_kl,
+            }) + "\n")
+
+        # Overwrite the parquet with adjusted rewards
+        df.to_parquet(str(train_parquet))
+        print(f"Saved adjusted rewards to {train_parquet}\n")
 
     # Extract game-normalized rewards (ACTUAL game performance, not GRPO weights)
     game_rewards = _extract_reward_series_from_df(df)
@@ -793,6 +877,9 @@ def main():
     ap.add_argument("--server-disable-torch-compile", dest="server_enable_torch_compile", action="store_false")
     ap.add_argument("--server-disable-cuda-graph", dest="server_disable_cuda_graph", action="store_true")
     ap.add_argument("--dual-server", action="store_true", help="Use dual-server mode (2×TP2) when 4 GPUs available (default: disabled)")
+    # Game termination settings
+    ap.add_argument("--max-turns", type=int, default=10, help="Maximum number of turns per game (default: 10)")
+    ap.add_argument("--max-retries-per-turn", type=int, default=2, help="Maximum retries per turn before terminating (default: 2)")
     ap.set_defaults(server_enable_torch_compile=True, server_disable_cuda_graph=False)
     args = ap.parse_args()
 
@@ -806,6 +893,157 @@ def main():
     result = function_B_generate_trim_and_log(args=args, save_root=save_root, round_dir=round_dir, current_model=args.model_path)
     # Also print JSON result to stdout for easy capture
     print(json.dumps(result.to_dict()))
+
+
+def compute_reference_logprobs(
+    *,
+    df: pd.DataFrame,
+    reference_model_path: str,
+    gpus: str,
+    server_port: int = 8001,
+    server_wait_seconds: int = 900,
+    server_mem_fraction: float = 0.85,
+    server_log_level: str = "info",
+    enable_torch_compile: bool = False,
+    disable_cuda_graph: bool = False,
+    round_dir: Optional[Path] = None,
+) -> List[List[float]]:
+    """Compute reference model logprobs for already-generated sequences.
+
+    This function:
+    1. Starts a reference model server
+    2. Scores all sequences with the reference model (no generation, just scoring)
+    3. Returns per-sequence logprobs
+    4. Shuts down the server
+
+    Args:
+        df: DataFrame containing generated sequences with 'input_ids' and 'policy_logprobs'
+        reference_model_path: Path to the reference model checkpoint
+        gpus: GPU IDs to use (e.g., "0,1,2,3")
+        server_port: Port for reference model server
+        server_wait_seconds: Max time to wait for server startup
+        server_mem_fraction: Memory fraction for server
+        server_log_level: Server log level
+        enable_torch_compile: Whether to enable torch.compile
+        disable_cuda_graph: Whether to disable CUDA graph
+        round_dir: Optional directory for server logs
+
+    Returns:
+        List of logprob lists (one list per sequence)
+    """
+    import requests
+    from transformers import AutoTokenizer
+
+    gpu_list = [g.strip() for g in gpus.split(",") if g.strip()]
+    tp = len(gpu_list) if len(gpu_list) > 0 else 1
+
+    print(f"\n{'='*80}")
+    print(f"Starting reference model server for KL divergence computation...")
+    print(f"  Reference model: {reference_model_path}")
+    print(f"  GPUs: {gpus} (TP={tp})")
+    print(f"{'='*80}\n")
+
+    # Start reference model server
+    ref_log_file = round_dir / "sglang_reference.log" if round_dir else None
+    server_proc = _start_sglang_server(
+        model_path=reference_model_path,
+        gpus=gpus,
+        tp=tp,
+        mem_util=server_mem_fraction,
+        port=server_port,
+        enable_torch_compile=enable_torch_compile,
+        disable_cuda_graph=disable_cuda_graph,
+        log_level=server_log_level,
+        log_file=ref_log_file,
+    )
+
+    server_url = f"http://127.0.0.1:{server_port}"
+
+    try:
+        # Wait for server to be ready
+        _wait_for_sglang(server_url, server_proc, timeout_sec=server_wait_seconds, interval_sec=5)
+
+        # Load tokenizer to reconstruct messages from input_ids
+        print(f"Loading tokenizer from {reference_model_path}...")
+        tokenizer = AutoTokenizer.from_pretrained(reference_model_path, trust_remote_code=True)
+
+        # Prepare HTTP session
+        session = requests.Session()
+        completions_url = f"{server_url}/v1/chat/completions"
+
+        all_ref_logprobs = []
+        batch_size = 32  # Process in batches for progress tracking
+        total_sequences = len(df)
+
+        print(f"\nComputing reference logprobs for {total_sequences} sequences...")
+        print(f"Processing in batches of {batch_size}...\n")
+
+        for batch_start in range(0, total_sequences, batch_size):
+            batch_end = min(batch_start + batch_size, total_sequences)
+            batch_df = df.iloc[batch_start:batch_end]
+
+            batch_ref_logprobs = []
+
+            for idx, row in batch_df.iterrows():
+                # Decode input_ids back to messages
+                # The input_ids include the full conversation, so we decode and parse it
+                input_ids = row["input_ids"]
+                full_text = tokenizer.decode(input_ids, skip_special_tokens=False)
+
+                # For SGLang scoring, we need to format as messages
+                # Since we have the full conversation, create a single user message with it
+                messages = [{"role": "user", "content": full_text}]
+
+                # Request logprobs with max_tokens=0 (scoring mode)
+                payload = {
+                    "model": reference_model_path,
+                    "messages": messages,
+                    "max_tokens": 0,  # Don't generate, just score
+                    "logprobs": True,
+                    "top_logprobs": 1,
+                }
+
+                try:
+                    resp = session.post(completions_url, json=payload, timeout=120)
+                    resp.raise_for_status()
+                    data = resp.json()
+
+                    # Extract logprobs
+                    logprobs_data = data["choices"][0].get("logprobs", None)
+                    if logprobs_data and logprobs_data.get("content"):
+                        ref_logprobs = [
+                            token_data["logprob"]
+                            for token_data in logprobs_data["content"]
+                        ]
+                        batch_ref_logprobs.append(ref_logprobs)
+                    else:
+                        # No logprobs available, use empty list
+                        batch_ref_logprobs.append([])
+
+                except Exception as e:
+                    print(f"Warning: Failed to get reference logprobs for sequence {idx}: {e}")
+                    batch_ref_logprobs.append([])
+
+            all_ref_logprobs.extend(batch_ref_logprobs)
+
+            # Progress update
+            pct = 100.0 * batch_end / total_sequences
+            print(f"Progress: {batch_end}/{total_sequences} sequences ({pct:.1f}%)")
+
+        print(f"\n{'='*80}")
+        print(f"Reference logprob computation complete!")
+        print(f"  Processed: {len(all_ref_logprobs)} sequences")
+        print(f"{'='*80}\n")
+
+        return all_ref_logprobs
+
+    finally:
+        print("Stopping reference model server...")
+        _kill_process_tree(server_proc)
+        try:
+            subprocess.run(["pkill", "-f", f"sglang.*{server_port}"], check=False)
+        except Exception:
+            pass
 
 
 # Named export used by offline_grpo_loop

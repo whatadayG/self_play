@@ -34,7 +34,7 @@ class SGLangModelPlayer(BaseModelPlayer):
         optional: Optional[Dict[str, Any]] = None,
     ):
         """Initialize SGLang model player.
-        
+
         Args:
             system_prompt: Initial system prompt that defines the player
             role: Role of the player
@@ -49,6 +49,7 @@ class SGLangModelPlayer(BaseModelPlayer):
         self.engine = engine
         self.processing_class = processing_class
         self.optional = optional or {}
+        self.last_generation_logprobs = None  # Store logprobs from last generation
         # Validate configuration: exactly one mode should be configured
         # Design intent:
         # - Internal mode: engine and processing_class are provided (for training within verl)
@@ -130,11 +131,11 @@ class SGLangModelPlayer(BaseModelPlayer):
     
     def _generate_text_external(self, messages: List[Dict[str, str]], **gen_kwargs) -> Tuple[str, int, int]:
         """Generate text using SGLang HTTP API.
-        
+
         Args:
             messages: List of message dictionaries
             **gen_kwargs: Generation parameters
-            
+
         Returns:
             Tuple of (response_text, input_tokens, output_tokens)
         """
@@ -146,6 +147,8 @@ class SGLangModelPlayer(BaseModelPlayer):
             "top_p": gen_kwargs.get("top_p", self.config.top_p),
             "max_tokens": gen_kwargs.get("max_tokens", self.config.max_tokens),
             "n": 1,
+            "logprobs": True,  # Request logprobs for KL divergence computation
+            "top_logprobs": 1,  # Only need the selected token's logprob
         }
 
         # Use longer timeout to account for queueing at high concurrency
@@ -172,6 +175,18 @@ class SGLangModelPlayer(BaseModelPlayer):
                 # Get token counts (if provided by server)
                 input_tokens = data.get("usage", {}).get("prompt_tokens", 0)
                 output_tokens = data.get("usage", {}).get("completion_tokens", 0)
+
+                # Extract and store logprobs if available
+                logprobs_data = data["choices"][0].get("logprobs", None)
+                if logprobs_data and logprobs_data.get("content"):
+                    # Extract the logprob values for each token
+                    # SGLang returns: {"content": [{"token": "...", "logprob": float, ...}, ...]}
+                    self.last_generation_logprobs = [
+                        token_data["logprob"]
+                        for token_data in logprobs_data["content"]
+                    ]
+                else:
+                    self.last_generation_logprobs = None
 
                 return response_text, input_tokens, output_tokens
 
@@ -315,12 +330,12 @@ class SGLangModelPlayer(BaseModelPlayer):
     
     def get_masked_sequences_pretty(self) -> str:
         """Get a pretty-formatted view of the masked assistant sequences.
-        
+
         Returns:
             Formatted string showing assistant token sequences separated by newlines
         """
         self._load_tokenizer()
-        
+
         # Get the full tokenized sequence and mask
         full_text = self.tokenizer.apply_chat_template(
             self.messages,
@@ -329,11 +344,11 @@ class SGLangModelPlayer(BaseModelPlayer):
         )
         full_tokens = self.tokenizer.encode(full_text, add_special_tokens=False)
         mask = self.get_assistant_mask()
-        
+
         # Extract continuous sequences where mask is 1
         sequences = []
         current_sequence = []
-        
+
         for i, (token_id, mask_val) in enumerate(zip(full_tokens, mask)):
             if mask_val == 1:
                 current_sequence.append(token_id)
@@ -343,14 +358,22 @@ class SGLangModelPlayer(BaseModelPlayer):
                     text = self.tokenizer.decode(current_sequence, skip_special_tokens=False)
                     sequences.append(text)
                     current_sequence = []
-        
+
         # Don't forget the last sequence
         if current_sequence:
             text = self.tokenizer.decode(current_sequence, skip_special_tokens=False)
             sequences.append(text)
-        
+
         # Join with double newlines for readability
         return "\n\n".join(sequences)
+
+    def get_last_generation_logprobs(self) -> Optional[List[float]]:
+        """Get the logprobs from the last generation.
+
+        Returns:
+            List of logprob values (one per generated token), or None if not available
+        """
+        return self.last_generation_logprobs
     
     def _generate_text_internal(self, messages: List[Dict[str, str]], **gen_kwargs) -> Tuple[str, int, int]:
         """Generate text using internal SGLang engine.

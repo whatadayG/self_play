@@ -303,6 +303,14 @@ def write_stats_file(stats: Dict[str, Any], out_path: Path) -> None:
         # Add failure ratio if available
         if "failure_ratio" in stats and stats["failure_ratio"] is not None:
             f.write(f"failure_ratio: {stats['failure_ratio']:.4f}\n")
+        # Add conversation length statistics if available
+        if "conversation_lengths" in stats and stats["conversation_lengths"] is not None:
+            conv_stats = stats["conversation_lengths"]
+            f.write(f"\n# Conversation Length Statistics\n")
+            f.write(f"conv_length_median: {conv_stats.get('median', 0):.2f}\n")
+            f.write(f"conv_length_p95: {conv_stats.get('p95', 0):.2f}\n")
+            f.write(f"conv_length_max: {conv_stats.get('max', 0):.2f}\n")
+            f.write(f"conv_length_mean: {conv_stats.get('mean', 0):.2f}\n")
 
 
 def compute_and_save_stats(parquet_path: Path, out_path: Path) -> Dict[str, Any]:
@@ -312,19 +320,53 @@ def compute_and_save_stats(parquet_path: Path, out_path: Path) -> Dict[str, Any]
         values = _extract_reward_series_from_df(df)
         stats = compute_reward_stats(values if values is not None else np.array([]))
 
-        # Compute failure ratio
+        # Compute failure ratio and conversation lengths
         from transformers import AutoTokenizer
         failure_count = 0
+        conversation_lengths = []
+
         try:
             tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-7B-Instruct", trust_remote_code=True)
             for idx, row in df.iterrows():
+                # Count failures
                 text = tokenizer.decode(row['input_ids'], skip_special_tokens=False)
                 if 'I need to think about this.' in text:
                     failure_count += 1
+
+                # Extract conversation length (prefer game_info, fallback to token counting)
+                try:
+                    game_info = json.loads(row['game_info']) if isinstance(row['game_info'], str) else row['game_info']
+                    if 'turn_count' in game_info:
+                        conversation_lengths.append(game_info['turn_count'])
+                    else:
+                        # Fallback: count role markers in tokenized sequence
+                        assistant_count = text.count('<|im_start|>assistant')
+                        user_count = text.count('<|im_start|>user')
+                        conversation_lengths.append(max(assistant_count, user_count))
+                except Exception:
+                    # Last resort: count from tokens
+                    assistant_count = text.count('<|im_start|>assistant')
+                    user_count = text.count('<|im_start|>user')
+                    conversation_lengths.append(max(assistant_count, user_count))
+
             stats["failure_ratio"] = float(failure_count / len(df)) if len(df) > 0 else 0.0
+
+            # Compute conversation length statistics
+            if conversation_lengths:
+                conv_arr = np.array(conversation_lengths)
+                stats["conversation_lengths"] = {
+                    'median': float(np.median(conv_arr)),
+                    'p95': float(np.percentile(conv_arr, 95)),
+                    'max': float(np.max(conv_arr)),
+                    'mean': float(np.mean(conv_arr)),
+                }
+            else:
+                stats["conversation_lengths"] = None
+
         except Exception as e:
-            print(f"Warning: Could not compute failure rate: {e}")
+            print(f"Warning: Could not compute failure rate and conversation lengths: {e}")
             stats["failure_ratio"] = None
+            stats["conversation_lengths"] = None
 
         write_stats_file(stats, out_path)
         return stats
@@ -646,7 +688,15 @@ def main():
     # Branching support
     ap.add_argument("--branch-from", type=str, default="", help="Existing run name/path to branch from (symlink early rounds)")
     ap.add_argument("--branch-rounds-to-link", type=int, default=2, help="How many early rounds to link into the new run")
-    
+
+    # KL divergence penalty
+    ap.add_argument("--reference-model", type=str, default="/home/nickatomlin/georgiazhou/self_play/checkpoints/sft_qwen3_8b/global_step_4800_merged", help="Path to reference model checkpoint for KL divergence penalty (leave empty to disable)")
+    ap.add_argument("--kl-coef", type=float, default=0.001, help="KL divergence penalty coefficient (default: 0.001, matching verl examples)")
+
+    # Game termination settings
+    ap.add_argument("--max-turns", type=int, default=10, help="Maximum number of turns per game (default: 10)")
+    ap.add_argument("--max-retries-per-turn", type=int, default=2, help="Maximum retries per turn before terminating (default: 2)")
+
     args = ap.parse_args()
     gpu_string = args.gpus
     gpu_list = [g for g in gpu_string.split(",") if g]
