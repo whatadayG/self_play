@@ -210,7 +210,7 @@ def function_A_start_server_and_generate(
             gpus=f"{gpu_list[0]},{gpu_list[1]}",
             tp=2,
             mem_util=args.server_mem_fraction,
-            port=12345,
+            port=30002,  # Dual server port 1
             enable_torch_compile=args.server_enable_torch_compile,
             disable_cuda_graph=args.server_disable_cuda_graph,
             log_level=args.server_log_level,
@@ -223,7 +223,7 @@ def function_A_start_server_and_generate(
             gpus=f"{gpu_list[2]},{gpu_list[3]}",
             tp=2,
             mem_util=args.server_mem_fraction,
-            port=12346,
+            port=30003,  # Dual server port 2
             enable_torch_compile=args.server_enable_torch_compile,
             disable_cuda_graph=args.server_disable_cuda_graph,
             log_level=args.server_log_level,
@@ -248,14 +248,14 @@ def function_A_start_server_and_generate(
 
             def wait_server1():
                 try:
-                    _wait_for_sglang("http://127.0.0.1:12345", server1, timeout_sec=args.server_wait_seconds, interval_sec=5)
+                    _wait_for_sglang("http://127.0.0.1:30002", server1, timeout_sec=args.server_wait_seconds, interval_sec=5)
                     print("Server 1 ready!")
                 except Exception as e:
                     errors.append(("server1", e))
 
             def wait_server2():
                 try:
-                    _wait_for_sglang("http://127.0.0.1:12346", server2, timeout_sec=args.server_wait_seconds, interval_sec=5)
+                    _wait_for_sglang("http://127.0.0.1:30003", server2, timeout_sec=args.server_wait_seconds, interval_sec=5)
                     print("Server 2 ready!")
                 except Exception as e:
                     errors.append(("server2", e))
@@ -281,7 +281,7 @@ def function_A_start_server_and_generate(
             print(f"Launching parallel generation: {num_games_per_server} unique games per server...")
             gen_cmd1 = [
                 python_bin, "scripts/generate_rollouts.py",
-                "--server-url", "http://127.0.0.1:12345",
+                "--server-url", "http://127.0.0.1:30002",
                 "--model-id", current_model,
                 "--out", str(out1),
                 "--num-games", str(num_games_per_server),
@@ -296,7 +296,7 @@ def function_A_start_server_and_generate(
 
             gen_cmd2 = [
                 python_bin, "scripts/generate_rollouts.py",
-                "--server-url", "http://127.0.0.1:12346",
+                "--server-url", "http://127.0.0.1:30003",
                 "--model-id", current_model,
                 "--out", str(out2),
                 "--num-games", str(num_games_per_server),
@@ -575,21 +575,156 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
         RolloutStats object with all metrics.
     """
     train_parquet = round_dir / "train.parquet"
+    kl_metadata_path = round_dir / "kl_metadata.json"
 
     if not train_parquet.exists():
         raise RuntimeError(f"Expected train.parquet at {train_parquet} but not found")
 
-    # Load data
-    df = pd.read_parquet(str(train_parquet))
-    if "sample_weight" in df.columns and len(df) > 0 and not (df["sample_weight"] > 0).any():
-        raise RuntimeError("All rollout sample weights are zero. This likely indicates inference failures or server issues.")
+    # Extract current KL settings
+    use_kl = getattr(args, 'use_kl', False) if args else False
+    kl_coef = getattr(args, 'kl_coef', 0.001) if args else 0.001
+    kl_method = getattr(args, 'kl_method', 'hf_dataparallel') if args else 'hf_dataparallel'
+    reference_model = getattr(args, 'reference_model', None) if args else None
 
-    # Apply KL divergence penalty if reference model is specified
-    if args and hasattr(args, 'reference_model') and args.reference_model:
+    current_kl_settings = {
+        "use_kl": use_kl,
+        "kl_coef": kl_coef if use_kl else None,
+        "kl_method": kl_method if use_kl else None,
+        "reference_model": reference_model if use_kl else None,
+    }
+
+    # Check if KL settings changed from previous processing
+    kl_settings_changed = False
+    if kl_metadata_path.exists():
+        try:
+            with open(kl_metadata_path, 'r') as f:
+                prev_kl_settings = json.load(f)
+            if prev_kl_settings != current_kl_settings:
+                print(f"\nKL settings changed:")
+                print(f"  Previous: {prev_kl_settings}")
+                print(f"  Current: {current_kl_settings}")
+                print(f"  Will reprocess from checkpoint...\n")
+                kl_settings_changed = True
+        except Exception as e:
+            print(f"Warning: Could not read KL metadata: {e}")
+            kl_settings_changed = True
+
+    # Check if we can skip reprocessing entirely
+    train_trimmed = round_dir / "train_trimmed.parquet"
+    val_trimmed = round_dir / "val_trimmed.parquet"
+    examples_path = round_dir / "examples.txt"
+    checkpoint_path = round_dir / "train_before_kl.parquet"
+
+    # Skip reprocessing if:
+    # 1. KL metadata exists and matches current settings
+    # 2. All output files exist
+    if (kl_metadata_path.exists() and not kl_settings_changed and
+        train_trimmed.exists() and val_trimmed.exists()):
+        print(f"\n{'='*80}")
+        print(f"Processing already complete with current KL settings - skipping reprocessing")
+        print(f"  KL enabled: {use_kl}")
+        if use_kl:
+            print(f"  KL coef: {kl_coef}")
+            print(f"  KL method: {kl_method}")
+        print(f"{'='*80}\n")
+
+        # Load trimmed data to compute stats
+        df = pd.read_parquet(str(train_parquet))
+        train_df = pd.read_parquet(str(train_trimmed))
+        val_df = pd.read_parquet(str(val_trimmed))
+
+        # Extract metrics and return
+        game_rewards = _extract_reward_series_from_df(df)
+        if game_rewards is None or len(game_rewards) == 0:
+            raise RuntimeError("Failed to extract game rewards from data")
+
+        game_reward_mean = float(np.mean(game_rewards))
+        game_reward_std = float(np.std(game_rewards))
+        game_reward_p10 = float(np.percentile(game_rewards, 10))
+        game_reward_p25 = float(np.percentile(game_rewards, 25))
+        game_reward_p50 = float(np.percentile(game_rewards, 50))
+        game_reward_p75 = float(np.percentile(game_rewards, 75))
+        game_reward_p90 = float(np.percentile(game_rewards, 90))
+        perfect_score_ratio = float(np.mean(game_rewards >= 1.0))
+
+        grpo_weights = df["sample_weight"].astype(float) if "sample_weight" in df.columns else np.zeros(len(df))
+        grpo_weight_mean = float(np.mean(grpo_weights))
+        grpo_weight_pos_ratio = float(np.mean(grpo_weights > 0))
+        grpo_weight_neg_ratio = float(np.mean(grpo_weights < 0))
+        grpo_weight_zero_ratio = float(np.mean(grpo_weights == 0))
+
+        # Get trim threshold from trimmed data
+        lengths = train_df["input_ids"].apply(lambda x: len(x))
+        trim_threshold = int(lengths.max())
+
+        # Compute perfect score ratio after trim
+        kept_game_rewards = _extract_reward_series_from_df(train_df)
+        perfect_score_ratio_after_trim = float(np.mean(kept_game_rewards >= 1.0)) if kept_game_rewards is not None else perfect_score_ratio
+
+        # Compute failure ratio (rough estimate from full data)
+        failure_ratio = 0.0
+        try:
+            from transformers import AutoTokenizer
+            tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-7B-Instruct", trust_remote_code=True)
+            failure_count = 0
+            for idx, row in df.head(100).iterrows():  # Sample first 100 for speed
+                text = tokenizer.decode(row['input_ids'], skip_special_tokens=False)
+                if 'I need to think about this.' in text:
+                    failure_count += 1
+            failure_ratio = float(failure_count / 100)
+        except Exception:
+            pass
+
+        stats = RolloutStats(
+            raw_parquet=train_parquet,
+            trimmed_parquet=train_trimmed,
+            val_parquet=val_trimmed,
+            examples_txt=examples_path,
+            game_reward_mean=game_reward_mean,
+            game_reward_std=game_reward_std,
+            game_reward_p10=game_reward_p10,
+            game_reward_p25=game_reward_p25,
+            game_reward_p50=game_reward_p50,
+            game_reward_p75=game_reward_p75,
+            game_reward_p90=game_reward_p90,
+            perfect_score_ratio=perfect_score_ratio,
+            perfect_score_ratio_after_trim=perfect_score_ratio_after_trim,
+            total_sequences=len(df),
+            kept_sequences=len(train_df),
+            trim_threshold=trim_threshold,
+            grpo_weight_mean=grpo_weight_mean,
+            grpo_weight_pos_ratio=grpo_weight_pos_ratio,
+            grpo_weight_neg_ratio=grpo_weight_neg_ratio,
+            grpo_weight_zero_ratio=grpo_weight_zero_ratio,
+            failure_ratio=failure_ratio,
+        )
+        return stats
+
+    # Need to process - load appropriate data
+    if checkpoint_path.exists():
+        # Resume or KL settings changed: Load from checkpoint and reprocess
+        print(f"Loading from checkpoint for reprocessing: {checkpoint_path}")
+        df = pd.read_parquet(str(checkpoint_path))
+    else:
+        # Fresh generation: Load from train.parquet and create checkpoint
+        df = pd.read_parquet(str(train_parquet))
+        if "sample_weight" in df.columns and len(df) > 0 and not (df["sample_weight"] > 0).any():
+            raise RuntimeError("All rollout sample weights are zero. This likely indicates inference failures or server issues.")
+
+        # Save checkpoint before KL computation (allows iteration on KL logic without re-generating)
+        df.to_parquet(str(checkpoint_path))
+        print(f"Saved rollout checkpoint (before KL): {checkpoint_path}")
+    if use_kl:
+        # Validate that reference model is specified
+        if not (args and hasattr(args, 'reference_model') and args.reference_model):
+            raise ValueError(
+                "--use-kl flag is set but --reference-model is not specified. "
+                "Please provide --reference-model to enable KL divergence penalty."
+            )
         print(f"\n{'='*80}")
         print(f"Applying KL divergence penalty from reference model...")
         print(f"  Reference model: {args.reference_model}")
-        print(f"  KL coefficient: {getattr(args, 'kl_coef', 0.1)}")
+        print(f"  KL coefficient: {getattr(args, 'kl_coef', 0.001)}")
         print(f"{'='*80}\n")
 
         # Compute reference logprobs
@@ -597,7 +732,9 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
             df=df,
             reference_model_path=args.reference_model,
             gpus=args.gpus,
-            server_port=8001,  # Use different port from policy server
+            method=kl_method,
+            # Parameters below only used by sglang method
+            server_port=30004,  # Reference model port (different from policy and dual servers)
             server_wait_seconds=args.server_wait_seconds,
             server_mem_fraction=args.server_mem_fraction,
             server_log_level=args.server_log_level,
@@ -607,26 +744,63 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
         )
 
         # Calculate KL penalty and adjust rewards
-        kl_coef = getattr(args, 'kl_coef', 0.1)
+        kl_coef = getattr(args, 'kl_coef', 0.001)
         kl_penalties = []
+
+        # Diagnostic counters
+        total_policy_tokens = 0
+        total_ref_tokens = 0
+        length_mismatches = 0
+        empty_policy = 0
+        empty_ref = 0
 
         for idx, row in df.iterrows():
             # Parse policy logprobs from JSON
             policy_logprobs = json.loads(row["policy_logprobs"]) if isinstance(row["policy_logprobs"], str) else row["policy_logprobs"]
             ref_logprobs = ref_logprobs_list[idx]
 
+            # Track statistics
+            total_policy_tokens += len(policy_logprobs)
+            total_ref_tokens += len(ref_logprobs)
+            if len(policy_logprobs) == 0:
+                empty_policy += 1
+            if len(ref_logprobs) == 0:
+                empty_ref += 1
+
+            # Debug first few sequences
+            if idx < 3:
+                print(f"\n[DEBUG] Sequence {idx}:")
+                print(f"  Policy logprobs: {len(policy_logprobs)} tokens, first 5: {policy_logprobs[:5]}")
+                print(f"  Ref logprobs: {len(ref_logprobs)} tokens, first 5: {ref_logprobs[:5]}")
+
+            # Fail loudly on length mismatch
+            if len(policy_logprobs) != len(ref_logprobs):
+                raise RuntimeError(
+                    f"Length mismatch at sequence {idx}: "
+                    f"policy has {len(policy_logprobs)} tokens, "
+                    f"reference has {len(ref_logprobs)} tokens. "
+                    f"This indicates a bug in logprob collection."
+                )
+
+            # Fail loudly on empty logprobs
+            if len(policy_logprobs) == 0:
+                raise RuntimeError(
+                    f"Empty policy logprobs at sequence {idx}. "
+                    f"This indicates logprob collection failed during generation."
+                )
+
             # Compute KL divergence: KL = policy_logprob - ref_logprob
-            # Sum over all generated tokens for this sequence
-            if len(policy_logprobs) > 0 and len(ref_logprobs) > 0:
-                # Align lengths (they should match, but be defensive)
-                min_len = min(len(policy_logprobs), len(ref_logprobs))
-                kl_per_token = [
-                    policy_logprobs[i] - ref_logprobs[i]
-                    for i in range(min_len)
-                ]
-                kl_penalty = sum(kl_per_token)
-            else:
-                kl_penalty = 0.0
+            kl_per_token = [
+                policy_logprobs[i] - ref_logprobs[i]
+                for i in range(len(policy_logprobs))
+            ]
+            kl_penalty = sum(kl_per_token)
+
+            # Debug output
+            if idx < 3:
+                print(f"  KL per token (first 5): {kl_per_token[:5]}")
+                print(f"  Total KL: {kl_penalty:.4f}")
+                print(f"  Avg KL per token: {kl_penalty/len(policy_logprobs):.4f}")
 
             kl_penalties.append(kl_penalty)
 
@@ -639,10 +813,21 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
         # Save KL statistics
         mean_kl = np.mean(kl_penalties)
         std_kl = np.std(kl_penalties)
+        avg_policy_tokens = total_policy_tokens / len(df) if len(df) > 0 else 0
+        avg_ref_tokens = total_ref_tokens / len(df) if len(df) > 0 else 0
+
         print(f"\nKL divergence statistics:")
         print(f"  Mean KL: {mean_kl:.4f}")
         print(f"  Std KL: {std_kl:.4f}")
         print(f"  Mean penalty: {kl_coef * mean_kl:.4f}")
+        print(f"\nDiagnostic information:")
+        print(f"  Total sequences: {len(df)}")
+        print(f"  Avg policy tokens per sequence: {avg_policy_tokens:.1f}")
+        print(f"  Avg ref tokens per sequence: {avg_ref_tokens:.1f}")
+        print(f"  Mean KL per token: {mean_kl / avg_policy_tokens if avg_policy_tokens > 0 else 0:.6f}")
+        print(f"  Length mismatches: {length_mismatches}/{len(df)}")
+        print(f"  Empty policy logprobs: {empty_policy}/{len(df)}")
+        print(f"  Empty ref logprobs: {empty_ref}/{len(df)}")
 
         # Log KL stats
         log_file = round_dir / "progress.log"
@@ -659,6 +844,11 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
         # Overwrite the parquet with adjusted rewards
         df.to_parquet(str(train_parquet))
         print(f"Saved adjusted rewards to {train_parquet}\n")
+
+    # Save KL metadata for future resume checks
+    with open(kl_metadata_path, 'w') as f:
+        json.dump(current_kl_settings, f, indent=2)
+    print(f"Saved KL metadata to {kl_metadata_path}")
 
     # Extract game-normalized rewards (ACTUAL game performance, not GRPO weights)
     game_rewards = _extract_reward_series_from_df(df)
@@ -870,7 +1060,7 @@ def main():
     ap.add_argument("--model-path", required=True)
     ap.add_argument("--gpus", default="0,1,2,3")
     ap.add_argument("--games-per-round", type=int, default=256)
-    ap.add_argument("--server-port", type=int, default=8000)
+    ap.add_argument("--server-port", type=int, default=30001, help="Port for policy model server (default: 30001)")
     ap.add_argument("--server-wait-seconds", type=int, default=900)
     ap.add_argument("--server-mem-fraction", type=float, default=0.85)
     ap.add_argument("--server-log-level", type=str, default="debug")
@@ -880,6 +1070,13 @@ def main():
     # Game termination settings
     ap.add_argument("--max-turns", type=int, default=10, help="Maximum number of turns per game (default: 10)")
     ap.add_argument("--max-retries-per-turn", type=int, default=2, help="Maximum retries per turn before terminating (default: 2)")
+    # KL divergence settings
+    ap.add_argument("--use-kl", action="store_true", help="Enable KL divergence penalty in reward (disabled by default)")
+    ap.add_argument("--reference-model", type=str, default=None, help="Path to reference model for KL divergence computation (required if --use-kl is set)")
+    ap.add_argument("--kl-coef", type=float, default=0.001, help="KL divergence penalty coefficient (default: 0.001)")
+    ap.add_argument("--kl-method", type=str, default="hf_dataparallel",
+                    choices=["hf_dataparallel", "sglang"],
+                    help="Method for computing reference model logprobs: 'hf_dataparallel' (default, uses data parallelism with HuggingFace) or 'sglang' (uses tensor parallelism with SGLang)")
     ap.set_defaults(server_enable_torch_compile=True, server_disable_cuda_graph=False)
     args = ap.parse_args()
 
@@ -895,12 +1092,167 @@ def main():
     print(json.dumps(result.to_dict()))
 
 
-def compute_reference_logprobs(
+def compute_reference_logprobs_hf_dataparallel(
     *,
     df: pd.DataFrame,
     reference_model_path: str,
     gpus: str,
-    server_port: int = 8001,
+    **kwargs  # Accept but ignore other params for API compatibility
+) -> List[List[float]]:
+    """Compute reference logprobs using HuggingFace model with DataParallel.
+
+    This approach:
+    1. Replicates the model on each GPU (data parallelism, NOT tensor parallelism)
+    2. Processes sequences in static batches (no continuous batching overhead)
+    3. Extracts logprobs for generated tokens only
+
+    More efficient than SGLang for pure scoring workloads (no generation needed).
+    Ideal for models that fit on a single GPU.
+
+    Args:
+        df: DataFrame with 'input_ids' and 'loss_mask' columns
+        reference_model_path: Path to reference model checkpoint
+        gpus: GPU IDs (e.g., "0,1,2,3")
+        **kwargs: Ignored (for API compatibility with sglang version)
+
+    Returns:
+        List of logprob lists (one per sequence, filtered to generated tokens)
+    """
+    import os
+    import torch
+    import torch.nn.functional as F
+    from transformers import AutoModelForCausalLM
+
+    # Set GPU visibility
+    gpu_list = [g.strip() for g in gpus.split(",") if g.strip()]
+    os.environ["CUDA_VISIBLE_DEVICES"] = ",".join(gpu_list)
+    num_gpus = len(gpu_list)
+
+    print(f"\n{'='*80}")
+    print(f"Loading reference model for KL divergence (HF DataParallel)...")
+    print(f"  Reference model: {reference_model_path}")
+    print(f"  GPUs: {gpus} ({num_gpus} GPUs)")
+    print(f"  Method: Data Parallelism (model replicated on each GPU)")
+    print(f"{'='*80}\n")
+
+    # Load model
+    print("Loading model...")
+    model = AutoModelForCausalLM.from_pretrained(
+        reference_model_path,
+        torch_dtype=torch.bfloat16,
+        trust_remote_code=True,
+    )
+
+    # Wrap with DataParallel if multiple GPUs
+    if num_gpus > 1:
+        model = torch.nn.DataParallel(model)
+        print(f"Wrapped model with DataParallel across {num_gpus} GPUs")
+
+    model = model.cuda()
+    model.eval()
+
+    print(f"Model loaded successfully\n")
+
+    # Process sequences in batches
+    batch_size = 32 * num_gpus  # Scale batch size with number of GPUs
+    total_sequences = len(df)
+    all_ref_logprobs = []
+
+    print(f"Computing reference logprobs for {total_sequences} sequences...")
+    print(f"Batch size: {batch_size} ({batch_size // num_gpus} per GPU)\n")
+
+    with torch.no_grad():
+        for batch_start in range(0, total_sequences, batch_size):
+            batch_end = min(batch_start + batch_size, total_sequences)
+            batch_df = df.iloc[batch_start:batch_end]
+
+            # Prepare batch
+            batch_input_ids = []
+            batch_loss_masks = []
+            max_len = 0
+
+            for idx, row in batch_df.iterrows():
+                input_ids = row["input_ids"]
+                if isinstance(input_ids, np.ndarray):
+                    input_ids = input_ids.tolist()
+                loss_mask = row["loss_mask"]
+                if isinstance(loss_mask, np.ndarray):
+                    loss_mask = loss_mask.tolist()
+
+                batch_input_ids.append(input_ids)
+                batch_loss_masks.append(loss_mask)
+                max_len = max(max_len, len(input_ids))
+
+            # Pad sequences to same length
+            padded_input_ids = []
+            padded_loss_masks = []
+            for input_ids, loss_mask in zip(batch_input_ids, batch_loss_masks):
+                pad_len = max_len - len(input_ids)
+                padded_input_ids.append(input_ids + [0] * pad_len)
+                padded_loss_masks.append(loss_mask + [0] * pad_len)
+
+            # Convert to tensors
+            input_ids_tensor = torch.tensor(padded_input_ids, dtype=torch.long).cuda()
+            loss_masks_tensor = torch.tensor(padded_loss_masks, dtype=torch.long)
+
+            # Forward pass
+            outputs = model(input_ids_tensor, use_cache=False)
+            logits = outputs.logits  # (batch, seq_len, vocab_size)
+
+            # Compute logprobs
+            # logits[:, i, :] predicts token at position i+1
+            # So logits[:, :-1, :] predicts tokens at positions 1 onwards
+            shift_logits = logits[:, :-1, :].contiguous()  # (batch, seq_len-1, vocab)
+            shift_labels = input_ids_tensor[:, 1:].contiguous()  # (batch, seq_len-1)
+
+            # Get log probabilities
+            log_probs = F.log_softmax(shift_logits, dim=-1)  # (batch, seq_len-1, vocab)
+
+            # Extract logprob for actual token at each position
+            batch_size_actual = log_probs.size(0)
+            seq_len = log_probs.size(1)
+
+            # Gather logprobs for actual tokens
+            batch_indices = torch.arange(batch_size_actual, device=log_probs.device).unsqueeze(1).expand(-1, seq_len)
+            seq_indices = torch.arange(seq_len, device=log_probs.device).unsqueeze(0).expand(batch_size_actual, -1)
+            token_logprobs = log_probs[batch_indices, seq_indices, shift_labels]  # (batch, seq_len-1)
+
+            # Move to CPU for filtering
+            token_logprobs = token_logprobs.cpu().numpy()
+
+            # Filter to generated tokens only using loss_mask
+            for i, loss_mask in enumerate(batch_loss_masks):
+                # loss_mask[j] corresponds to token at position j
+                # token_logprobs[i, j] is logprob for token at position j+1
+                # So we need loss_mask[1:] to align with token_logprobs
+                loss_mask_shifted = loss_mask[1:]  # Align with predictions
+
+                # Extract logprobs where loss_mask is 1
+                ref_logprobs = [
+                    float(token_logprobs[i, j])
+                    for j in range(len(loss_mask_shifted))
+                    if j < len(token_logprobs[i]) and loss_mask_shifted[j] == 1
+                ]
+                all_ref_logprobs.append(ref_logprobs)
+
+            # Progress update
+            pct = 100.0 * batch_end / total_sequences
+            print(f"Progress: {batch_end}/{total_sequences} sequences ({pct:.1f}%)")
+
+    print(f"\n{'='*80}")
+    print(f"Reference logprob computation complete!")
+    print(f"  Processed: {len(all_ref_logprobs)} sequences")
+    print(f"{'='*80}\n")
+
+    return all_ref_logprobs
+
+
+def compute_reference_logprobs_sglang(
+    *,
+    df: pd.DataFrame,
+    reference_model_path: str,
+    gpus: str,
+    server_port: int = 30004,
     server_wait_seconds: int = 900,
     server_mem_fraction: float = 0.85,
     server_log_level: str = "info",
@@ -908,71 +1260,74 @@ def compute_reference_logprobs(
     disable_cuda_graph: bool = False,
     round_dir: Optional[Path] = None,
 ) -> List[List[float]]:
-    """Compute reference model logprobs for already-generated sequences.
+    """Compute reference logprobs using SGLang Runtime API.
 
-    This function:
-    1. Starts a reference model server
-    2. Scores all sequences with the reference model (no generation, just scoring)
-    3. Returns per-sequence logprobs
-    4. Shuts down the server
+    This approach uses SGLang's direct engine API (no HTTP server) with tensor parallelism.
+    Note: SGLang still uses continuous batching internally, which has overhead for pure scoring.
 
     Args:
-        df: DataFrame containing generated sequences with 'input_ids' and 'policy_logprobs'
+        df: DataFrame containing generated sequences with 'input_ids' and 'loss_mask'
         reference_model_path: Path to the reference model checkpoint
         gpus: GPU IDs to use (e.g., "0,1,2,3")
-        server_port: Port for reference model server
-        server_wait_seconds: Max time to wait for server startup
-        server_mem_fraction: Memory fraction for server
-        server_log_level: Server log level
+        server_port: Unused (kept for API compatibility)
+        server_wait_seconds: Unused (kept for API compatibility)
+        server_mem_fraction: Memory fraction for engine
+        server_log_level: Log level for SGLang
         enable_torch_compile: Whether to enable torch.compile
         disable_cuda_graph: Whether to disable CUDA graph
-        round_dir: Optional directory for server logs
+        round_dir: Unused (kept for API compatibility)
 
     Returns:
         List of logprob lists (one list per sequence)
     """
-    import requests
+    import os
+    import torch
+    from sglang import Runtime
     from transformers import AutoTokenizer
 
     gpu_list = [g.strip() for g in gpus.split(",") if g.strip()]
+
+    # Use all available GPUs for reference model
+    ref_gpus = ",".join(gpu_list)
     tp = len(gpu_list) if len(gpu_list) > 0 else 1
 
     print(f"\n{'='*80}")
-    print(f"Starting reference model server for KL divergence computation...")
+    print(f"Loading reference model for KL divergence (SGLang)...")
     print(f"  Reference model: {reference_model_path}")
-    print(f"  GPUs: {gpus} (TP={tp})")
+    print(f"  GPUs: {ref_gpus} (TP={tp})")
+    print(f"  Using direct engine API (no HTTP server)")
     print(f"{'='*80}\n")
 
-    # Start reference model server
-    ref_log_file = round_dir / "sglang_reference.log" if round_dir else None
-    server_proc = _start_sglang_server(
+    # Set GPU visibility and NCCL environment for topology
+    os.environ["CUDA_VISIBLE_DEVICES"] = ref_gpus
+    os.environ["NCCL_P2P_LEVEL"] = "NVL"
+
+    # Load tokenizer
+    print(f"Loading tokenizer...")
+    tokenizer = AutoTokenizer.from_pretrained(reference_model_path, trust_remote_code=True)
+
+    # Initialize SGLang runtime with efficient settings for scoring
+    print(f"Initializing SGLang engine...")
+    runtime = Runtime(
         model_path=reference_model_path,
-        gpus=gpus,
-        tp=tp,
-        mem_util=server_mem_fraction,
-        port=server_port,
-        enable_torch_compile=enable_torch_compile,
+        tp_size=tp,
+        mem_fraction_static=0.85,     # Use maximum GPU memory
+        # max_total_tokens=0,        # Minimal KV cache (no prefix sharing needed)
+        trust_remote_code=True,
         disable_cuda_graph=disable_cuda_graph,
+        enable_torch_compile=enable_torch_compile,
+        # Prefill optimization - conservative settings for diverse sequences
+        chunked_prefill_size=2048,  # Smaller chunks to avoid OOM on long sequences
+        schedule_policy="fcfs",      # First-Come-First-Serve (no prefix caching)
+        schedule_conservativeness=1.0,  # Conservative scheduling
+        disable_radix_cache=True,    # Disable radix cache to save memory
+        allow_auto_truncate=True,
         log_level=server_log_level,
-        log_file=ref_log_file,
     )
 
-    server_url = f"http://127.0.0.1:{server_port}"
-
     try:
-        # Wait for server to be ready
-        _wait_for_sglang(server_url, server_proc, timeout_sec=server_wait_seconds, interval_sec=5)
-
-        # Load tokenizer to reconstruct messages from input_ids
-        print(f"Loading tokenizer from {reference_model_path}...")
-        tokenizer = AutoTokenizer.from_pretrained(reference_model_path, trust_remote_code=True)
-
-        # Prepare HTTP session
-        session = requests.Session()
-        completions_url = f"{server_url}/v1/chat/completions"
-
         all_ref_logprobs = []
-        batch_size = 32  # Process in batches for progress tracking
+        batch_size = 64  # Larger batches for direct API (no HTTP overhead)
         total_sequences = len(df)
 
         print(f"\nComputing reference logprobs for {total_sequences} sequences...")
@@ -982,49 +1337,65 @@ def compute_reference_logprobs(
             batch_end = min(batch_start + batch_size, total_sequences)
             batch_df = df.iloc[batch_start:batch_end]
 
-            batch_ref_logprobs = []
-
+            # Prepare batch inputs (decode to text for Runtime API)
+            batch_prompts = []
+            batch_loss_masks = []
             for idx, row in batch_df.iterrows():
-                # Decode input_ids back to messages
-                # The input_ids include the full conversation, so we decode and parse it
                 input_ids = row["input_ids"]
-                full_text = tokenizer.decode(input_ids, skip_special_tokens=False)
+                if isinstance(input_ids, np.ndarray):
+                    input_ids = input_ids.tolist()
+                # Decode to text for Runtime.generate() API
+                prompt_text = tokenizer.decode(input_ids, skip_special_tokens=False)
+                batch_prompts.append(prompt_text)
 
-                # For SGLang scoring, we need to format as messages
-                # Since we have the full conversation, create a single user message with it
-                messages = [{"role": "user", "content": full_text}]
+                # Get loss mask to identify generated tokens
+                loss_mask = row["loss_mask"]
+                if isinstance(loss_mask, np.ndarray):
+                    loss_mask = loss_mask.tolist()
+                batch_loss_masks.append(loss_mask)
 
-                # Request logprobs with max_tokens=0 (scoring mode)
-                payload = {
-                    "model": reference_model_path,
-                    "messages": messages,
-                    "max_tokens": 0,  # Don't generate, just score
-                    "logprobs": True,
-                    "top_logprobs": 1,
-                }
+            # Run batch inference to get logprobs
+            # We set max_new_tokens=0 to only score the input (no generation)
+            response_json_str = runtime.generate(
+                prompt=batch_prompts,  # 'prompt' not 'prompts', can be a list
+                sampling_params={
+                    "max_new_tokens": 0,  # No generation, just score input
+                    "temperature": 0,  # Greedy for consistency
+                },
+                return_logprob=True,  # Return per-token logprobs
+                logprob_start_len=0,  # Get logprobs for all tokens
+            )
 
+            # Parse the JSON string response
+            response_data = json.loads(response_json_str)
+
+            # Handle both single response and batch response
+            if isinstance(response_data, list):
+                outputs = response_data
+            else:
+                outputs = [response_data]
+
+            # Extract logprobs from outputs and filter to generated tokens only
+            for output, loss_mask in zip(outputs, batch_loss_masks):
+                # Get logprobs for the input tokens
+                # SGLang returns logprobs in meta_info
                 try:
-                    resp = session.post(completions_url, json=payload, timeout=120)
-                    resp.raise_for_status()
-                    data = resp.json()
+                    ref_logprobs_all = output["meta_info"]["input_token_logprobs"]
+                    # Extract just the logprob values (first element of each tuple)
+                    ref_logprobs_all = [logprob[0] for logprob in ref_logprobs_all]
 
-                    # Extract logprobs
-                    logprobs_data = data["choices"][0].get("logprobs", None)
-                    if logprobs_data and logprobs_data.get("content"):
-                        ref_logprobs = [
-                            token_data["logprob"]
-                            for token_data in logprobs_data["content"]
-                        ]
-                        batch_ref_logprobs.append(ref_logprobs)
-                    else:
-                        # No logprobs available, use empty list
-                        batch_ref_logprobs.append([])
+                    # Filter to only generated tokens (where loss_mask == 1)
+                    # Note: input_token_logprobs[i] is the logprob for token i+1
+                    # So we need to align with loss_mask[1:] (skip first token which has no logprob)
+                    ref_logprobs_generated = [
+                        lp for lp, mask in zip(ref_logprobs_all, loss_mask[1:])
+                        if mask == 1
+                    ]
+                except (KeyError, TypeError, IndexError):
+                    # Fallback: use empty list
+                    ref_logprobs_generated = []
 
-                except Exception as e:
-                    print(f"Warning: Failed to get reference logprobs for sequence {idx}: {e}")
-                    batch_ref_logprobs.append([])
-
-            all_ref_logprobs.extend(batch_ref_logprobs)
+                all_ref_logprobs.append(ref_logprobs_generated)
 
             # Progress update
             pct = 100.0 * batch_end / total_sequences
@@ -1038,12 +1409,51 @@ def compute_reference_logprobs(
         return all_ref_logprobs
 
     finally:
-        print("Stopping reference model server...")
-        _kill_process_tree(server_proc)
-        try:
-            subprocess.run(["pkill", "-f", f"sglang.*{server_port}"], check=False)
-        except Exception:
-            pass
+        print("Shutting down reference model engine...")
+        runtime.shutdown()
+
+
+def compute_reference_logprobs(
+    *,
+    df: pd.DataFrame,
+    reference_model_path: str,
+    gpus: str,
+    method: str = "hf_dataparallel",
+    **kwargs
+) -> List[List[float]]:
+    """Dispatcher for computing reference model logprobs.
+
+    Calls the appropriate implementation based on the method parameter.
+
+    Args:
+        df: DataFrame with 'input_ids' and 'loss_mask' columns
+        reference_model_path: Path to reference model checkpoint
+        gpus: GPU IDs (e.g., "0,1,2,3")
+        method: Method to use: "hf_dataparallel" (default) or "sglang"
+        **kwargs: Additional parameters passed to specific implementation
+
+    Returns:
+        List of logprob lists (one per sequence)
+    """
+    if method == "hf_dataparallel":
+        return compute_reference_logprobs_hf_dataparallel(
+            df=df,
+            reference_model_path=reference_model_path,
+            gpus=gpus,
+            **kwargs
+        )
+    elif method == "sglang":
+        return compute_reference_logprobs_sglang(
+            df=df,
+            reference_model_path=reference_model_path,
+            gpus=gpus,
+            **kwargs
+        )
+    else:
+        raise ValueError(
+            f"Unknown KL computation method: {method}. "
+            f"Valid options: 'hf_dataparallel' (default), 'sglang'"
+        )
 
 
 # Named export used by offline_grpo_loop

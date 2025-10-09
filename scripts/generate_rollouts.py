@@ -42,12 +42,17 @@ def run_one_game(player_cfg: dict, model_id: str, instructions: str, game_id: in
     instr_p1 = instructions.replace("{unknown_value}", "50")
     instr_p2 = instructions.replace("{unknown_value}", "50")
 
+    # Metadata for cache tracing
+    p1_metadata = {"game_id": game_id, "turn": 0}
+    p2_metadata = {"game_id": game_id, "turn": 0}
+
     p1 = SGLangModelPlayer(
         system_prompt=instr_p1,
         role="player-1",
         console=console,
         model_path=model_id,
         config=cfg,
+        optional=p1_metadata,
     )
     p2 = SGLangModelPlayer(
         system_prompt=instr_p2,
@@ -55,6 +60,7 @@ def run_one_game(player_cfg: dict, model_id: str, instructions: str, game_id: in
         console=console,
         model_path=model_id,
         config=cfg,
+        optional=p2_metadata,
     )
 
     env = OptimizationEnv()
@@ -69,14 +75,31 @@ def run_one_game(player_cfg: dict, model_id: str, instructions: str, game_id: in
     max_turns = player_cfg.get("max_turns", 30)
     max_retries = player_cfg.get("max_retries_per_turn", 8)
 
+    # Collect logprobs DURING the game loop (not after)
+    p1_all_logprobs = []
+    p2_all_logprobs = []
+
     while not done and turn < max_turns:
         current = obs["turn_player"]
         player = p1 if current == "player-1" else p2
+
+        # Update player metadata with current turn number for cache tracing
+        player.optional["turn"] = turn
+
         retries = 0
         while True:
             try:
                 response = player.respond()
                 full_conversation.append({"turn": turn, "player": current, "message": response, "retry": retries})
+
+                # Collect logprobs immediately after successful generation
+                logprobs = player.get_last_generation_logprobs()
+                if logprobs:
+                    if current == "player-1":
+                        p1_all_logprobs.extend(logprobs)
+                    else:
+                        p2_all_logprobs.extend(logprobs)
+
             except Exception as e:
                 # Treat generation failure as terminal
                 done = True
@@ -103,29 +126,6 @@ def run_one_game(player_cfg: dict, model_id: str, instructions: str, game_id: in
             done = obs["done"]
             turn += 1
             break
-
-    # Collect all logprobs from both players' generations
-    # Each player may have generated multiple times during the game
-    p1_all_logprobs = []
-    p2_all_logprobs = []
-
-    # Iterate through the full conversation to collect logprobs
-    for conv_entry in full_conversation:
-        player = conv_entry["player"]
-        if player == "player-1":
-            player_obj = p1
-        elif player == "player-2":
-            player_obj = p2
-        else:
-            continue  # Skip error entries
-
-        # Get logprobs from the last generation for this turn
-        logprobs = player_obj.get_last_generation_logprobs()
-        if logprobs:
-            if player == "player-1":
-                p1_all_logprobs.extend(logprobs)
-            else:
-                p2_all_logprobs.extend(logprobs)
 
     # Build two sequences (one per player's perspective)
     result = {
@@ -258,7 +258,7 @@ def worker_process(
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--server-url", default="http://127.0.0.1:30001", help="URL of the SGLang server (default: http://127.0.0.1:30001)")
+    ap.add_argument("--server-url", default="http://127.0.0.1:30001", help="URL of the SGLang server (default: port 30001)")
     ap.add_argument("--model-id", default="Qwen/Qwen3-8B-Instruct")
     ap.add_argument("--out", required=True)
     ap.add_argument("--num-games", type=int, default=256, help="Number of unique games to play (each will be played 8 times)")

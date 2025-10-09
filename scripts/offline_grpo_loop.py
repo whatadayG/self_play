@@ -451,10 +451,14 @@ def find_run_by_name(run_name: str, base_logs_dir: str = "/home/nickatomlin/geor
     return None
 
 
-def analyze_run_state(save_root: Path) -> Tuple[int, str, Optional[str], Dict[str, Any]]:
+def analyze_run_state(save_root: Path, args=None) -> Tuple[int, str, Optional[str], Dict[str, Any]]:
     """
     Analyze the state of an existing run to determine where to resume.
-    
+
+    Args:
+        save_root: Root directory of the run
+        args: Optional args object to check KL settings for proper resume detection
+
     Returns:
         - current_round: The round to resume from
         - phase: 'rollout', 'training', 'finish_round'
@@ -463,43 +467,70 @@ def analyze_run_state(save_root: Path) -> Tuple[int, str, Optional[str], Dict[st
     """
     if not save_root.exists():
         return 0, 'rollout', None, {}
-    
+
     # Find all round directories
     round_dirs = sorted([d for d in save_root.iterdir() if d.is_dir() and d.name.startswith("round_")])
-    
+
     if not round_dirs:
         return 0, 'rollout', None, {}
-    
+
     # Check the latest round directory
     latest_round_dir = round_dirs[-1]
     round_num = int(latest_round_dir.name.split("_")[1])
-    
+
     state_info = {"round_dir": latest_round_dir}
-    
+
     # Determine current model from previous rounds
     current_model = None
     if round_num > 0:
         prev_round_dir = save_root / f"round_{round_num-1:03d}"
         if prev_round_dir.exists():
             current_model = find_latest_model_from_round(prev_round_dir)
-    
+
     # Check actual files to determine state (robust approach)
     train_parquet = latest_round_dir / "train.parquet"
     train_trimmed_parquet = latest_round_dir / "train_trimmed.parquet"
     checkpoints_dir = latest_round_dir / "checkpoints"
     sft_log = latest_round_dir / "sft_train.log"
-    
+    kl_metadata = latest_round_dir / "kl_metadata.json"
+
     # Check if SFT training has completed by looking for checkpoints
     has_checkpoints = checkpoints_dir.exists() and any(checkpoints_dir.glob("global_step_*"))
     has_sft_log = sft_log.exists() and sft_log.stat().st_size > 0
-    
+
     if has_checkpoints and has_sft_log:
         # SFT is complete, finish the round
         if not current_model:
             current_model = find_latest_model_from_round(latest_round_dir)
         return round_num, 'finish_round', current_model, state_info
     elif train_parquet.exists() and train_trimmed_parquet.exists():
-        # Rollout complete, need to do SFT
+        # Check if KL settings have changed (requires reprocessing)
+        if args and kl_metadata.exists():
+            try:
+                with open(kl_metadata, 'r') as f:
+                    prev_kl_settings = json.load(f)
+
+                # Extract current KL settings
+                use_kl = getattr(args, 'use_kl', False)
+                kl_coef = getattr(args, 'kl_coef', 0.001) if use_kl else None
+                kl_method = getattr(args, 'kl_method', 'hf_dataparallel') if use_kl else None
+                reference_model = getattr(args, 'reference_model', None) if use_kl else None
+
+                current_kl_settings = {
+                    "use_kl": use_kl,
+                    "kl_coef": kl_coef,
+                    "kl_method": kl_method,
+                    "reference_model": reference_model,
+                }
+
+                # If KL settings changed, need to reprocess rollouts
+                if prev_kl_settings != current_kl_settings:
+                    print(f"KL settings changed, will reprocess rollouts for round {round_num}")
+                    return round_num, 'rollout', current_model, state_info
+            except Exception as e:
+                print(f"Warning: Could not check KL metadata: {e}")
+
+        # Rollout complete with correct KL settings, need to do SFT
         return round_num, 'training', current_model, state_info
     else:
         # Rollout incomplete or not started
@@ -661,7 +692,7 @@ def main():
     ap.add_argument("--model-path", default="/home/nickatomlin/georgiazhou/self_play/checkpoints/sft_qwen3_8b/global_step_4800_merged")
     ap.add_argument("--save-root", default="")
     ap.add_argument("--gpus", default="0,1,2,3")
-    ap.add_argument("--server-port", type=int, default=8000)
+    ap.add_argument("--server-port", type=int, default=30001, help="Port for policy model server (default: 30001)")
     ap.add_argument("--server-wait-seconds", type=int, default=900, help="Max seconds to wait for SGLang server readiness")
     ap.add_argument("--wandb-project", default="offline-grpo")
     ap.add_argument("--wandb-entity", default=None)
@@ -689,9 +720,13 @@ def main():
     ap.add_argument("--branch-from", type=str, default="", help="Existing run name/path to branch from (symlink early rounds)")
     ap.add_argument("--branch-rounds-to-link", type=int, default=2, help="How many early rounds to link into the new run")
 
-    # KL divergence penalty
-    ap.add_argument("--reference-model", type=str, default="/home/nickatomlin/georgiazhou/self_play/checkpoints/sft_qwen3_8b/global_step_4800_merged", help="Path to reference model checkpoint for KL divergence penalty (leave empty to disable)")
-    ap.add_argument("--kl-coef", type=float, default=0.001, help="KL divergence penalty coefficient (default: 0.001, matching verl examples)")
+    # KL divergence settings
+    ap.add_argument("--use-kl", action="store_true", help="Enable KL divergence penalty in reward (disabled by default)")
+    ap.add_argument("--reference-model", type=str, default=None, help="Path to reference model for KL divergence computation (required if --use-kl is set)")
+    ap.add_argument("--kl-coef", type=float, default=0.001, help="KL divergence penalty coefficient (default: 0.001)")
+    ap.add_argument("--kl-method", type=str, default="hf_dataparallel",
+                    choices=["hf_dataparallel", "sglang"],
+                    help="Method for computing reference model logprobs: 'hf_dataparallel' (default, uses data parallelism with HuggingFace) or 'sglang' (uses tensor parallelism with SGLang)")
 
     # Game termination settings
     ap.add_argument("--max-turns", type=int, default=10, help="Maximum number of turns per game (default: 10)")
@@ -728,7 +763,7 @@ def main():
     
     # Analyze existing run state if resuming
     if save_root is not None:
-        current_round, phase, resume_model, state_info = analyze_run_state(save_root)
+        current_round, phase, resume_model, state_info = analyze_run_state(save_root, args)
         if resume_model:
             current_model = resume_model
         start_round = current_round

@@ -139,6 +139,13 @@ class SGLangModelPlayer(BaseModelPlayer):
         Returns:
             Tuple of (response_text, input_tokens, output_tokens)
         """
+        # Build request ID with game context for cache tracing
+        # Format: game_{id}_turn_{n}_player_{role}_msg_{count}
+        game_id = self.optional.get("game_id", "unknown")
+        turn = self.optional.get("turn", 0)
+        msg_count = len([m for m in messages if m["role"] == "assistant"])  # Count assistant messages
+        rid = f"game_{game_id}_turn_{turn}_{self.role}_msg_{msg_count}"
+
         # Build request payload
         payload = {
             "model": self.model_path,
@@ -149,6 +156,7 @@ class SGLangModelPlayer(BaseModelPlayer):
             "n": 1,
             "logprobs": True,  # Request logprobs for KL divergence computation
             "top_logprobs": 1,  # Only need the selected token's logprob
+            "rid": rid,  # Include structured request ID for cache tracing
         }
 
         # Use longer timeout to account for queueing at high concurrency
