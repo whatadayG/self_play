@@ -932,6 +932,35 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
 
     kept = df_no_failures[lengths <= pct95]
 
+    # Filter for positive GRPO-normalized examples only (if enabled)
+    filter_positive_only = getattr(args, 'filter_positive_only', True) if args else True
+    if filter_positive_only:
+        # Count positive examples before filtering
+        grpo_weights_trimmed = kept["sample_weight"].astype(float)
+        positive_mask = grpo_weights_trimmed > 0
+        num_positive = int(positive_mask.sum())
+        num_negative = int((grpo_weights_trimmed < 0).sum())
+        num_zero = int((grpo_weights_trimmed == 0).sum())
+
+        print(f"\nFiltering for positive GRPO-normalized examples...")
+        print(f"  Before filtering: {len(kept)} sequences")
+        print(f"    Positive (above group mean): {num_positive} ({100*num_positive/len(kept):.1f}%)")
+        print(f"    Negative (below group mean): {num_negative} ({100*num_negative/len(kept):.1f}%)")
+        print(f"    Zero (at group mean): {num_zero} ({100*num_zero/len(kept):.1f}%)")
+
+        # Keep only positive examples
+        kept = kept[positive_mask].reset_index(drop=True)
+        print(f"  After filtering: {len(kept)} sequences (kept {100*len(kept)/(len(df_no_failures[lengths <= pct95])):.1f}%)")
+
+        # Warn if we filtered out too many examples
+        if len(kept) < 100:
+            print(f"\n  WARNING: Only {len(kept)} positive examples remain after filtering.")
+            print(f"  This may be too few for effective training. Consider:")
+            print(f"    - Using --no-filter-positive-only to train on all examples")
+            print(f"    - Increasing --games-per-round to generate more rollouts\n")
+    else:
+        print(f"\nPositive-only filtering disabled, using all {len(kept)} trimmed sequences")
+
     # Split into train (90%) and val (10%)
     from sklearn.model_selection import train_test_split
     train_df, val_df = train_test_split(kept, test_size=0.1, random_state=42)
@@ -980,6 +1009,10 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
 
     # Log to progress.log
     log_file = round_dir / "progress.log"
+
+    # Calculate length-trimmed count before positive filtering
+    length_trimmed_count = len(df_no_failures[lengths <= pct95])
+
     with open(log_file, "a") as lf:
         lf.write(json.dumps({
             "event": "filter_and_trim_done",
@@ -988,7 +1021,9 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
             "failed": failure_count,
             "after_failure_filter": int(len(df_no_failures)),
             "pct95_threshold": pct95,
-            "after_length_trim": int(len(kept)),
+            "after_length_trim": length_trimmed_count,
+            "filter_positive_only_enabled": filter_positive_only,
+            "after_positive_filter": int(len(kept)),
         }) + "\n")
         lf.write(json.dumps({
             "event": "rollout_metrics",
@@ -1007,7 +1042,11 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
     print(f"  Total sequences: {len(df)}")
     print(f"  Failed generations: {failure_count} ({failure_ratio:.2%})")
     print(f"  After failure filter: {len(df_no_failures)}")
-    print(f"  After length trim (p95={pct95}): {len(kept)}")
+    print(f"  After length trim (p95={pct95}): {length_trimmed_count}")
+    if filter_positive_only:
+        print(f"  After positive-only filter: {len(kept)} ({100*len(kept)/length_trimmed_count:.1f}% of trimmed)")
+    else:
+        print(f"  Positive filtering disabled: {len(kept)}")
     print(f"  Game reward (raw data): mean={game_reward_mean:.4f}, perfect_score={perfect_score_ratio:.1%}")
 
     # Write stats.txt for quick reference (use full rollout set, not trimmed)
@@ -1077,6 +1116,11 @@ def main():
     ap.add_argument("--kl-method", type=str, default="hf_dataparallel",
                     choices=["hf_dataparallel", "sglang"],
                     help="Method for computing reference model logprobs: 'hf_dataparallel' (default, uses data parallelism with HuggingFace) or 'sglang' (uses tensor parallelism with SGLang)")
+
+    # Data filtering settings
+    ap.add_argument("--filter-positive-only", action="store_true", default=True, help="Train only on positive GRPO-normalized examples (above group mean) (default: enabled)")
+    ap.add_argument("--no-filter-positive-only", dest="filter_positive_only", action="store_false", help="Disable positive-only filtering, train on all examples")
+
     ap.set_defaults(server_enable_torch_compile=True, server_disable_cuda_graph=False)
     args = ap.parse_args()
 

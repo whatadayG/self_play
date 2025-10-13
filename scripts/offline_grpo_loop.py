@@ -85,9 +85,9 @@ def run_sft_training(
         f"data.train_batch_size={train_batch_size}",
         f"data.val_batch_size_per_gpu={val_batch_size_per_gpu}",
         f"model.partial_pretrain={current_model}",
-        "trainer.total_epochs=4",
+        "trainer.total_epochs=1",
         "trainer.save_freq=500",
-        "trainer.test_freq=40",
+        "trainer.test_freq=20",
         "trainer.checkpoint.save_contents=[\"hf_model\"]",
         f"data.max_length={max_len_arg}",
         "data.custom_cls.path=verl/verl/utils/dataset/pretokenized_sft_dataset.py",
@@ -96,7 +96,7 @@ def run_sft_training(
         f"trainer.experiment_name={experiment_name}",
         "optim.lr=1e-5",
         "optim.lr_scheduler=wsd",
-        "+optim.stable_ratio=0.9",
+        "+optim.stable_ratio=0.99",
         "+optim.min_lr_ratio=0.1",
     ]
 
@@ -731,6 +731,10 @@ def main():
     # Game termination settings
     ap.add_argument("--max-turns", type=int, default=10, help="Maximum number of turns per game (default: 10)")
     ap.add_argument("--max-retries-per-turn", type=int, default=2, help="Maximum retries per turn before terminating (default: 2)")
+
+    # Data filtering settings
+    ap.add_argument("--filter-positive-only", action="store_true", default=True, help="Train only on positive GRPO-normalized examples (above group mean) (default: enabled)")
+    ap.add_argument("--no-filter-positive-only", dest="filter_positive_only", action="store_false", help="Disable positive-only filtering, train on all examples")
 
     args = ap.parse_args()
     gpu_string = args.gpus
