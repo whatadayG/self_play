@@ -10,6 +10,10 @@ env = Environment(
 OptimizationPromptTemplateStr = (
 """Reviewer Paper Similarity Scores:
 {{ table }}
+{% if max_turns is defined and max_retries_per_turn is defined %}
+
+Game Rules: You have {{ max_turns }} turns to reach an agreement (a message, proposal, acceptance, or rejection sent by either of you counts as a turn). Each round allows up to {{ max_retries_per_turn }} retries if you make an error.
+{% endif %}
 
 {% for m in messages %}
 {% if m.type == "message" %}

@@ -8,11 +8,26 @@ from dialop.templates import OptimizationPromptTemplate
 
 class OptimizationEnv(DialogueEnv):
 
-    def __init__(self, one_player=False):
+    def __init__(self, one_player=False, max_turns=30, max_retries_per_turn=8):
+        """Initialize the Optimization environment.
+
+        Args:
+            one_player: If True, both players see complete table (for debugging)
+            max_turns: Maximum number of turns allowed in the game
+            max_retries_per_turn: Maximum number of retries allowed per turn
+
+        Note: The environment informs agents about turn/retry limits but does NOT
+        enforce game termination. The caller (e.g., generate_rollouts.py) is
+        responsible for enforcing these limits and terminating the game.
+        """
         self.one_player = one_player
         self.players = ["player-1", "player-2"]
         instrs = (Path(__file__).parent / "data/optimization.txt").read_text()
         self.instructions = [instrs, instrs]
+        self.max_turns = max_turns
+        self.max_retries_per_turn = max_retries_per_turn
+        self.current_turn = 0
+        self.current_retry = 0
 
     def reset(self, game_state=None):
         if game_state is not None:
@@ -24,12 +39,22 @@ class OptimizationEnv(DialogueEnv):
         # Compute score range
         self.best_score = self.game.best_assignment_reward
         self.num_msgs = 0
+        self.current_turn = 0
+        self.current_retry = 0
         obss = self._init_from_action_log()
+
+        # Add initial round counter to the first player's observation
+        turn_player = self.players[self.game.turn_player]
+        status_msg = self._get_status_message()
+        obss[turn_player] = obss[turn_player] + status_msg
+
         return {**obss,
-                "turn_player": self.players[self.game.turn_player],
+                "turn_player": turn_player,
                 "done": False}
 
     def format_error_msg(self, error_msg: str, player: str, done: bool=False):
+        # Increment retry counter when error occurs
+        self.current_retry += 1
         return {
             "done": done,
             "turn_player": player,
@@ -130,6 +155,10 @@ class OptimizationEnv(DialogueEnv):
                         "from_player": self.game.turn_player,
                         "type": "utterance",
                 })
+
+                # Reset retry counter on successful move, increment turn counter
+                self.current_retry = 0
+                self.current_turn += 1
             elif type_ == "propose":
                 self.num_msgs += 1
 
@@ -152,6 +181,10 @@ class OptimizationEnv(DialogueEnv):
                     a_obs = message
                     u_obs = f"\nPartner: {message_part}\nYou can output one of these choices: [accept] <your message to your partner> or [reject] <your message to your partner>"
                     obss = [u_obs, a_obs]
+
+                # Reset retry counter on successful move, increment turn counter
+                self.current_retry = 0
+                self.current_turn += 1
             elif type_ == "accept" or type_ == "reject":
                 #import pdb; pdb.set_trace()
                 self.num_msgs += 1
@@ -161,7 +194,7 @@ class OptimizationEnv(DialogueEnv):
                 ##if last_message:
                 ##    type_ = "accept"
 
-                
+
                 obss = ["", ""]
                 obss[self.game.turn_player] = f"{message}"
                 obss[1 - self.game.turn_player] = f"\nPartner: [{type_}]{content}"
@@ -172,6 +205,10 @@ class OptimizationEnv(DialogueEnv):
                     "score": self.game.proposal_reward,
                     "score_norm": self.game.proposal_reward / self.game.best_assignment_reward,
                 })
+
+                # Reset retry counter on successful move, increment turn counter
+                self.current_retry = 0
+                self.current_turn += 1
             else:
                 raise ValueError(f"Message type not found for: {message}.")
         except GameError as e:
@@ -194,8 +231,15 @@ class OptimizationEnv(DialogueEnv):
                 "turn_player": self.players[self.game.turn_player]
             }, True
         obss = {self.players[i]: obs for i, obs in enumerate(obss)}
+
+        # Inject turn/retry counter message to current player's observation
+        turn_player = self.players[self.game.turn_player]
+        if turn_player in obss and obss[turn_player]:
+            status_msg = self._get_status_message()
+            obss[turn_player] = obss[turn_player] + status_msg
+
         obss.update({
-            "turn_player": self.players[self.game.turn_player],
+            "turn_player": turn_player,
             "done": done,
             "reward": reward,
             "info": info,
@@ -207,6 +251,13 @@ class OptimizationEnv(DialogueEnv):
 
         proposal = self._parse_proposal(message)
         self.game.propose(None, self.game.turn_player, proposal_ids=proposal)
+
+    def _get_status_message(self):
+        """Generate a status message showing current turn/retry and limits."""
+        if self.current_retry > 0:
+            return f"\n\nYour turn, round {self.current_turn + 1}/{self.max_turns}, retry {self.current_retry}/{self.max_retries_per_turn}."
+        else:
+            return f"\n\nYour turn, round {self.current_turn + 1}/{self.max_turns}."
 
     def _init_from_action_log(self):
         obss = {}
@@ -222,6 +273,8 @@ class OptimizationEnv(DialogueEnv):
                 messages=self.game.action_log,
                 player_id=i,
                 any=any,
+                max_turns=self.max_turns,
+                max_retries_per_turn=self.max_retries_per_turn,
             ).rstrip()
         return obss
 

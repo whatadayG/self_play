@@ -63,7 +63,11 @@ def run_one_game(player_cfg: dict, model_id: str, instructions: str, game_id: in
         optional=p2_metadata,
     )
 
-    env = OptimizationEnv()
+    # Pass game limits to environment so agents can see them
+    env = OptimizationEnv(
+        max_turns=player_cfg.get("max_turns", 30),
+        max_retries_per_turn=player_cfg.get("max_retries_per_turn", 8)
+    )
     obs = env.reset(game_state=None)
     p1.observe(obs["player-1"])  # give initial observation
     p2.observe(obs["player-2"])  # give initial observation
