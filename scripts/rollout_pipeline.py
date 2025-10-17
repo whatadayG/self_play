@@ -274,12 +274,14 @@ def function_A_start_server_and_generate(
 
             # Generate on both servers in parallel
             num_games_per_server = args.games_per_round // 2  # Each server gets half the unique games
-            group_size = 8  # From generate_rollouts.py default
+            group_size = 8  # From generate_rollouts.py default (used only if not branching)
 
             out1 = round_dir / "train_server1.parquet"
             out2 = round_dir / "train_server2.parquet"
 
             print(f"Launching parallel generation: {num_games_per_server} unique games per server...")
+
+            # Build base command for server 1
             gen_cmd1 = [
                 python_bin, "scripts/generate_rollouts.py",
                 "--server-url", "http://127.0.0.1:30002",
@@ -287,7 +289,6 @@ def function_A_start_server_and_generate(
                 "--out", str(out1),
                 "--num-games", str(num_games_per_server),
                 "--max-new-tokens", "8192",
-                "--group-size", str(group_size),
                 "--temperature", "0.7",
                 "--top-p", "0.9",
                 "--max-model-len", "32768",
@@ -295,6 +296,20 @@ def function_A_start_server_and_generate(
                 "--max-retries-per-turn", str(getattr(args, 'max_retries_per_turn', 2)),
             ]
 
+            # Add branching args if enabled
+            if getattr(args, 'branching_mode', False):
+                branch_points = getattr(args, 'branch_points', [1, 2])
+                branch_factor = getattr(args, 'branch_factor', 8)
+                gen_cmd1.extend([
+                    "--branching-mode",
+                    "--branch-points", str(branch_points[0]), str(branch_points[1]),
+                    "--branch-factor", str(branch_factor),
+                ])
+            else:
+                # Standard mode: use group-size
+                gen_cmd1.extend(["--group-size", str(group_size)])
+
+            # Build base command for server 2 (same logic)
             gen_cmd2 = [
                 python_bin, "scripts/generate_rollouts.py",
                 "--server-url", "http://127.0.0.1:30003",
@@ -302,13 +317,26 @@ def function_A_start_server_and_generate(
                 "--out", str(out2),
                 "--num-games", str(num_games_per_server),
                 "--max-new-tokens", "8192",
-                "--group-size", str(group_size),
                 "--temperature", "0.7",
                 "--top-p", "0.9",
                 "--max-model-len", "32768",
                 "--max-turns", str(getattr(args, 'max_turns', 10)),
                 "--max-retries-per-turn", str(getattr(args, 'max_retries_per_turn', 2)),
             ]
+
+            # Add branching args if enabled
+            if getattr(args, 'branching_mode', False):
+                branch_points = getattr(args, 'branch_points', [1, 2])
+                branch_factor = getattr(args, 'branch_factor', 8)
+                gen_cmd2.extend([
+                    "--branching-mode",
+                    "--branch-points", str(branch_points[0]), str(branch_points[1]),
+                    "--branch-factor", str(branch_factor),
+                ])
+            else:
+                # Standard mode: use group-size
+                gen_cmd2.extend(["--group-size", str(group_size)])
+
 
             # Run both in parallel
             proc1 = subprocess.Popen(gen_cmd1)
@@ -433,6 +461,8 @@ def function_A_start_server_and_generate(
             _wait_for_sglang(server_url, server_proc, timeout_sec=args.server_wait_seconds, interval_sec=5)
 
             out_parquet = round_dir / "train.parquet"
+
+            # Build base command
             gen_cmd = [
                 python_bin,
                 "scripts/generate_rollouts.py",
@@ -446,8 +476,6 @@ def function_A_start_server_and_generate(
                 str(args.games_per_round),
                 "--max-new-tokens",
                 "8192",
-                "--group-size",
-                "8",
                 "--temperature",
                 "0.7",
                 "--top-p",
@@ -459,6 +487,20 @@ def function_A_start_server_and_generate(
                 "--max-retries-per-turn",
                 str(getattr(args, 'max_retries_per_turn', 2)),
             ]
+
+            # Add branching args if enabled
+            if getattr(args, 'branching_mode', False):
+                branch_points = getattr(args, 'branch_points', [1, 2])
+                branch_factor = getattr(args, 'branch_factor', 8)
+                gen_cmd.extend([
+                    "--branching-mode",
+                    "--branch-points", str(branch_points[0]), str(branch_points[1]),
+                    "--branch-factor", str(branch_factor),
+                ])
+            else:
+                # Standard mode: use group-size
+                gen_cmd.extend(["--group-size", "8"])
+
 
             # Run generation with interrupt handling
             try:

@@ -776,6 +776,11 @@ def main():
     ap.add_argument("--max-turns", type=int, default=10, help="Maximum number of turns per game (default: 10)")
     ap.add_argument("--max-retries-per-turn", type=int, default=2, help="Maximum retries per turn before terminating (default: 2)")
 
+    # Branching settings for credit assignment
+    ap.add_argument("--branching-mode", action="store_true", help="Enable branching mode for credit assignment (default: False)")
+    ap.add_argument("--branch-points", type=int, nargs=2, default=[1, 2], help="Turn numbers to branch at (default: 1 2)")
+    ap.add_argument("--branch-factor", type=int, default=8, help="Number of branches per branch point (default: 8)")
+
     # Data filtering settings
     ap.add_argument("--filter-positive-only", action="store_true", default=True, help="Train only on positive GRPO-normalized examples (above group mean) (default: enabled)")
     ap.add_argument("--no-filter-positive-only", dest="filter_positive_only", action="store_false", help="Disable positive-only filtering, train on all examples")
@@ -969,6 +974,9 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
                 "server_log_level": args.server_log_level,
                 "server_enable_torch_compile": args.server_enable_torch_compile,
                 "resumed_from_round": start_round,
+                "branching_mode": args.branching_mode,
+                "branch_points": args.branch_points if args.branching_mode else None,
+                "branch_factor": args.branch_factor if args.branching_mode else None,
             }, allow_val_change=True)
     except Exception:
         wb = None

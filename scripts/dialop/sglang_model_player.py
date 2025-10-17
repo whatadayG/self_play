@@ -32,6 +32,8 @@ class SGLangModelPlayer(BaseModelPlayer):
         engine: Optional[Any] = None,
         processing_class: Optional[Any] = None,
         optional: Optional[Dict[str, Any]] = None,
+        # Optional session for connection reuse (external mode only)
+        session: Optional[Any] = None,
     ):
         """Initialize SGLang model player.
 
@@ -43,6 +45,8 @@ class SGLangModelPlayer(BaseModelPlayer):
             config: SGLang configuration
             engine: Optional SGLang AsyncEngine for internal mode
             processing_class: Optional tokenizer/processor for internal mode
+            optional: Optional metadata dict
+            session: Optional requests.Session for connection reuse (external mode only)
         """
         self.config = config or SGLangConfig()
         self.tokenizer = None  # Will be loaded on demand for external mode
@@ -50,6 +54,11 @@ class SGLangModelPlayer(BaseModelPlayer):
         self.processing_class = processing_class
         self.optional = optional or {}
         self.last_generation_logprobs = None  # Store logprobs from last generation
+        self.session = session  # Store provided session (may be None)
+
+        # Turn tracking for branching credit assignment
+        self.turn_markers = []  # List of (turn_num, message_idx) tracking assistant messages
+        self.current_turn = 0  # Track current turn number
         # Validate configuration: exactly one mode should be configured
         # Design intent:
         # - Internal mode: engine and processing_class are provided (for training within verl)
@@ -87,31 +96,71 @@ class SGLangModelPlayer(BaseModelPlayer):
                 base_url = base_url + "/v1"
             self.base_url = base_url
             self.completions_url = f"{self.base_url}/chat/completions"
-            
+
             # Get API key from environment or config
             self.api_key = os.environ.get("SGLANG_API_KEY", self.config.api_key)
-            
-            # Create a persistent HTTP session for connection reuse
-            self.session = requests.Session()
-            # Configure adapter with a reasonable pool; retries disabled by default
-            adapter = HTTPAdapter(pool_connections=64, pool_maxsize=256)
-            if Retry is not None:
-                # Optional: very conservative retry policy on transient TCP resets
-                retry = Retry(total=0, backoff_factor=0)
-                adapter = HTTPAdapter(pool_connections=64, pool_maxsize=256, max_retries=retry)
-            self.session.mount("http://", adapter)
-            self.session.mount("https://", adapter)
-            # Default headers
-            self.session.headers.update(
-                {
-                    "Content-Type": "application/json",
-                    "Authorization": f"Bearer {self.api_key}",
-                    "Connection": "keep-alive",
-                }
-            )
+
+            # Only create a new session if one wasn't provided
+            if self.session is None:
+                # Create a persistent HTTP session for connection reuse
+                self.session = requests.Session()
+                # Configure adapter with a reasonable pool; retries disabled by default
+                adapter = HTTPAdapter(pool_connections=64, pool_maxsize=256)
+                if Retry is not None:
+                    # Optional: very conservative retry policy on transient TCP resets
+                    retry = Retry(total=0, backoff_factor=0)
+                    adapter = HTTPAdapter(pool_connections=64, pool_maxsize=256, max_retries=retry)
+                self.session.mount("http://", adapter)
+                self.session.mount("https://", adapter)
+                # Default headers
+                self.session.headers.update(
+                    {
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Connection": "keep-alive",
+                    }
+                )
 
             self.console.print(f"[green]Using SGLang server at {self.base_url} for {self.role}[/green]")
-    
+
+    def observe(self, obs: str) -> None:
+        """Override to track turn information from environment observations.
+
+        Args:
+            obs: Observation text (may contain turn counter info)
+        """
+        # Call parent implementation
+        super().observe(obs)
+
+        # Extract turn information from observation if available
+        # Environment adds messages like "Your turn, round N/M" or "Your turn, round N/M, retry R/S"
+        import re
+        turn_match = re.search(r'round (\d+)/\d+', obs)
+        if turn_match:
+            # Extract turn number (0-indexed)
+            turn_from_msg = int(turn_match.group(1)) - 1  # Convert from 1-indexed to 0-indexed
+            self.current_turn = turn_from_msg
+
+    def respond(self, **kwargs) -> str:
+        """Override to track which turn each assistant message belongs to.
+
+        Args:
+            **kwargs: Additional generation parameters
+
+        Returns:
+            Generated response string
+        """
+        # Get the message index before responding (will be the index of the new message)
+        message_idx = len([m for m in self.messages if m["role"] == "assistant"])
+
+        # Call parent implementation (adds assistant message to self.messages)
+        response = super().respond(**kwargs)
+
+        # Record turn marker for this assistant message
+        self.turn_markers.append((self.current_turn, message_idx))
+
+        return response
+
     def _generate_text(self, messages: List[Dict[str, str]], **gen_kwargs) -> Tuple[str, int, int]:
         """Generate text using SGLang.
         
@@ -139,14 +188,10 @@ class SGLangModelPlayer(BaseModelPlayer):
         Returns:
             Tuple of (response_text, input_tokens, output_tokens)
         """
-        # Build request ID with game context for cache tracing
-        # Format: game_{id}_turn_{n}_player_{role}_msg_{count}
-        game_id = self.optional.get("game_id", "unknown")
-        turn = self.optional.get("turn", 0)
-        msg_count = len([m for m in messages if m["role"] == "assistant"])  # Count assistant messages
-        rid = f"game_{game_id}_turn_{turn}_{self.role}_msg_{msg_count}"
-
         # Build request payload
+        # Note: We let SGLang auto-generate rids (uuid.uuid4().hex) to avoid collisions
+        # in branching scenarios where the same game/turn/player combination could occur
+        # in parallel branches.
         payload = {
             "model": self.model_path,
             "messages": messages,
@@ -156,7 +201,6 @@ class SGLangModelPlayer(BaseModelPlayer):
             "n": 1,
             "logprobs": True,  # Request logprobs for KL divergence computation
             "top_logprobs": 1,  # Only need the selected token's logprob
-            "rid": rid,  # Include structured request ID for cache tracing
         }
 
         # Use longer timeout to account for queueing at high concurrency
@@ -285,14 +329,32 @@ class SGLangModelPlayer(BaseModelPlayer):
         input_tokens = self.tokenizer.encode(input_text, add_special_tokens=True)
         return input_tokens
     
-    def get_assistant_mask(self) -> List[int]:
-        """Generate a mask that is 1 for tokens within assistant messages.
-        
+    def _get_message_turn(self, message_idx: int) -> Optional[int]:
+        """Get the turn number for a given message index.
+
+        Args:
+            message_idx: Index of assistant message (0-indexed among assistant messages only)
+
         Returns:
-            List of 0s and 1s, where 1 indicates assistant tokens
+            Turn number, or None if not tracked
+        """
+        for turn_num, msg_idx in self.turn_markers:
+            if msg_idx == message_idx:
+                return turn_num
+        return None
+
+    def get_assistant_mask(self, turn_min: Optional[int] = None, turn_max: Optional[int] = None) -> List[int]:
+        """Generate a mask that is 1 for tokens within assistant messages.
+
+        Args:
+            turn_min: Only include tokens from turns >= turn_min (None = no lower bound)
+            turn_max: Only include tokens from turns <= turn_max (None = no upper bound)
+
+        Returns:
+            List of 0s and 1s, where 1 indicates assistant tokens (filtered by turn if specified)
         """
         self._load_tokenizer()
-        
+
         # First, tokenize the full conversation
         full_text = self.tokenizer.apply_chat_template(
             self.messages,
@@ -300,13 +362,27 @@ class SGLangModelPlayer(BaseModelPlayer):
             add_generation_prompt=False
         )
         full_tokens = self.tokenizer.encode(full_text, add_special_tokens=False)
-        
+
         # Create mask initialized to 0
         mask = [0] * len(full_tokens)
-        
+
+        # Track assistant message index for turn lookup
+        assistant_msg_idx = 0
+
         # For each assistant message, find where it appears and mark those tokens
         for i, msg in enumerate(self.messages):
             if msg["role"] == "assistant":
+                # Check if this message's turn is in the specified range
+                message_turn = self._get_message_turn(assistant_msg_idx)
+
+                # Apply turn filtering
+                if turn_min is not None and message_turn is not None and message_turn < turn_min:
+                    assistant_msg_idx += 1
+                    continue  # Skip this message
+                if turn_max is not None and message_turn is not None and message_turn > turn_max:
+                    assistant_msg_idx += 1
+                    continue  # Skip this message
+
                 # Get the conversation up to this point (inclusive)
                 partial_messages = self.messages[:i+1]
                 partial_text = self.tokenizer.apply_chat_template(
@@ -315,7 +391,7 @@ class SGLangModelPlayer(BaseModelPlayer):
                     add_generation_prompt=False
                 )
                 partial_tokens = self.tokenizer.encode(partial_text, add_special_tokens=False)
-                
+
                 # Get the conversation up to before this message
                 if i > 0:
                     prev_messages = self.messages[:i]
@@ -328,14 +404,75 @@ class SGLangModelPlayer(BaseModelPlayer):
                     start_idx = len(prev_tokens)
                 else:
                     start_idx = 0
-                
+
                 # Mark the assistant tokens
                 end_idx = len(partial_tokens)
                 for j in range(start_idx, min(end_idx, len(mask))):
                     mask[j] = 1
-        
+
+                assistant_msg_idx += 1
+
         return mask
-    
+
+    def get_turn_end_token_index(self, turn_num: int) -> int:
+        """Find the token index where a given turn ends (for sequence truncation).
+
+        Args:
+            turn_num: Turn number to truncate after
+
+        Returns:
+            Token index immediately after the last token of turn_num
+            (can be used to truncate: input_ids[:index])
+        """
+        self._load_tokenizer()
+
+        # Find the last assistant message in the specified turn
+        last_msg_idx_in_turn = None
+        for turn, msg_idx in self.turn_markers:
+            if turn == turn_num:
+                last_msg_idx_in_turn = msg_idx
+            elif turn > turn_num:
+                break
+
+        if last_msg_idx_in_turn is None:
+            # Turn not found, return full length
+            full_text = self.tokenizer.apply_chat_template(
+                self.messages,
+                tokenize=False,
+                add_generation_prompt=False
+            )
+            return len(self.tokenizer.encode(full_text, add_special_tokens=False))
+
+        # Find the message with this index in the messages list
+        assistant_msg_count = 0
+        target_msg_position = None
+        for i, msg in enumerate(self.messages):
+            if msg["role"] == "assistant":
+                if assistant_msg_count == last_msg_idx_in_turn:
+                    target_msg_position = i
+                    break
+                assistant_msg_count += 1
+
+        if target_msg_position is None:
+            # Fallback: return full length
+            full_text = self.tokenizer.apply_chat_template(
+                self.messages,
+                tokenize=False,
+                add_generation_prompt=False
+            )
+            return len(self.tokenizer.encode(full_text, add_special_tokens=False))
+
+        # Get tokens up to and including this message
+        messages_up_to = self.messages[:target_msg_position+1]
+        text_up_to = self.tokenizer.apply_chat_template(
+            messages_up_to,
+            tokenize=False,
+            add_generation_prompt=False
+        )
+        tokens_up_to = self.tokenizer.encode(text_up_to, add_special_tokens=False)
+
+        return len(tokens_up_to)
+
     def get_masked_sequences_pretty(self) -> str:
         """Get a pretty-formatted view of the masked assistant sequences.
 
