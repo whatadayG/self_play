@@ -25,7 +25,7 @@ torchrun --nnodes=1 --nproc_per_node=$nproc_per_node --rdzv_endpoint=localhost:2
     data.val_files=/home/nickatomlin/georgiazhou/self_play/scripts/sft_qwen/sft_qwen3_10k/sft_qwen3_10k_val.parquet \
     data.multiturn.enable=true \
     data.multiturn.messages_key=messages \
-    data.max_length=5000 \
+    data.max_length=3500 \
     data.truncation=error \
     data.micro_batch_size_per_gpu=3 \
     data.train_batch_size=12 \
@@ -36,12 +36,14 @@ torchrun --nnodes=1 --nproc_per_node=$nproc_per_node --rdzv_endpoint=localhost:2
     model.use_liger=true \
     optim.lr=1e-5 \
     trainer.default_local_dir=$save_path \
-    trainer.project_name=multiturn-sft \
-    trainer.experiment_name=multiturn_qwen3_8b_len10k_b32 \
+    trainer.project_name=perfect-sft \
+    trainer.experiment_name=trial-1 \
     trainer.logger='["console", "wandb"]' \
     trainer.total_epochs=5 \
-    trainer.save_freq=-1 \
-    trainer.test_freq=1 \
+    trainer.save_freq=500 \
+    trainer.test_freq=100 \
+    data.custom_cls.path=verl/verl/utils/dataset/pretokenized_sft_dataset.py \
+    data.custom_cls.name=PreTokenizedSFTDataset \
     use_remove_padding=true \
     $@
 
