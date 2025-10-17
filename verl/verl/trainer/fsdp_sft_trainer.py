@@ -744,6 +744,46 @@ class FSDPSFTTrainer:
         # Calculate which epoch we're starting from for sampler.set_epoch()
         start_epoch = global_step // self.steps_per_epoch
 
+        # Perform validation before training if configured
+        if self.config.trainer.get("val_before_train", False) and global_step == 0:
+            log_with_rank(
+                "Running validation before training...",
+                logger=logger,
+                rank=self.device_mesh.get_rank(),
+                log_only_rank_0=True,
+            )
+            # Optionally offload optimizer state to CPU for larger eval batches
+            offload_optimizer_during_eval = getattr(self.config.trainer, 'offload_optimizer_during_eval', True)
+            if offload_optimizer_during_eval:
+                self._offload_optimizer_to_cpu()
+                torch.distributed.barrier()
+
+            # Perform validation
+            val_losses = []
+            for val_data in tqdm(
+                self.val_dataloader,
+                desc="Initial Validation",
+                disable=rank != 0,
+            ):
+                val_batch_size_per_gpu = getattr(self.config.data, 'val_batch_size_per_gpu', self.config.data.micro_batch_size_per_gpu)
+                val_data = TensorDict(val_data, batch_size=val_batch_size_per_gpu).to(
+                    self.device_name
+                )
+                val_loss = self.validation_step(val_data)
+                val_losses.append(val_loss)
+            if rank == 0:
+                val_loss = torch.mean(torch.stack(val_losses))
+                metric = {"val/loss": val_loss.detach().item()}
+                tracking.log(data=metric, step=global_step)
+                last_valid_metric = metric
+                print(f"Initial validation metrics: {metric}")
+            torch.distributed.barrier()
+
+            # Reload optimizer state back to GPU for training
+            if offload_optimizer_during_eval:
+                self._load_optimizer_to_gpu()
+                torch.distributed.barrier()
+
         for epoch in range(start_epoch, self.config.trainer.total_epochs):
             self.train_sampler.set_epoch(epoch=epoch)
 
