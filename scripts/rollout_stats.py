@@ -30,6 +30,7 @@ class RolloutStats:
     # Perfect score tracking (all as ratios for consistency)
     perfect_score_ratio: float  # Before trimming
     perfect_score_ratio_after_trim: float
+    zero_reward_ratio: float  # Proportion of games with reward == 0
 
     # Sequence filtering metrics
     total_sequences: int  # Before trimming
@@ -44,6 +45,10 @@ class RolloutStats:
 
     # Generation failure tracking
     failure_ratio: float  # Proportion of sequences with "I need to think about this."
+
+    # Conversation length statistics
+    conversation_length_mean: Optional[float] = None  # Mean conversation length
+    zero_reward_count: int = 0  # Number of games with reward == 0
 
     def to_dict(self) -> dict:
         """Convert to dictionary for backward compatibility."""

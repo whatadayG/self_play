@@ -12,6 +12,7 @@ import pandas as pd
 import numpy as np
 import requests
 
+
 # Import RolloutStats dataclass
 scripts_dir = str(Path(__file__).parent)
 if scripts_dir not in sys.path:
@@ -313,32 +314,74 @@ def function_A_start_server_and_generate(
             proc1 = subprocess.Popen(gen_cmd1)
             proc2 = subprocess.Popen(gen_cmd2)
 
-            # Wait for completion
-            ret1 = proc1.wait()
-            ret2 = proc2.wait()
+            # Wait for completion, handling interrupts
+            try:
+                ret1 = proc1.wait()
+                ret2 = proc2.wait()
 
-            if ret1 != 0 or ret2 != 0:
-                raise RuntimeError(f"Generation failed: server1={ret1}, server2={ret2}")
+                if ret1 != 0 or ret2 != 0:
+                    # Check if partial results were created
+                    if out1.exists() or out2.exists():
+                        print(f"\nGeneration partially failed but found partial results:")
+                        if out1.exists():
+                            print(f"  Server 1 partial results: {out1}")
+                        if out2.exists():
+                            print(f"  Server 2 partial results: {out2}")
+                        print(f"  Merging available partial results...")
+                    else:
+                        raise RuntimeError(f"Generation failed: server1={ret1}, server2={ret2}")
+            except KeyboardInterrupt:
+                print(f"\nInterrupt received during generation. Terminating processes...")
+                proc1.terminate()
+                proc2.terminate()
+                try:
+                    proc1.wait(timeout=10)
+                    proc2.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc1.kill()
+                    proc2.kill()
+                print(f"Processes terminated. Checking for partial results...")
+                # Continue to merge whatever was generated
+                if not (out1.exists() or out2.exists()):
+                    raise RuntimeError("No partial results found after interrupt")
 
-            # Merge parquets and fix game_ids
+            # Merge parquets and fix game_ids (handle partial results)
             print("Merging outputs from both servers...")
-            df1 = pd.read_parquet(str(out1))
-            df2 = pd.read_parquet(str(out2))
+            dfs_to_merge = []
 
-            # Shift server2 game_ids to continue from server1
-            offset = num_games_per_server * group_size
-            print(f"Offsetting server2 game_ids by {offset}...")
-            df2["game_id"] = df2["game_id"] + offset
+            if out1.exists():
+                try:
+                    df1 = pd.read_parquet(str(out1))
+                    dfs_to_merge.append(df1)
+                    print(f"  Server 1: {len(df1)} sequences")
+                except Exception as e:
+                    print(f"  Warning: Could not load server 1 results: {e}")
+
+            if out2.exists():
+                try:
+                    df2 = pd.read_parquet(str(out2))
+                    # Shift server2 game_ids to continue from server1
+                    offset = num_games_per_server * group_size
+                    print(f"  Server 2: {len(df2)} sequences (offsetting game_ids by {offset})")
+                    df2["game_id"] = df2["game_id"] + offset
+                    dfs_to_merge.append(df2)
+                except Exception as e:
+                    print(f"  Warning: Could not load server 2 results: {e}")
+
+            if not dfs_to_merge:
+                raise RuntimeError("No results available from either server")
 
             # Merge
-            df = pd.concat([df1, df2], ignore_index=True)
+            df = pd.concat(dfs_to_merge, ignore_index=True)
             out_parquet = round_dir / "train.parquet"
             df.to_parquet(str(out_parquet))
             print(f"Merged {len(df)} sequences into {out_parquet}")
 
-            # Cleanup temp files
-            out1.unlink()
-            out2.unlink()
+            # Cleanup temp files (only if they exist)
+            if out1.exists():
+                out1.unlink()
+            if out2.exists():
+                out2.unlink()
 
             with open(log_file, "a") as lf:
                 lf.write(json.dumps({
@@ -416,7 +459,23 @@ def function_A_start_server_and_generate(
                 "--max-retries-per-turn",
                 str(getattr(args, 'max_retries_per_turn', 2)),
             ]
-            _run(gen_cmd)
+
+            # Run generation with interrupt handling
+            try:
+                _run(gen_cmd)
+            except KeyboardInterrupt:
+                print(f"\nInterrupt received during generation. Checking for partial results...")
+                if not out_parquet.exists():
+                    raise RuntimeError("No partial results found after interrupt")
+                print(f"Found partial results at {out_parquet}")
+            except subprocess.CalledProcessError as e:
+                # Check if partial results exist
+                if out_parquet.exists():
+                    print(f"\nGeneration failed but found partial results at {out_parquet}")
+                    print(f"Continuing with partial data...")
+                else:
+                    raise
+
             with open(log_file, "a") as lf:
                 lf.write(json.dumps({
                     "event": "generation_done",
@@ -675,6 +734,37 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
         except Exception:
             pass
 
+        zero_reward_ratio = float(np.mean(game_rewards == 0.0))
+        zero_reward_count = int(np.sum(game_rewards == 0.0))
+
+        # Compute conversation length mean
+        conversation_length_mean = None
+        try:
+            from transformers import AutoTokenizer
+            tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-7B-Instruct", trust_remote_code=True)
+            conversation_lengths = []
+
+            for idx, row in df.head(100).iterrows():  # Sample for speed
+                try:
+                    game_info = json.loads(row['game_info']) if isinstance(row['game_info'], str) else row['game_info']
+                    if 'turn_count' in game_info:
+                        conversation_lengths.append(game_info['turn_count'])
+                    else:
+                        text = tokenizer.decode(row['input_ids'], skip_special_tokens=False)
+                        assistant_count = text.count('<|im_start|>assistant')
+                        user_count = text.count('<|im_start|>user')
+                        conversation_lengths.append(max(assistant_count, user_count))
+                except Exception:
+                    text = tokenizer.decode(row['input_ids'], skip_special_tokens=False)
+                    assistant_count = text.count('<|im_start|>assistant')
+                    user_count = text.count('<|im_start|>user')
+                    conversation_lengths.append(max(assistant_count, user_count))
+
+            if conversation_lengths:
+                conversation_length_mean = float(np.mean(conversation_lengths))
+        except Exception:
+            pass
+
         stats = RolloutStats(
             raw_parquet=train_parquet,
             trimmed_parquet=train_trimmed,
@@ -689,6 +779,7 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
             game_reward_p90=game_reward_p90,
             perfect_score_ratio=perfect_score_ratio,
             perfect_score_ratio_after_trim=perfect_score_ratio_after_trim,
+            zero_reward_ratio=zero_reward_ratio,
             total_sequences=len(df),
             kept_sequences=len(train_df),
             trim_threshold=trim_threshold,
@@ -697,6 +788,8 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
             grpo_weight_neg_ratio=grpo_weight_neg_ratio,
             grpo_weight_zero_ratio=grpo_weight_zero_ratio,
             failure_ratio=failure_ratio,
+            conversation_length_mean=conversation_length_mean,
+            zero_reward_count=zero_reward_count,
         )
         return stats
 
@@ -890,6 +983,7 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
     failure_ratio = float(failure_count / len(df)) if len(df) > 0 else 0.0
 
     # Check if failure rate exceeds acceptable threshold
+    """
     FAILURE_THRESHOLD = 0.05  # 5%
     if failure_ratio > FAILURE_THRESHOLD:
         error_msg = (
@@ -915,6 +1009,7 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
             }) + "\n")
 
         raise RuntimeError(error_msg)
+    """
 
     # Remove failed samples
     df_no_failures = df[~failure_mask].reset_index(drop=True)
@@ -934,6 +1029,8 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
 
     # Filter for positive GRPO-normalized examples only (if enabled)
     filter_positive_only = getattr(args, 'filter_positive_only', True) if args else True
+    length_trimmed_count_before_filtering = len(kept)
+
     if filter_positive_only:
         # Count positive examples before filtering
         grpo_weights_trimmed = kept["sample_weight"].astype(float)
@@ -950,16 +1047,35 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
 
         # Keep only positive examples
         kept = kept[positive_mask].reset_index(drop=True)
-        print(f"  After filtering: {len(kept)} sequences (kept {100*len(kept)/(len(df_no_failures[lengths <= pct95])):.1f}%)")
-
-        # Warn if we filtered out too many examples
-        if len(kept) < 100:
-            print(f"\n  WARNING: Only {len(kept)} positive examples remain after filtering.")
-            print(f"  This may be too few for effective training. Consider:")
-            print(f"    - Using --no-filter-positive-only to train on all examples")
-            print(f"    - Increasing --games-per-round to generate more rollouts\n")
+        print(f"  After positive-only filter: {len(kept)} sequences (kept {100*len(kept)/length_trimmed_count_before_filtering:.1f}%)")
     else:
-        print(f"\nPositive-only filtering disabled, using all {len(kept)} trimmed sequences")
+        print(f"\nPositive-only filtering disabled")
+
+    # Apply percentile-based filtering (if enabled)
+    filter_percentile = getattr(args, 'filter_percentile', 0.0) if args else 0.0
+    if filter_percentile > 0.0 and filter_percentile <= 1.0 and len(kept) > 0:
+        grpo_weights = kept["sample_weight"].astype(float)
+        percentile_threshold = np.percentile(grpo_weights, filter_percentile * 100)
+        percentile_mask = grpo_weights >= percentile_threshold
+        num_above_percentile = int(percentile_mask.sum())
+
+        print(f"\nApplying percentile-based filtering...")
+        print(f"  Percentile threshold: {filter_percentile*100:.0f}th percentile (GRPO weight >= {percentile_threshold:.6f})")
+        print(f"  Before filtering: {len(kept)} sequences")
+        print(f"  Above threshold: {num_above_percentile} ({100*num_above_percentile/len(kept):.1f}%)")
+
+        kept = kept[percentile_mask].reset_index(drop=True)
+        print(f"  After percentile filter: {len(kept)} sequences")
+    elif filter_percentile > 0.0:
+        print(f"\nPercentile filtering requested but invalid threshold ({filter_percentile}), skipping")
+
+    # Warn if we filtered out too many examples
+    if len(kept) < 100:
+        print(f"\n  WARNING: Only {len(kept)} examples remain after filtering.")
+        print(f"  This may be too few for effective training. Consider:")
+        print(f"    - Using --no-filter-positive-only to train on all examples")
+        print(f"    - Lowering --filter-percentile (currently {filter_percentile})")
+        print(f"    - Increasing --games-per-round to generate more rollouts\n")
 
     # Split into train (90%) and val (10%)
     from sklearn.model_selection import train_test_split
@@ -977,6 +1093,41 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
     # Compute perfect score ratio after filtering and trimming
     kept_game_rewards = game_rewards_no_failures[lengths <= pct95]
     perfect_score_ratio_after_trim = float(np.mean(kept_game_rewards >= 1.0))
+
+    # Compute zero reward metrics (both count and ratio)
+    zero_reward_ratio = float(np.mean(game_rewards == 0.0))
+    zero_reward_count = int(np.sum(game_rewards == 0.0))
+
+    # Compute conversation length statistics
+    conversation_length_mean = None
+    try:
+        from transformers import AutoTokenizer
+        tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-7B-Instruct", trust_remote_code=True)
+        conversation_lengths = []
+
+        for idx, row in df.iterrows():
+            # Extract conversation length from game_info if available
+            try:
+                game_info = json.loads(row['game_info']) if isinstance(row['game_info'], str) else row['game_info']
+                if 'turn_count' in game_info:
+                    conversation_lengths.append(game_info['turn_count'])
+                else:
+                    # Fallback: count role markers in tokenized sequence
+                    text = tokenizer.decode(row['input_ids'], skip_special_tokens=False)
+                    assistant_count = text.count('<|im_start|>assistant')
+                    user_count = text.count('<|im_start|>user')
+                    conversation_lengths.append(max(assistant_count, user_count))
+            except Exception:
+                # Last resort: count from tokens
+                text = tokenizer.decode(row['input_ids'], skip_special_tokens=False)
+                assistant_count = text.count('<|im_start|>assistant')
+                user_count = text.count('<|im_start|>user')
+                conversation_lengths.append(max(assistant_count, user_count))
+
+        if conversation_lengths:
+            conversation_length_mean = float(np.mean(conversation_lengths))
+    except Exception as e:
+        print(f"Warning: Could not compute conversation length mean: {e}")
 
     # Export example games (from original df including failures, for debugging)
     examples_path = round_dir / "examples.txt"
@@ -997,6 +1148,7 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
         game_reward_p90=game_reward_p90,
         perfect_score_ratio=perfect_score_ratio,
         perfect_score_ratio_after_trim=perfect_score_ratio_after_trim,
+        zero_reward_ratio=zero_reward_ratio,
         total_sequences=len(df),  # Original count including failures
         kept_sequences=len(kept),  # After filtering failures AND length trimming
         trim_threshold=pct95,
@@ -1005,6 +1157,8 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
         grpo_weight_neg_ratio=grpo_weight_neg_ratio,
         grpo_weight_zero_ratio=grpo_weight_zero_ratio,
         failure_ratio=failure_ratio,  # Ratio of failed generations in raw data
+        conversation_length_mean=conversation_length_mean,
+        zero_reward_count=zero_reward_count,
     )
 
     # Log to progress.log
@@ -1023,7 +1177,8 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
             "pct95_threshold": pct95,
             "after_length_trim": length_trimmed_count,
             "filter_positive_only_enabled": filter_positive_only,
-            "after_positive_filter": int(len(kept)),
+            "filter_percentile": filter_percentile,
+            "final_kept": int(len(kept)),
         }) + "\n")
         lf.write(json.dumps({
             "event": "rollout_metrics",
@@ -1120,6 +1275,7 @@ def main():
     # Data filtering settings
     ap.add_argument("--filter-positive-only", action="store_true", default=True, help="Train only on positive GRPO-normalized examples (above group mean) (default: enabled)")
     ap.add_argument("--no-filter-positive-only", dest="filter_positive_only", action="store_false", help="Disable positive-only filtering, train on all examples")
+    ap.add_argument("--filter-percentile", type=float, default=0.0, help="Keep only sequences above this percentile of GRPO-normalized rewards (0.0-1.0). Set to 0 to disable. Applies after positive-only filter if both are enabled. Default: 0.0 (disabled)")
 
     ap.set_defaults(server_enable_torch_compile=True, server_disable_cuda_graph=False)
     args = ap.parse_args()

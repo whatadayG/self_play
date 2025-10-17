@@ -34,6 +34,7 @@ def run_sft_training(
     max_len_arg: str,
     wandb_project: str,
     experiment_name: str,
+    sft_epochs: int = 1,
     wb = None,
 ) -> Path:
     """Run SFT training and return path to log file.
@@ -47,6 +48,7 @@ def run_sft_training(
         max_len_arg: Maximum sequence length
         wandb_project: W&B project name
         experiment_name: W&B experiment name
+        sft_epochs: Number of training epochs (default: 1)
         wb: Optional W&B run object from main loop
 
     Returns:
@@ -85,16 +87,17 @@ def run_sft_training(
         f"data.train_batch_size={train_batch_size}",
         f"data.val_batch_size_per_gpu={val_batch_size_per_gpu}",
         f"model.partial_pretrain={current_model}",
-        "trainer.total_epochs=1",
-        "trainer.save_freq=500",
-        "trainer.test_freq=20",
+        f"trainer.total_epochs={sft_epochs}",
+        "trainer.save_freq=900",
+        "trainer.test_freq=33",
+        "+trainer.val_before_train=true",
         "trainer.checkpoint.save_contents=[\"hf_model\"]",
         f"data.max_length={max_len_arg}",
         "data.custom_cls.path=verl/verl/utils/dataset/pretokenized_sft_dataset.py",
         "data.custom_cls.name=PreTokenizedSFTDataset",
         f"trainer.project_name={wandb_project}",
         f"trainer.experiment_name={experiment_name}",
-        "optim.lr=1e-5",
+        "optim.lr=1e-6",
         "optim.lr_scheduler=wsd",
         "+optim.stable_ratio=0.99",
         "+optim.min_lr_ratio=0.1",
@@ -188,6 +191,11 @@ def log_rollout_to_wandb(wb, round_num: int, stats: "RolloutStats", sft_metrics:
         "game/reward_p75": stats.game_reward_p75,
         "game/reward_p90": stats.game_reward_p90,
         "game/perfect_score_ratio": stats.perfect_score_ratio,
+        "game/zero_reward_ratio": stats.zero_reward_ratio,
+        "game/zero_reward_count": stats.zero_reward_count,
+
+        # Conversation metrics
+        "game/conversation_length_mean": stats.conversation_length_mean if stats.conversation_length_mean is not None else 0.0,
 
         # Filtering impact
         "filter/kept_ratio": stats.kept_sequences / stats.total_sequences,
@@ -196,8 +204,7 @@ def log_rollout_to_wandb(wb, round_num: int, stats: "RolloutStats", sft_metrics:
         "filter/perfect_score_ratio_after": stats.perfect_score_ratio_after_trim,
         "filter/perfect_scores_lost": stats.perfect_score_ratio - stats.perfect_score_ratio_after_trim,
 
-        # GRPO diagnostics (should have mean ~0)
-        "grpo/weight_mean": stats.grpo_weight_mean,
+        # GRPO diagnostics
         "grpo/weight_pos_ratio": stats.grpo_weight_pos_ratio,
         "grpo/weight_neg_ratio": stats.grpo_weight_neg_ratio,
     }
@@ -206,7 +213,8 @@ def log_rollout_to_wandb(wb, round_num: int, stats: "RolloutStats", sft_metrics:
     if sft_metrics is not None:
         metrics["sft/initial_val_loss"] = sft_metrics["initial_val_loss"]
         metrics["sft/final_val_loss"] = sft_metrics["final_val_loss"]
-        metrics["sft/val_loss_delta"] = sft_metrics["initial_val_loss"] - sft_metrics["final_val_loss"]
+        # Proportional delta instead of absolute (will fail if initial_val_loss is 0)
+        metrics["sft/val_loss_delta_pct"] = (sft_metrics["initial_val_loss"] - sft_metrics["final_val_loss"]) / sft_metrics["initial_val_loss"]
 
     wb.log(metrics)
 
@@ -267,7 +275,7 @@ def _extract_reward_series_from_df(df: pd.DataFrame) -> Optional[np.ndarray]:
 def compute_reward_stats(values: np.ndarray) -> Dict[str, Any]:
     """Compute summary statistics for a reward array.
 
-    Returns a dict with keys: count, mean, std, min, max, p10, p20, ..., p90.
+    Returns a dict with keys: count, mean, std, min, max, p10, p20, ..., p90, zero_reward_ratio, zero_reward_count.
     """
     stats: Dict[str, Any] = {}
     if values is None or len(values) == 0:
@@ -280,6 +288,9 @@ def compute_reward_stats(values: np.ndarray) -> Dict[str, Any]:
     stats["max"] = float(np.max(v))
     for q in range(10, 100, 10):
         stats[f"p{q}"] = float(np.percentile(v, q))
+    # Compute proportion and count of zero rewards
+    stats["zero_reward_ratio"] = float(np.mean(v == 0.0))
+    stats["zero_reward_count"] = int(np.sum(v == 0.0))
     return stats
 
 
@@ -303,6 +314,11 @@ def write_stats_file(stats: Dict[str, Any], out_path: Path) -> None:
         # Add failure ratio if available
         if "failure_ratio" in stats and stats["failure_ratio"] is not None:
             f.write(f"failure_ratio: {stats['failure_ratio']:.4f}\n")
+        # Add zero reward metrics if available
+        if "zero_reward_ratio" in stats and stats["zero_reward_ratio"] is not None:
+            f.write(f"zero_reward_ratio: {stats['zero_reward_ratio']:.4f}\n")
+        if "zero_reward_count" in stats and stats["zero_reward_count"] is not None:
+            f.write(f"zero_reward_count: {stats['zero_reward_count']}\n")
         # Add conversation length statistics if available
         if "conversation_lengths" in stats and stats["conversation_lengths"] is not None:
             conv_stats = stats["conversation_lengths"]
@@ -666,6 +682,34 @@ def resume_rollout_generation(round_dir: Path, target_sequences: int, current_mo
     return True
 
 
+def cleanup_old_checkpoints(save_root: Path, current_round: int) -> None:
+    """Delete checkpoint subdirectories from the previous 4 rounds to save disk space.
+
+    Called when current_round is a multiple of 5. Deletes checkpoints from rounds
+    (current_round - 4) through (current_round - 1).
+
+    Args:
+        save_root: Root directory of the run
+        current_round: Current round number (should be a multiple of 5)
+    """
+    import shutil
+
+    for offset in range(1, 5):
+        round_to_clean = current_round - offset
+        if round_to_clean < 0:
+            continue
+
+        round_dir = save_root / f"round_{round_to_clean:03d}"
+        checkpoints_dir = round_dir / "checkpoints"
+
+        if checkpoints_dir.exists() and checkpoints_dir.is_dir():
+            try:
+                shutil.rmtree(checkpoints_dir)
+                print(f"  Deleted checkpoints directory: {checkpoints_dir}")
+            except Exception as e:
+                print(f"  Warning: Failed to delete {checkpoints_dir}: {e}")
+
+
 def run_tee(cmd: list[str], logfile: Path, env=None):
     print("Running (tee):", " ".join(cmd), "->", str(logfile))
     logfile.parent.mkdir(parents=True, exist_ok=True)
@@ -735,6 +779,10 @@ def main():
     # Data filtering settings
     ap.add_argument("--filter-positive-only", action="store_true", default=True, help="Train only on positive GRPO-normalized examples (above group mean) (default: enabled)")
     ap.add_argument("--no-filter-positive-only", dest="filter_positive_only", action="store_false", help="Disable positive-only filtering, train on all examples")
+    ap.add_argument("--filter-percentile", type=float, default=0.0, help="Keep only sequences above this percentile of GRPO-normalized rewards (0.0-1.0). Set to 0 to disable. Applies after positive-only filter if both are enabled. Default: 0.0 (disabled)")
+
+    # SFT training settings
+    ap.add_argument("--sft-epochs", type=int, default=1, help="Number of epochs for SFT training (default: 1)")
 
     args = ap.parse_args()
     gpu_string = args.gpus
@@ -821,6 +869,7 @@ def main():
                 max_len_arg=max_len_arg,
                 wandb_project=args.wandb_project,
                 experiment_name=f"{save_root.name}_round_{current_round}_resume",
+                sft_epochs=args.sft_epochs,
                 wb=None,  # No W&B context in resume
             )
             
@@ -1023,6 +1072,7 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
             max_len_arg=max_len_arg,
             wandb_project=args.wandb_project,
             experiment_name=f"{save_root.name}_round_{r}",
+            sft_epochs=args.sft_epochs,
             wb=wb,
         )
 
@@ -1063,6 +1113,11 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
                 "timestamp": time.time(),
                 "next_model": current_model
             }) + "\n")
+
+        # Cleanup old checkpoints when round is a multiple of 5
+        if r > 0 and r % 5 == 0:
+            cleanup_old_checkpoints(save_root, r)
+            print(f"Cleaned up checkpoints from rounds {r-4} to {r-1}")
 
     print("Offline GRPO loop completed.")
 
