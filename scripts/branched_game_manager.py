@@ -446,6 +446,111 @@ class BranchedGameManager:
 
         return new_player
 
+    def _reconstruct_full_conversation(self, player_1: SGLangModelPlayer, player_2: SGLangModelPlayer) -> List[Dict]:
+        """Reconstruct the full conversation from both players' message histories.
+
+        Uses turn_markers from both players to properly attribute messages to turns,
+        including error messages and retry attempts.
+
+        Args:
+            player_1: First player with complete message history
+            player_2: Second player with complete message history
+
+        Returns:
+            List of conversation entries with fields:
+                - turn: Turn number (int)
+                - player: Which player acted ("player-1" or "player-2")
+                - message: The message content
+                - retry: Retry attempt number (0 for first attempt, 1+ for retries)
+        """
+        conversation = []
+
+        # Process each player's messages with turn tracking
+        for player in [player_1, player_2]:
+            player_name = player.role  # "player-1" or "player-2"
+
+            # Skip system message, process user and assistant messages
+            assistant_idx = 0
+            for i, msg in enumerate(player.messages):
+                if msg["role"] == "system":
+                    continue
+
+                elif msg["role"] == "assistant":
+                    # Find which turn this assistant message belongs to
+                    turn_num = None
+                    for turn, msg_idx in player.turn_markers:
+                        if msg_idx == assistant_idx:
+                            turn_num = turn
+                            break
+
+                    if turn_num is not None:
+                        # Count how many assistant messages we've seen for this turn
+                        retry = sum(1 for t, idx in player.turn_markers[:assistant_idx+1] if t == turn_num) - 1
+
+                        conversation.append({
+                            "turn": turn_num,
+                            "player": player_name,
+                            "message": msg["content"],
+                            "retry": retry,
+                            "msg_type": "assistant",
+                        })
+
+                    assistant_idx += 1
+
+                elif msg["role"] == "user":
+                    # User messages to the active player are either:
+                    # 1. Error messages (during retries)
+                    # 2. Game state updates (after successful moves)
+                    # We can identify errors by looking at the context:
+                    # - Errors come between assistant messages with the same turn number
+                    # - Game updates come after turn increment
+
+                    # For now, mark as error if it contains "Error:" or comes between retries
+                    # We'll infer the turn number from the surrounding assistant messages
+                    content = msg["content"]
+
+                    # Try to determine turn number by looking at previous assistant message
+                    prev_turn = None
+                    if assistant_idx > 0:
+                        # Look at the turn of the most recent assistant message
+                        for turn, msg_idx in reversed(player.turn_markers):
+                            if msg_idx == assistant_idx - 1:
+                                prev_turn = turn
+                                break
+
+                    # Errors typically contain "Error:" string
+                    if prev_turn is not None and ("Error:" in content or "error" in content.lower()):
+                        # The error is feedback for the previous assistant attempt
+                        # Count how many attempts we've seen for this turn up to previous assistant
+                        retry = sum(1 for t, idx in player.turn_markers[:assistant_idx] if t == prev_turn) - 1
+
+                        conversation.append({
+                            "turn": prev_turn,
+                            "player": "error",
+                            "message": content,
+                            "retry": retry,
+                            "msg_type": "error",
+                        })
+
+        # Sort by (turn, retry, msg_type) to get chronological order
+        # Within each turn and retry number:
+        # - assistant message comes first (the attempt)
+        # - error message comes second (the feedback)
+        def sort_key(entry):
+            # Primary: turn number
+            # Secondary: retry number
+            # Tertiary: message type (assistant=0, error=1)
+            type_order = {"assistant": 0, "error": 1}
+            return (entry["turn"], entry["retry"], type_order.get(entry["msg_type"], 2))
+
+        conversation.sort(key=sort_key)
+
+        # Clean up msg_type field (not needed in output)
+        for entry in conversation:
+            entry.pop("msg_type", None)
+
+        return conversation
+
     def _serialize_env_state(self, env: OptimizationEnv, obs: Dict) -> Dict[str, Any]:
         """Serialize environment state for checkpointing."""
         return {
@@ -542,9 +647,6 @@ class BranchedGameManager:
         max_turns = 30
         max_retries = 8
 
-        clean_conversation = []
-        full_conversation = []
-
         while not done and turn < max_turns:
             current = obs["turn_player"]
             player = node.player_1 if current == "player-1" else node.player_2
@@ -557,7 +659,6 @@ class BranchedGameManager:
             while True:
                 try:
                     response = player.respond()
-                    full_conversation.append({"turn": turn, "player": current, "message": response, "retry": retries})
                 except Exception as e:
                     # Generation failed - terminate
                     done = True
@@ -566,17 +667,13 @@ class BranchedGameManager:
                 obs, error = env.step(response)
                 if error:
                     retries += 1
-                    full_conversation.append({"turn": turn, "player": "error", "message": obs[current], "retry": retries})
                     player.observe(obs[current])
                     if retries >= max_retries:
                         done = True
                         break
                     continue
 
-                # Valid move
-                clean_conversation.append({"turn": turn, "player": current, "message": response})
-
-                # Broadcast to other player
+                # Valid move - broadcast to other player
                 other_name = "player-2" if current == "player-1" else "player-1"
                 other_player = node.player_2 if current == "player-1" else node.player_1
                 if obs[other_name]:
@@ -589,7 +686,11 @@ class BranchedGameManager:
         # Store results
         node.final_reward = obs.get("info", {}).get("score", 0.0) if done else 0.0
         node.normalized_reward = obs.get("info", {}).get("score_norm", 0.0) if done else 0.0
-        node.conversation = clean_conversation
+
+        # Reconstruct full conversation from both players' message histories
+        # This includes all turns (0 onwards) with proper turn tracking and retry attribution
+        node.conversation = self._reconstruct_full_conversation(node.player_1, node.player_2)
+
         node.game_info = {
             "num_messages": obs.get("info", {}).get("num_msgs", turn),
             "completed": done,
