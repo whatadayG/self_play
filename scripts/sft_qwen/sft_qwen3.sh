@@ -19,7 +19,7 @@ export NCCL_P2P_LEVEL=NVL
 # Alternatively, to force socket/shm only, uncomment the next line:
 # export NCCL_P2P_DISABLE=1 NCCL_IB_DISABLE=1
 
-torchrun --nnodes=1 --nproc_per_node=$nproc_per_node --rdzv_endpoint=localhost:29400 \
+torchrun --nnodes=1 --nproc_per_node=$nproc_per_node --rdzv_endpoint=localhost:${RDZV_PORT:-29400} \
      -m verl.trainer.fsdp_sft_trainer \
     data.train_files=/home/nickatomlin/georgiazhou/self_play/scripts/sft_qwen/sft_qwen3_10k/sft_qwen3_10k_train.parquet \
     data.val_files=/home/nickatomlin/georgiazhou/self_play/scripts/sft_qwen/sft_qwen3_10k/sft_qwen3_10k_val.parquet \
@@ -34,6 +34,7 @@ torchrun --nnodes=1 --nproc_per_node=$nproc_per_node --rdzv_endpoint=localhost:2
     model.trust_remote_code=true \
     model.fsdp_config.model_dtype=bf16 \
     model.use_liger=true \
+    model.enable_gradient_checkpointing=true \
     optim.lr=1e-5 \
     trainer.default_local_dir=$save_path \
     trainer.project_name=perfect-sft \

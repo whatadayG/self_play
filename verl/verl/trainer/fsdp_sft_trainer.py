@@ -64,7 +64,12 @@ from verl.utils.logger import log_with_rank
 from verl.utils.profiler import log_gpu_memory_usage
 from verl.utils.py_functional import convert_to_regular_types
 from verl.utils.torch_dtypes import PrecisionType
-from verl.utils.torch_functional import get_cosine_schedule_with_warmup, get_wsd_schedule_with_warmup
+from verl.utils.torch_functional import (
+    entropy_from_logits,
+    entropy_from_logits_with_chunking,
+    get_cosine_schedule_with_warmup,
+    get_wsd_schedule_with_warmup,
+)
 from verl.utils.tracking import Tracking
 from verl.utils.ulysses import (
     gather_outputs_and_unpad,
@@ -361,6 +366,9 @@ class FSDPSFTTrainer:
         loss_mask = batch.pop("loss_mask")[:, :-1].reshape(-1).to(self.device_name)
         loss_fct = nn.CrossEntropyLoss(reduction="none")
 
+        # Get entropy regularization coefficient
+        entropy_coeff = self.config.trainer.get('entropy_coeff', 0.0)
+
         # Context manager for sequence parallel if needed
         context = self.sharding_manager if use_sp else nullcontext()
         with context, torch.autocast(device_type=self.device_name, dtype=torch.bfloat16):
@@ -374,7 +382,37 @@ class FSDPSFTTrainer:
 
                 shift_logits = logits[..., :-1, :].contiguous()
                 shift_labels = labels.contiguous()
-                # Flatten the tokens
+
+                # Compute entropy regularization (before flattening logits)
+                entropy_bonus = torch.tensor(0.0, device=input_ids.device)
+                if entropy_coeff > 0:
+                    B = shift_logits.size(0)
+                    seq_len = shift_logits.size(1)
+
+                    # Memory-efficient entropy: use checkpointing to recompute during backward
+                    # This avoids storing softmax probabilities (6+ GB) in memory
+                    def compute_entropy(logits_2d, mask):
+                        """Compute entropy in chunks without float cast (stays in bfloat16)"""
+                        chunk_size = 512
+                        entropy = torch.zeros(logits_2d.shape[0], device=logits_2d.device, dtype=logits_2d.dtype)
+                        for i in range(0, logits_2d.shape[0], chunk_size):
+                            logits_chunk = logits_2d[i : i + chunk_size]
+                            # Keep in bfloat16 - no .float() cast
+                            pd_chunk = torch.nn.functional.softmax(logits_chunk, dim=-1)
+                            entropy_chunk = torch.logsumexp(logits_chunk, dim=-1) - torch.sum(pd_chunk * logits_chunk, dim=-1)
+                            entropy[i : i + chunk_size] = entropy_chunk
+                        masked = entropy * mask
+                        return torch.sum(masked) / (torch.sum(mask) + 1e-8)
+
+                    # Reshape and checkpoint the entropy computation
+                    shift_logits_2d = shift_logits.view(-1, self.model.config.vocab_size)
+                    mask = loss_mask.to(shift_logits_2d.device)
+                    # Use checkpoint to recompute during backward, saving memory
+                    entropy_bonus = torch.utils.checkpoint.checkpoint(
+                        compute_entropy, shift_logits_2d, mask, use_reentrant=False
+                    )
+
+                # Flatten the tokens for cross-entropy
                 shift_logits = shift_logits.view(-1, self.model.config.vocab_size)
                 shift_labels = shift_labels.view(-1)
                 # Enable model parallelism
@@ -393,6 +431,10 @@ class FSDPSFTTrainer:
                 # 1. All SP ranks will receive the *SAME* batch
                 # 2. Different SP groups will receive *DIFFERENT* batches
                 # This is implemented by the DistributedSampler
+
+                # Note: Entropy regularization for SP path would require gathering logits across ranks,
+                # which adds complexity. For now, we only apply entropy bonus in non-SP path.
+                entropy_bonus = torch.tensor(0.0, device=input_ids.device)
 
                 batch_size, seqlen = input_ids.shape
                 # Remove padding
@@ -455,6 +497,12 @@ class FSDPSFTTrainer:
                 dp_size = 1
 
             loss = torch.sum(loss) / (valid_token_this_rank + 1e-8) * dp_size
+
+            # Apply entropy regularization: subtract entropy bonus to encourage higher entropy
+            if entropy_coeff > 0:
+                # Scale entropy_bonus by dp_size to match cross-entropy loss scaling
+                entropy_bonus_scaled = entropy_bonus * dp_size
+                loss = loss - entropy_coeff * entropy_bonus_scaled
 
             if do_backward:
                 loss.backward()

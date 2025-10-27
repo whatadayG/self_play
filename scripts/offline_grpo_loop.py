@@ -35,6 +35,8 @@ def run_sft_training(
     wandb_project: str,
     experiment_name: str,
     sft_epochs: int = 1,
+    entropy_coeff: float = 0.001,
+    gradient_checkpointing: bool = True,
     wb = None,
 ) -> Path:
     """Run SFT training and return path to log file.
@@ -49,6 +51,8 @@ def run_sft_training(
         wandb_project: W&B project name
         experiment_name: W&B experiment name
         sft_epochs: Number of training epochs (default: 1)
+        entropy_coeff: Entropy regularization coefficient (default: 0.001)
+        gradient_checkpointing: Enable gradient checkpointing (default: True)
         wb: Optional W&B run object from main loop
 
     Returns:
@@ -87,17 +91,19 @@ def run_sft_training(
         f"data.train_batch_size={train_batch_size}",
         f"data.val_batch_size_per_gpu={val_batch_size_per_gpu}",
         f"model.partial_pretrain={current_model}",
+        f"model.enable_gradient_checkpointing={'true' if gradient_checkpointing else 'false'}",
         f"trainer.total_epochs={sft_epochs}",
         "trainer.save_freq=900",
         "trainer.test_freq=33",
         "+trainer.val_before_train=true",
         "trainer.checkpoint.save_contents=[\"hf_model\"]",
+        f"+trainer.entropy_coeff={entropy_coeff}",
         f"data.max_length={max_len_arg}",
         "data.custom_cls.path=verl/verl/utils/dataset/pretokenized_sft_dataset.py",
         "data.custom_cls.name=PreTokenizedSFTDataset",
         f"trainer.project_name={wandb_project}",
         f"trainer.experiment_name={experiment_name}",
-        "optim.lr=1e-6",
+        "optim.lr=5e-6",
         "optim.lr_scheduler=wsd",
         "+optim.stable_ratio=0.99",
         "+optim.min_lr_ratio=0.1",
@@ -783,6 +789,12 @@ def main():
 
     # SFT training settings
     ap.add_argument("--sft-epochs", type=int, default=1, help="Number of epochs for SFT training (default: 1)")
+    ap.add_argument("--sft-entropy-coeff", type=float, default=0.001, help="Entropy regularization coefficient for SFT training (default: 0.001, set to 0 to disable)")
+    ap.add_argument("--sft-gradient-checkpointing", action="store_true", default=True, help="Enable gradient checkpointing during SFT training (default: enabled)")
+    ap.add_argument("--sft-no-gradient-checkpointing", dest="sft_gradient_checkpointing", action="store_false", help="Disable gradient checkpointing during SFT training")
+
+    # Rollout generation settings
+    ap.add_argument("--rollout-temperature", type=float, default=0.7, help="Temperature for sampling during rollout generation (default: 0.7)")
 
     args = ap.parse_args()
     gpu_string = args.gpus
@@ -870,6 +882,8 @@ def main():
                 wandb_project=args.wandb_project,
                 experiment_name=f"{save_root.name}_round_{current_round}_resume",
                 sft_epochs=args.sft_epochs,
+                entropy_coeff=args.sft_entropy_coeff,
+                gradient_checkpointing=args.sft_gradient_checkpointing,
                 wb=None,  # No W&B context in resume
             )
             
@@ -1073,6 +1087,8 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
             wandb_project=args.wandb_project,
             experiment_name=f"{save_root.name}_round_{r}",
             sft_epochs=args.sft_epochs,
+            entropy_coeff=args.sft_entropy_coeff,
+            gradient_checkpointing=args.sft_gradient_checkpointing,
             wb=wb,
         )
 
