@@ -264,6 +264,11 @@ class FSDPSFTTrainer:
                 self.model = get_peft_model(self.model, LoraConfig(**lora_config))
                 self.model = self.model.to(torch_dtype)
 
+        # Disable KV cache to avoid issues with gradient checkpointing and dynamic shapes
+        # See: https://github.com/huggingface/transformers/pull/36610
+        if hasattr(self.model, 'config'):
+            self.model.config.use_cache = False
+
         if self.config.model.enable_gradient_checkpointing:
             self.model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
 

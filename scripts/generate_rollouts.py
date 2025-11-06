@@ -153,6 +153,171 @@ def run_one_game(player_cfg: dict, model_id: str, instructions: str, game_id: in
     return result
 
 
+def create_player_with_prompt(
+    role: str,
+    base_instructions: str,
+    unknown_value: str,
+    model_id: str,
+    server_config: SGLangConfig,
+    game_id: int
+) -> SGLangModelPlayer:
+    """Shared logic for creating a player with customized prompt."""
+    console = type("_C", (), {"print": lambda *args, **kwargs: None, "rule": lambda *args, **kwargs: None})()
+    system_prompt = base_instructions.replace("{unknown_value}", str(unknown_value))
+    metadata = {"game_id": game_id, "turn": 0}
+
+    return SGLangModelPlayer(
+        system_prompt=system_prompt,
+        role=role,
+        console=console,
+        model_path=model_id,
+        config=server_config,
+        optional=metadata,
+    )
+
+
+def run_one_game_vs_opponent(
+    trainee_cfg: dict,
+    opponent_cfg: dict,
+    game_id: int = 0,
+    trainee_is_p1: bool = True
+) -> Dict[str, Any]:
+    """
+    Asymmetric mode: trainee vs fixed opponent with different prompts.
+    Only returns trainee player sequences for training.
+    """
+    # Create separate server configs
+    trainee_server_cfg = SGLangConfig(
+        temperature=trainee_cfg["temperature"],
+        top_p=trainee_cfg["top_p"],
+        max_tokens=trainee_cfg["max_new_tokens"],
+        timeout=trainee_cfg.get("timeout", 120.0),
+    )
+    trainee_server_cfg.server_url = trainee_cfg["server_url"].rstrip("/")
+    if not trainee_server_cfg.server_url.endswith("/v1"):
+        trainee_server_cfg.server_url += "/v1"
+
+    opponent_server_cfg = SGLangConfig(
+        temperature=opponent_cfg["temperature"],
+        top_p=opponent_cfg["top_p"],
+        max_tokens=opponent_cfg["max_new_tokens"],
+        timeout=opponent_cfg.get("timeout", 120.0),
+    )
+    opponent_server_cfg.server_url = opponent_cfg["server_url"].rstrip("/")
+    if not opponent_server_cfg.server_url.endswith("/v1"):
+        opponent_server_cfg.server_url += "/v1"
+
+    # Create trainee and opponent players
+    trainee = create_player_with_prompt(
+        role="player-1" if trainee_is_p1 else "player-2",
+        base_instructions=trainee_cfg["instructions"],
+        unknown_value="50",
+        model_id=trainee_cfg["model_id"],
+        server_config=trainee_server_cfg,
+        game_id=game_id
+    )
+
+    opponent = create_player_with_prompt(
+        role="player-2" if trainee_is_p1 else "player-1",
+        base_instructions=opponent_cfg["instructions"],
+        unknown_value="50",
+        model_id=opponent_cfg["model_id"],
+        server_config=opponent_server_cfg,
+        game_id=game_id
+    )
+
+    # Assign to p1/p2 based on trainee position
+    p1 = trainee if trainee_is_p1 else opponent
+    p2 = opponent if trainee_is_p1 else trainee
+
+    # Pass game limits to environment
+    env = OptimizationEnv(
+        max_turns=trainee_cfg.get("max_turns", 30),
+        max_retries_per_turn=trainee_cfg.get("max_retries_per_turn", 8)
+    )
+    obs = env.reset(game_state=None)
+    p1.observe(obs["player-1"])
+    p2.observe(obs["player-2"])
+
+    clean_conversation = []
+    full_conversation = []
+    done = False
+    turn = 0
+    max_turns = trainee_cfg.get("max_turns", 30)
+    max_retries = trainee_cfg.get("max_retries_per_turn", 8)
+
+    # Collect logprobs only for trainee
+    trainee_all_logprobs = []
+
+    while not done and turn < max_turns:
+        current = obs["turn_player"]
+        player = p1 if current == "player-1" else p2
+        is_trainee_turn = (current == trainee.role)
+
+        # Update player metadata with current turn number for cache tracing
+        player.optional["turn"] = turn
+
+        retries = 0
+        while True:
+            try:
+                response = player.respond()
+                full_conversation.append({"turn": turn, "player": current, "message": response, "retry": retries})
+
+                # Collect logprobs only for trainee
+                if is_trainee_turn:
+                    logprobs = player.get_last_generation_logprobs()
+                    if logprobs:
+                        trainee_all_logprobs.extend(logprobs)
+
+            except Exception as e:
+                # Treat generation failure as terminal
+                done = True
+                break
+
+            obs, error = env.step(response)
+            if error:
+                retries += 1
+                full_conversation.append({"turn": turn, "player": "error", "message": obs[current], "retry": retries})
+                player.observe(obs[current])
+                if retries >= max_retries:
+                    done = True
+                    break
+                continue
+
+            # valid move
+            clean_conversation.append({"turn": turn, "player": current, "message": response})
+            # broadcast observation to other player
+            other_name = "player-2" if current == "player-1" else "player-1"
+            other_player = p2 if current == "player-1" else p1
+            if obs[other_name]:
+                other_player.observe(obs[other_name])
+
+            done = obs["done"]
+            turn += 1
+            break
+
+    # Return result with ONLY trainee player
+    trainee_role = "player-1" if trainee_is_p1 else "player-2"
+    result = {
+        "game_id": game_id,
+        "players": {trainee_role: trainee},  # Only trainee
+        "reward": obs.get("info", {}).get("score", 0.0) if done else 0.0,
+        "normalized_reward": obs.get("info", {}).get("score_norm", 0.0) if done else 0.0,
+        "game_info": {
+            "num_messages": obs.get("info", {}).get("num_msgs", turn),
+            "completed": done,
+            "turn_count": turn,
+            "game_normalized_reward": obs.get("info", {}).get("score_norm", 0.0) if done else 0.0,
+        },
+        "clean_conversation": clean_conversation,
+        "full_conversation": full_conversation,
+        "policy_logprobs": {
+            trainee_role: trainee_all_logprobs,
+        },
+    }
+    return result
+
+
 def tensorize_player(player, max_model_len: int):
     input_ids = player.get_input_sequence()
     if len(input_ids) > max_model_len:
@@ -170,10 +335,13 @@ def tensorize_player(player, max_model_len: int):
 
 
 def process_game_result(result: Dict[str, Any], max_model_len: int) -> List[Dict[str, Any]]:
-    """Process a single game result into training samples for both players."""
+    """Process a single game result into training samples.
+
+    Handles both self-play (2 players) and asymmetric (1 player) modes.
+    """
     rows = []
-    # two sequences (player-1 and player-2)
-    for player_name in ["player-1", "player-2"]:
+    # Iterate over whatever players exist in the result
+    for player_name in result["players"].keys():
         p = result["players"][player_name]
         input_ids, attention_mask, position_ids, response_loss_mask = tensorize_player(p, max_model_len)
         # Use absolute normalized reward as weight (will be converted to relative in GRPO grouping)
@@ -215,7 +383,7 @@ def worker_process(
     seed: int,
     process_id: int,
 ):
-    """Worker process that runs a thread pool pulling games from shared queue.
+    """Worker process for self-play mode that runs a thread pool pulling games from shared queue.
 
     Args:
         task_queue: Shared queue containing game_ids to process
@@ -260,6 +428,62 @@ def worker_process(
                 print(f"[Process {process_id}] Thread crashed: {e}")
 
 
+def worker_process_asymmetric(
+    task_queue,
+    result_queue,
+    threads_per_proc: int,
+    trainee_cfg: Dict[str, Any],
+    opponent_cfg: Dict[str, Any],
+    max_model_len: int,
+    seed: int,
+    process_id: int,
+):
+    """Worker process for asymmetric mode (trainee vs opponent).
+
+    Args:
+        task_queue: Shared queue containing game_ids to process
+        result_queue: Shared queue to put results into
+        threads_per_proc: Number of threads to run in this process
+        trainee_cfg: Trainee player configuration (including instructions, model_id, server_url)
+        opponent_cfg: Opponent player configuration
+        max_model_len: Maximum model sequence length
+        seed: Random seed base
+        process_id: ID of this process for seeding
+    """
+    # Set unique random seed for this process
+    np.random.seed(seed + process_id)
+
+    def thread_worker():
+        """Thread worker that pulls game_ids from queue and processes them."""
+        while True:
+            try:
+                game_id = task_queue.get_nowait()
+            except queue.Empty:
+                return  # No more work
+
+            try:
+                # Randomize trainee position for balanced data
+                trainee_is_p1 = (game_id % 2 == 0)
+                result = run_one_game_vs_opponent(trainee_cfg, opponent_cfg, game_id, trainee_is_p1)
+                rows = process_game_result(result, max_model_len)
+                result_queue.put(rows)
+            except Exception as e:
+                # Log failure but don't crash the worker
+                print(f"[Process {process_id}] Game {game_id} failed: {e}")
+                # Put empty result to maintain progress tracking
+                result_queue.put([])
+
+    # Run thread pool for this process
+    with ThreadPoolExecutor(max_workers=threads_per_proc) as executor:
+        futures = [executor.submit(thread_worker) for _ in range(threads_per_proc)]
+        # Wait for all threads to finish
+        for fut in as_completed(futures):
+            try:
+                fut.result()
+            except Exception as e:
+                print(f"[Process {process_id}] Thread crashed: {e}")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--server-url", default="http://127.0.0.1:30001", help="URL of the SGLang server (default: port 30001)")
@@ -281,6 +505,13 @@ def main():
     # Game termination settings
     ap.add_argument("--max-turns", type=int, default=10, help="Maximum number of turns per game (default: 10)")
     ap.add_argument("--max-retries-per-turn", type=int, default=2, help="Maximum retries per turn before terminating (default: 2)")
+
+    # Asymmetric mode arguments (trainee vs opponent)
+    ap.add_argument("--mode", type=str, choices=["selfplay", "asymmetric"], default="selfplay", help="Training mode: selfplay or asymmetric")
+    ap.add_argument("--opponent-model-id", type=str, help="Opponent model ID (required for asymmetric mode)")
+    ap.add_argument("--opponent-server-url", type=str, help="Opponent SGLang server URL (required for asymmetric mode)")
+    ap.add_argument("--opponent-instructions", type=str, help="Path to opponent instructions file (required for asymmetric mode)")
+
     args = ap.parse_args()
 
     np.random.seed(args.seed)
@@ -291,22 +522,62 @@ def main():
     os.environ["ROLLOUT_LOG_DIR"] = log_dir
     print(f"Generation failure logs will be written to: {log_dir}/generation_failures.log")
 
-    # Load instructions used by DialopSelfPlayRollout
-    instructions_path = Path(__file__).parent / "dialop" / "envs" / "data" / "optimization.txt"
-    instructions = instructions_path.read_text().strip()
+    # Validate asymmetric mode arguments
+    if args.mode == "asymmetric":
+        if not args.opponent_model_id or not args.opponent_server_url or not args.opponent_instructions:
+            raise ValueError("Asymmetric mode requires --opponent-model-id, --opponent-server-url, and --opponent-instructions")
 
-    player_cfg = {
-        "server_url": args.server_url,
-        "temperature": args.temperature,
-        "top_p": args.top_p,
-        "max_new_tokens": args.max_new_tokens,
-        "max_turns": getattr(args, 'max_turns', 10),
-        "max_retries_per_turn": getattr(args, 'max_retries_per_turn', 2),
-    }
+    # Load instructions
+    if args.mode == "selfplay":
+        instructions_path = Path(__file__).parent / "dialop" / "envs" / "data" / "optimization.txt"
+        instructions = instructions_path.read_text().strip()
+
+        player_cfg = {
+            "server_url": args.server_url,
+            "temperature": args.temperature,
+            "top_p": args.top_p,
+            "max_new_tokens": args.max_new_tokens,
+            "max_turns": getattr(args, 'max_turns', 10),
+            "max_retries_per_turn": getattr(args, 'max_retries_per_turn', 2),
+        }
+    else:  # asymmetric mode
+        # Load trainee instructions (default)
+        instructions_path = Path(__file__).parent / "dialop" / "envs" / "data" / "optimization.txt"
+        trainee_instructions = instructions_path.read_text().strip()
+
+        # Load opponent instructions
+        opponent_instructions_path = Path(args.opponent_instructions)
+        opponent_instructions = opponent_instructions_path.read_text().strip()
+
+        # Create separate configs for trainee and opponent
+        trainee_cfg = {
+            "model_id": args.model_id,
+            "server_url": args.server_url,
+            "instructions": trainee_instructions,
+            "temperature": args.temperature,
+            "top_p": args.top_p,
+            "max_new_tokens": args.max_new_tokens,
+            "max_turns": getattr(args, 'max_turns', 10),
+            "max_retries_per_turn": getattr(args, 'max_retries_per_turn', 2),
+        }
+
+        opponent_cfg = {
+            "model_id": args.opponent_model_id,
+            "server_url": args.opponent_server_url,
+            "instructions": opponent_instructions,
+            "temperature": args.temperature,
+            "top_p": args.top_p,
+            "max_new_tokens": args.max_new_tokens,
+            "max_turns": getattr(args, 'max_turns', 10),
+            "max_retries_per_turn": getattr(args, 'max_retries_per_turn', 2),
+        }
 
     # Calculate total games to play: num_games * group_size
     total_games = args.num_games * args.group_size
     total_workers = args.num_procs * args.threads_per_proc
+    print(
+        f"Mode: {args.mode}"
+    )
     print(
         f"Starting generation of {total_games} total games "
         f"({args.num_games} unique games × {args.group_size} plays each)"
@@ -314,7 +585,11 @@ def main():
     print(
         f"Worker configuration: {args.num_procs} processes × {args.threads_per_proc} threads = {total_workers} concurrent workers"
     )
-    print(f"Server: {args.server_url}")
+    if args.mode == "selfplay":
+        print(f"Server: {args.server_url}")
+    else:
+        print(f"Trainee server: {args.server_url}")
+        print(f"Opponent server: {args.opponent_server_url}")
     start_time = time.time()
 
     # Create shared queues using Manager
@@ -328,23 +603,38 @@ def main():
 
     print(f"Populated task queue with {total_games} games")
 
-    # Spawn worker processes
+    # Spawn worker processes based on mode
     processes = []
     for proc_id in range(args.num_procs):
-        p = Process(
-            target=worker_process,
-            args=(
-                task_queue,
-                result_queue,
-                args.threads_per_proc,
-                player_cfg,
-                args.model_id,
-                instructions,
-                args.max_model_len,
-                args.seed,
-                proc_id,
+        if args.mode == "selfplay":
+            p = Process(
+                target=worker_process,
+                args=(
+                    task_queue,
+                    result_queue,
+                    args.threads_per_proc,
+                    player_cfg,
+                    args.model_id,
+                    instructions,
+                    args.max_model_len,
+                    args.seed,
+                    proc_id,
+                )
             )
-        )
+        else:  # asymmetric
+            p = Process(
+                target=worker_process_asymmetric,
+                args=(
+                    task_queue,
+                    result_queue,
+                    args.threads_per_proc,
+                    trainee_cfg,
+                    opponent_cfg,
+                    args.max_model_len,
+                    args.seed,
+                    proc_id,
+                )
+            )
         p.start()
         processes.append(p)
 
@@ -363,7 +653,11 @@ def main():
             # Non-blocking check for results with short timeout
             rows = result_queue.get(timeout=1.0)
             all_rows.extend(rows)
-            completed_games += len(rows) // 2  # Each game yields 2 rows
+            # Progress tracking based on mode
+            if args.mode == "selfplay":
+                completed_games += len(rows) // 2  # Each game yields 2 rows
+            else:  # asymmetric
+                completed_games += len(rows)  # Each game yields 1 row
 
         except queue.Empty:
             # Check if all processes are still alive
@@ -404,19 +698,26 @@ def main():
     print(f"Generation completed!")
     print(f"  Time: {total_elapsed:.1f}s")
     print(f"  Games: {completed_games}/{total_games} ({100.0 * completed_games / total_games:.1f}%)")
-    print(f"  Rows: {len(all_rows)} ({len(all_rows) // 2} games × 2 players)")
+    if args.mode == "selfplay":
+        print(f"  Rows: {len(all_rows)} ({len(all_rows) // 2} games × 2 players)")
+    else:
+        print(f"  Rows: {len(all_rows)} ({len(all_rows)} games × 1 trainee)")
     print(f"  Rate: {final_rate:.1f} games/s")
     print(f"{'='*60}\n")
 
     # Group sequences by unique game sets for GRPO normalization
-    # Each unique game was played group_size times, creating 2*group_size sequences per unique game
     print(f"Grouping sequences for GRPO normalization...")
 
     # Sort rows by unique_game_id to ensure proper grouping
     all_rows.sort(key=lambda x: x["game_id"] // args.group_size)
 
-    # Apply GRPO normalization within each group of 2*group_size sequences
-    sequences_per_group = 2 * args.group_size  # 2 players × group_size plays
+    # Apply GRPO normalization within each group
+    if args.mode == "selfplay":
+        # Each unique game was played group_size times, creating 2*group_size sequences per unique game
+        sequences_per_group = 2 * args.group_size  # 2 players × group_size plays
+    else:  # asymmetric
+        # Each unique game was played group_size times, creating group_size sequences per unique game (trainee only)
+        sequences_per_group = args.group_size  # 1 trainee × group_size plays
     total = len(all_rows)
     full_groups = total // sequences_per_group
 

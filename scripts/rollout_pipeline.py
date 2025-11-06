@@ -176,6 +176,164 @@ def _wait_for_sglang(server_url: str, server_proc: subprocess.Popen, timeout_sec
     raise TimeoutError(f"SGLang server at {base} did not become ready within {timeout_sec}s. Last error: {last_err}")
 
 
+def _generate_asymmetric_mode(
+    *,
+    args,
+    round_dir: Path,
+    trainee_model: str,
+    opponent_model: str,
+    gpu_list: List[str],
+    python_bin: str,
+    log_file: Path
+) -> Path:
+    """Generate rollouts in asymmetric mode (trainee vs opponent).
+
+    Always uses 2 servers: trainee on GPUs 0-1, opponent on GPUs 2-3.
+    """
+    print("=== ASYMMETRIC MODE: Trainee vs Opponent ===")
+    print(f"Trainee model: {trainee_model}")
+    print(f"Opponent model: {opponent_model}")
+
+    # Hardcoded path to shy agent prompt
+    shy_prompt_path = Path(__file__).parent / "dialop" / "envs" / "data" / "optimization_shy.txt"
+
+    # Start both servers with separate log files
+    trainee_log = round_dir / "sglang_server_trainee.log"
+    opponent_log = round_dir / "sglang_server_opponent.log"
+
+    print("Starting trainee server on GPUs 0,1...")
+    trainee_server = _start_sglang_server(
+        model_path=trainee_model,
+        gpus=f"{gpu_list[0]},{gpu_list[1]}",
+        tp=2,
+        mem_util=args.server_mem_fraction,
+        port=30002,
+        enable_torch_compile=args.server_enable_torch_compile,
+        disable_cuda_graph=args.server_disable_cuda_graph,
+        log_level=args.server_log_level,
+        log_file=trainee_log,
+    )
+
+    print("Starting opponent server on GPUs 2,3...")
+    opponent_server = _start_sglang_server(
+        model_path=opponent_model,
+        gpus=f"{gpu_list[2]},{gpu_list[3]}",
+        tp=2,
+        mem_util=args.server_mem_fraction,
+        port=30003,
+        enable_torch_compile=args.server_enable_torch_compile,
+        disable_cuda_graph=args.server_disable_cuda_graph,
+        log_level=args.server_log_level,
+        log_file=opponent_log,
+    )
+
+    with open(log_file, "a") as lf:
+        lf.write(json.dumps({
+            "event": "asymmetric_servers_started",
+            "timestamp": time.time(),
+            "trainee_model": trainee_model,
+            "opponent_model": opponent_model,
+            "trainee_gpus": f"{gpu_list[0]},{gpu_list[1]}",
+            "opponent_gpus": f"{gpu_list[2]},{gpu_list[3]}",
+        }) + "\n")
+
+    try:
+        # Wait for both servers
+        print("Waiting for both servers to become ready...")
+        import threading
+
+        errors = []
+
+        def wait_trainee():
+            try:
+                _wait_for_sglang("http://127.0.0.1:30002", trainee_server, timeout_sec=args.server_wait_seconds, interval_sec=5)
+                print("Trainee server ready!")
+            except Exception as e:
+                errors.append(("trainee", e))
+
+        def wait_opponent():
+            try:
+                _wait_for_sglang("http://127.0.0.1:30003", opponent_server, timeout_sec=args.server_wait_seconds, interval_sec=5)
+                print("Opponent server ready!")
+            except Exception as e:
+                errors.append(("opponent", e))
+
+        t1 = threading.Thread(target=wait_trainee)
+        t2 = threading.Thread(target=wait_opponent)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        if errors:
+            error_msg = "; ".join([f"{name}: {err}" for name, err in errors])
+            raise RuntimeError(f"Server startup failed: {error_msg}")
+
+        # Generate with asymmetric mode
+        group_size = 8
+        out_parquet = round_dir / "train.parquet"
+
+        print(f"Launching asymmetric generation: {args.games_per_round} unique games...")
+        gen_cmd = [
+            python_bin, "scripts/generate_rollouts.py",
+            "--mode", "asymmetric",
+            "--server-url", "http://127.0.0.1:30002",
+            "--model-id", trainee_model,
+            "--opponent-server-url", "http://127.0.0.1:30003",
+            "--opponent-model-id", opponent_model,
+            "--opponent-instructions", str(shy_prompt_path),
+            "--out", str(out_parquet),
+            "--num-games", str(args.games_per_round),
+            "--max-new-tokens", "8192",
+            "--group-size", str(group_size),
+            "--temperature", str(getattr(args, 'rollout_temperature', 0.7)),
+            "--top-p", "0.9",
+            "--max-model-len", "32768",
+            "--max-turns", str(getattr(args, 'max_turns', 10)),
+            "--max-retries-per-turn", str(getattr(args, 'max_retries_per_turn', 2)),
+        ]
+
+        # Run generation
+        proc = subprocess.Popen(gen_cmd)
+
+        try:
+            ret = proc.wait()
+            if ret != 0:
+                raise RuntimeError(f"generate_rollouts.py exited with code {ret}")
+        except KeyboardInterrupt:
+            print("\n[rollout_pipeline] Caught interrupt, terminating generate_rollouts...")
+            proc.terminate()
+            proc.wait(timeout=10)
+            raise
+
+        if not out_parquet.exists():
+            raise FileNotFoundError(f"Expected output {out_parquet} not found after generation")
+
+        with open(log_file, "a") as lf:
+            lf.write(json.dumps({
+                "event": "asymmetric_generation_complete",
+                "timestamp": time.time(),
+                "output": str(out_parquet),
+            }) + "\n")
+
+        return out_parquet
+
+    finally:
+        # Cleanup servers
+        print("Stopping servers...")
+        _kill_process_tree(trainee_server)
+        _kill_process_tree(opponent_server)
+        try:
+            subprocess.run(["pkill", "-f", "sglang"], check=False)
+        except Exception as e:
+            print(f"Warning: pkill failed: {e}")
+        with open(log_file, "a") as lf:
+            lf.write(json.dumps({
+                "event": "asymmetric_servers_stopped",
+                "timestamp": time.time(),
+            }) + "\n")
+
+
 def function_A_start_server_and_generate(
     *,
     args,
@@ -184,7 +342,8 @@ def function_A_start_server_and_generate(
 ) -> Path:
     """Start SGLang server(s), generate rollouts via scripts/generate_rollouts.py, log events, stop server(s).
 
-    For 4 GPUs: Uses 2 servers (TP=2 each) to avoid all-reduce overhead.
+    For self-play with 4 GPUs: Uses 2 servers (TP=2 each) to avoid all-reduce overhead.
+    For asymmetric mode: Always uses 2 servers (trainee + opponent).
     For other GPU counts: Uses single server with appropriate TP.
 
     Returns path to the raw parquet (train.parquet).
@@ -196,6 +355,21 @@ def function_A_start_server_and_generate(
     log_file = round_dir / "progress.log"
     test_py = "/home/nickatomlin/georgiazhou/self_play/test_venv/bin/python"
     python_bin = test_py if os.path.exists(test_py) else sys.executable
+
+    # Check if asymmetric mode (trainee vs opponent)
+    is_asymmetric = hasattr(args, 'opponent_model') and args.opponent_model is not None
+
+    # Special case: Asymmetric mode with 4 GPUs → always use 2 servers (trainee vs opponent)
+    if is_asymmetric and num_gpus == 4:
+        return _generate_asymmetric_mode(
+            args=args,
+            round_dir=round_dir,
+            trainee_model=current_model,
+            opponent_model=args.opponent_model,
+            gpu_list=gpu_list,
+            python_bin=python_bin,
+            log_file=log_file
+        )
 
     # Special case: 4 GPUs → use 2 servers to avoid cross-bridge all-reduce (if enabled)
     if num_gpus == 4 and args.dual_server:
@@ -1276,6 +1450,9 @@ def main():
     ap.add_argument("--filter-positive-only", action="store_true", default=True, help="Train only on positive GRPO-normalized examples (above group mean) (default: enabled)")
     ap.add_argument("--no-filter-positive-only", dest="filter_positive_only", action="store_false", help="Disable positive-only filtering, train on all examples")
     ap.add_argument("--filter-percentile", type=float, default=0.0, help="Keep only sequences above this percentile of GRPO-normalized rewards (0.0-1.0). Set to 0 to disable. Applies after positive-only filter if both are enabled. Default: 0.0 (disabled)")
+
+    # Asymmetric mode arguments (trainee vs opponent)
+    ap.add_argument("--opponent-model", type=str, default=None, help="Path to opponent model for asymmetric training (default: None = self-play mode)")
 
     ap.set_defaults(server_enable_torch_compile=True, server_disable_cuda_graph=False)
     args = ap.parse_args()

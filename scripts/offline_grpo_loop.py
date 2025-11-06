@@ -796,10 +796,25 @@ def main():
     # Rollout generation settings
     ap.add_argument("--rollout-temperature", type=float, default=0.7, help="Temperature for sampling during rollout generation (default: 0.7)")
 
+    # Asymmetric mode (trainee vs opponent) settings
+    ap.add_argument("--shy-setup", action="store_true", help="Enable asymmetric training against fixed 'shy' opponent")
+    ap.add_argument("--shy-opponent-model", type=str, default="checkpoints/sft_qwen3_8b/global_step_4800_merged/", help="Path to shy opponent model (only used with --shy-setup)")
+
     args = ap.parse_args()
     gpu_string = args.gpus
     gpu_list = [g for g in gpu_string.split(",") if g]
     tp = len(gpu_list)
+
+    # Handle asymmetric mode (trainee vs shy opponent)
+    if args.shy_setup:
+        print("=== ASYMMETRIC MODE ENABLED ===")
+        print(f"Training against fixed shy opponent: {args.shy_opponent_model}")
+        args.opponent_model = args.shy_opponent_model
+        # Asymmetric mode requires 4 GPUs for dual-server setup
+        if len(gpu_list) != 4:
+            raise ValueError(f"Asymmetric mode requires exactly 4 GPUs, but got {len(gpu_list)}")
+    else:
+        args.opponent_model = None  # Self-play mode
 
     # If branching is requested, force a new run (disable resume semantics)
     if args.branch_from:
