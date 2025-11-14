@@ -9,3 +9,6 @@ wandb/
 test_output/
 outputs/
 checkpoints/
+logs/
+old/
+interdisc/
