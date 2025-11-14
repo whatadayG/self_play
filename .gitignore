@@ -12,3 +12,4 @@ checkpoints/
 logs/
 old/
 interdisc/
+*checkpoints*/
