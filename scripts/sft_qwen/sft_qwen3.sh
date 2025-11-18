@@ -25,11 +25,11 @@ torchrun --nnodes=1 --nproc_per_node=$nproc_per_node --rdzv_endpoint=localhost:$
     data.val_files=/home/nickatomlin/georgiazhou/self_play/scripts/sft_qwen/sft_qwen3_10k/sft_qwen3_10k_val.parquet \
     data.multiturn.enable=true \
     data.multiturn.messages_key=messages \
-    data.max_length=3500 \
-    data.truncation=error \
-    data.micro_batch_size_per_gpu=3 \
-    data.train_batch_size=12 \
-    +data.val_batch_size_per_gpu=6 \
+    data.max_length=4500 \
+    data.truncation=right \
+    data.micro_batch_size_per_gpu=2 \
+    data.train_batch_size=8 \
+    +data.val_batch_size_per_gpu=4 \
     model.partial_pretrain=Qwen/Qwen3-8B \
     model.trust_remote_code=true \
     model.fsdp_config.model_dtype=bf16 \
@@ -43,10 +43,11 @@ torchrun --nnodes=1 --nproc_per_node=$nproc_per_node --rdzv_endpoint=localhost:$
     trainer.total_epochs=5 \
     trainer.save_freq=500 \
     trainer.test_freq=100 \
-    data.custom_cls.path=verl/verl/utils/dataset/pretokenized_sft_dataset.py \
-    data.custom_cls.name=PreTokenizedSFTDataset \
     use_remove_padding=true \
+    +trainer.checkpoint_config.save_contents='["model", "extra", "hf_model"]' \
     $@
 
+    # NOTE: PreTokenizedSFTDataset args moved to offline_grpo_loop.py (only needed for GRPO with sample weights)
+    # For regular multiturn SFT, the default MultiTurnSFTDataset is used with data.multiturn.enable=true
     # trainer.n_gpus_per_node=2 \
 

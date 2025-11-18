@@ -68,9 +68,9 @@ def run_sft_training(
 
     # Determine batch sizes based on available GPUs
     if num_gpus >= 4:
-        micro_batch_size_per_gpu = 3
-        train_batch_size = 12
-        val_batch_size_per_gpu = 6
+        micro_batch_size_per_gpu = 2
+        train_batch_size = 8
+        val_batch_size_per_gpu = 4
     else:
         micro_batch_size_per_gpu = 1
         train_batch_size = 8
@@ -798,7 +798,7 @@ def main():
 
     # Asymmetric mode (trainee vs opponent) settings
     ap.add_argument("--shy-setup", action="store_true", help="Enable asymmetric training against fixed 'shy' opponent")
-    ap.add_argument("--shy-opponent-model", type=str, default="checkpoints/sft_qwen3_8b/global_step_4800_merged/", help="Path to shy opponent model (only used with --shy-setup)")
+    ap.add_argument("--shy-opponent-model", type=str, default="checkpoints/sft_qwen3_8b/global_step_3600_merged/", help="Path to shy opponent model (only used with --shy-setup)")
 
     args = ap.parse_args()
     gpu_string = args.gpus
