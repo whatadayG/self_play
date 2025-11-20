@@ -105,9 +105,8 @@ def run_one_game(
     max_turns = player_cfg.get("max_turns", 30)
     max_retries = player_cfg.get("max_retries_per_turn", 8)
 
-    # Collect logprobs DURING the game loop (not after)
-    p1_all_logprobs = []
-    p2_all_logprobs = []
+    # Note: Logprobs are now collected automatically by the player class
+    # We'll extract them at the end using player.get_generated_logprob_tensor()
 
     while not done and turn < max_turns:
         current = obs["turn_player"]
@@ -122,13 +121,7 @@ def run_one_game(
                 response = player.respond()
                 full_conversation.append({"turn": turn, "player": current, "message": response, "retry": retries})
 
-                # Collect logprobs immediately after successful generation
-                logprobs = player.get_last_generation_logprobs()
-                if logprobs:
-                    if current == "player-1":
-                        p1_all_logprobs.extend(logprobs)
-                    else:
-                        p2_all_logprobs.extend(logprobs)
+                # Logprobs are automatically accumulated by the player class
 
             except Exception as e:
                 # Treat generation failure as terminal
@@ -171,10 +164,6 @@ def run_one_game(
         },
         "clean_conversation": clean_conversation,
         "full_conversation": full_conversation,
-        "policy_logprobs": {
-            "player-1": p1_all_logprobs,
-            "player-2": p2_all_logprobs,
-        },
     }
     return result
 
@@ -391,8 +380,8 @@ def process_game_result(result: Dict[str, Any], max_model_len: int) -> List[Dict
         # Use absolute normalized reward as weight (will be converted to relative in GRPO grouping)
         w = float(result["normalized_reward"])
 
-        # Get policy logprobs for this player
-        policy_logprobs = result.get("policy_logprobs", {}).get(player_name, [])
+        # Get policy logprobs tensor (aligned with input_ids and loss_mask)
+        policy_logprobs = p.get_generated_logprob_tensor()
 
         rows.append(
             {

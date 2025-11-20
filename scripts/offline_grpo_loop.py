@@ -25,7 +25,7 @@ except Exception as e:
     RolloutStats = None
 
 
-def run_sft_training(
+def run_expert_iteration_training(
     *,
     gpu_string: str,
     round_dir: Path,
@@ -40,7 +40,7 @@ def run_sft_training(
     gradient_checkpointing: bool = True,
     wb = None,
 ) -> Path:
-    """Run SFT training and return path to log file.
+    """Run Expert Iteration training (filtered behavioral cloning with GRPO-style normalization) and return path to log file.
 
     Args:
         gpu_string: Comma-separated GPU IDs (e.g., "0,1,2,3")
@@ -77,7 +77,7 @@ def run_sft_training(
         train_batch_size = 8
         val_batch_size_per_gpu = 2
 
-    print(f"Running SFT training with {nproc} GPU(s)")
+    print(f"Running Expert Iteration training (filtered BC) with {nproc} GPU(s)")
     print(f"  CUDA_VISIBLE_DEVICES={sft_visible}")
     print(f"  Batch config: micro_batch_size_per_gpu={micro_batch_size_per_gpu}, train_batch_size={train_batch_size}, val_batch_size_per_gpu={val_batch_size_per_gpu}")
     print(f"  Effective global batch size: {micro_batch_size_per_gpu * nproc} (per-GPU) * grad_accum_steps → {train_batch_size}")
@@ -96,9 +96,9 @@ def run_sft_training(
         f"trainer.total_epochs={sft_epochs}",
         "trainer.save_freq=900",
         "trainer.test_freq=33",
-        "+trainer.val_before_train=true",
+        # "+trainer.val_before_train=true",
         "trainer.checkpoint.save_contents=[\"hf_model\"]",
-        f"+trainer.entropy_coeff={entropy_coeff}",
+        f"trainer.entropy_coeff={entropy_coeff}",
         f"data.max_length={max_len_arg}",
         "data.custom_cls.path=verl/verl/utils/dataset/pretokenized_sft_dataset.py",
         "data.custom_cls.name=PreTokenizedSFTDataset",
@@ -117,6 +117,7 @@ def run_sft_training(
         sft_env["PATH"] = f"{test_bin}:{sft_env.get('PATH','')}"
     if sft_visible:
         sft_env["CUDA_VISIBLE_DEVICES"] = sft_visible
+    sft_env["RDZV_PORT"] = "29500"
 
     # Configure W&B (separate run, same project)
     if wb is not None:
@@ -128,6 +129,118 @@ def run_sft_training(
     run_tee(sft_cmd, logfile=sft_log, env=sft_env)
 
     return sft_log
+
+
+def run_ppo_grpo_training(
+    *,
+    gpu_string: str,
+    round_dir: Path,
+    train_parquet: Path,
+    val_parquet: Path,
+    current_model: str,
+    max_len_arg: str,
+    wandb_project: str,
+    experiment_name: str,
+    group_size: int = 8,
+    ppo_epochs: int = 10,
+    learning_rate: float = 1e-6,
+    clip_ratio: float = 0.2,
+    entropy_coeff: float = 0.01,
+    gradient_checkpointing: bool = True,
+    wb = None,
+) -> Path:
+    """Run PPO/GRPO training using FSDP SFT trainer with PPO loss enabled.
+
+    Args:
+        gpu_string: Comma-separated GPU IDs (e.g., "0,1,2,3")
+        round_dir: Directory for this round
+        train_parquet: Path to training parquet file
+        val_parquet: Path to validation parquet file
+        current_model: Model checkpoint to start from
+        max_len_arg: Maximum sequence length
+        wandb_project: W&B project name
+        experiment_name: W&B experiment name
+        group_size: GRPO group size (default: 8)
+        ppo_epochs: Number of training epochs (default: 10)
+        learning_rate: Learning rate (default: 1e-6)
+        clip_ratio: PPO clip ratio (default: 0.2)
+        entropy_coeff: Entropy coefficient (default: 0.01)
+        gradient_checkpointing: Enable gradient checkpointing (default: True)
+        wb: Optional W&B run object from main loop
+
+    Returns:
+        Path to ppo_train.log
+    """
+    # Parse GPU configuration
+    gpu_list = [g.strip() for g in gpu_string.split(",") if g.strip()]
+    num_gpus = len(gpu_list)
+
+    # Use all available GPUs for PPO
+    ppo_visible = ",".join(gpu_list)
+    nproc = num_gpus if num_gpus > 0 else 1
+
+    # Batch size = 1 for PPO due to memory constraints (need to store old_log_probs)
+    micro_batch_size_per_gpu = 8
+    train_batch_size = 32
+
+    print(f"Running PPO/GRPO training with {nproc} GPU(s)")
+    print(f"  CUDA_VISIBLE_DEVICES={ppo_visible}")
+    print(f"  Batch config: micro_batch_size_per_gpu={micro_batch_size_per_gpu}, train_batch_size={train_batch_size}")
+    print(f"  Training epochs: {ppo_epochs}, Learning rate: {learning_rate}")
+    print(f"  Clip ratio: {clip_ratio}, Entropy coeff: {entropy_coeff}")
+
+    save_path = str(round_dir / "checkpoints")
+
+    # Use same SFT script but with PPO flags enabled
+    ppo_cmd = [
+        "bash", "scripts/sft_qwen/sft_qwen3.sh",
+        str(nproc), save_path,
+        f"data.train_files={str(train_parquet)}",
+        f"data.val_files={str(val_parquet)}",
+        f"data.micro_batch_size_per_gpu={micro_batch_size_per_gpu}",
+        f"data.train_batch_size={train_batch_size}",
+        f"model.partial_pretrain={current_model}",
+        f"model.enable_gradient_checkpointing={'true' if gradient_checkpointing else 'false'}",
+        f"trainer.total_epochs={ppo_epochs}",
+        "trainer.save_freq=900",
+        "trainer.test_freq=33",
+        # "+trainer.val_before_train=true",
+        "trainer.checkpoint.save_contents=[\"hf_model\"]",
+        f"data.max_length={max_len_arg}",
+        "data.custom_cls.path=verl/verl/utils/dataset/pretokenized_sft_dataset.py",
+        "data.custom_cls.name=PreTokenizedSFTDataset",
+        f"trainer.project_name={wandb_project}",
+        f"trainer.experiment_name={experiment_name}",
+        f"optim.lr={learning_rate}",
+        "optim.lr_scheduler=wsd",
+        "+optim.stable_ratio=0.99",
+        "+optim.min_lr_ratio=0.1",
+        # PPO-specific flags
+        "trainer.use_ppo_loss=true",  # Enable PPO mode
+        f"trainer.ppo_clip_ratio={clip_ratio}",
+        f"trainer.entropy_coeff={entropy_coeff}",
+        f"trainer.group_size={group_size}",
+    ]
+
+    # Setup environment
+    ppo_env = os.environ.copy()
+    test_bin = "/home/nickatomlin/georgiazhou/self_play/test_venv/bin"
+    if os.path.isdir(test_bin):
+        ppo_env["PATH"] = f"{test_bin}:{ppo_env.get('PATH','')}"
+    if ppo_visible:
+        ppo_env["CUDA_VISIBLE_DEVICES"] = ppo_visible
+    ppo_env["RDZV_PORT"] = "29500"
+
+    # Configure W&B (separate run, same project)
+    if wb is not None:
+        ppo_env["WANDB_PROJECT"] = wb.project
+        print(f"Configuring PPO to log to W&B project: {wb.project}")
+
+    # Run PPO training
+    ppo_log = round_dir / "ppo_train.log"
+    run_tee(ppo_cmd, logfile=ppo_log, env=ppo_env)
+
+    return ppo_log
 
 
 def parse_sft_metrics(sft_log_path: Path) -> Optional[Dict[str, float]]:
@@ -760,9 +873,10 @@ def main():
     ap.add_argument("--dual-server", action="store_true", help="Use dual-server mode (2×TP2) when 4 GPUs available (default: disabled)")
     ap.set_defaults(server_enable_torch_compile=False, server_disable_cuda_graph=False)
     
-    # Resume functionality arguments
-    ap.add_argument("--resume", default="", help="Resume from specific run (timestamp/directory name). If empty, resumes from most recent run.")
-    ap.add_argument("--no-resume", action="store_true", help="Force start a new run, disable auto-resume")
+    # Run naming and resume arguments
+    ap.add_argument("--run-name", default="", help="Name for this run (used as directory name). If empty, uses timestamp.")
+    ap.add_argument("--resume", default="", help="Resume from specific run (timestamp/directory name). Must be explicitly specified.")
+    ap.add_argument("--no-resume", action="store_true", help="Force start a new run (default behavior)")
 
     # Resampling/eval control (default: enabled; pass --disable-resample to turn off)
     ap.add_argument("--enable-resample", action="store_true", help="Enable resample logic based on rolling window of means (default: enabled)")
@@ -786,16 +900,29 @@ def main():
     ap.add_argument("--max-turns", type=int, default=10, help="Maximum number of turns per game (default: 10)")
     ap.add_argument("--max-retries-per-turn", type=int, default=2, help="Maximum retries per turn before terminating (default: 2)")
 
-    # Data filtering settings
-    ap.add_argument("--filter-positive-only", action="store_true", default=True, help="Train only on positive GRPO-normalized examples (above group mean) (default: enabled)")
-    ap.add_argument("--no-filter-positive-only", dest="filter_positive_only", action="store_false", help="Disable positive-only filtering, train on all examples")
-    ap.add_argument("--filter-percentile", type=float, default=0.0, help="Keep only sequences above this percentile of GRPO-normalized rewards (0.0-1.0). Set to 0 to disable. Applies after positive-only filter if both are enabled. Default: 0.0 (disabled)")
+    # Data filtering settings (EXPERT ITERATION MODE ONLY - GRPO does not filter by quality)
+    ap.add_argument("--filter-positive-only", action="store_true", default=True, help="[Expert Iteration only] Train only on positive GRPO-normalized examples (above group mean). Ignored in ppo-grpo mode. (default: enabled for expert-iteration)")
+    ap.add_argument("--no-filter-positive-only", dest="filter_positive_only", action="store_false", help="[Expert Iteration only] Disable positive-only filtering, train on all examples. Ignored in ppo-grpo mode.")
+    ap.add_argument("--filter-percentile", type=float, default=0.0, help="[Expert Iteration only] Keep only sequences above this percentile of GRPO-normalized rewards (0.0-1.0). Set to 0 to disable. Applies after positive-only filter if both are enabled. Ignored in ppo-grpo mode. Default: 0.0 (disabled)")
 
-    # SFT training settings
-    ap.add_argument("--sft-epochs", type=int, default=1, help="Number of epochs for SFT training (default: 1)")
-    ap.add_argument("--sft-entropy-coeff", type=float, default=0.001, help="Entropy regularization coefficient for SFT training (default: 0.001, set to 0 to disable)")
-    ap.add_argument("--sft-gradient-checkpointing", action="store_true", default=True, help="Enable gradient checkpointing during SFT training (default: enabled)")
-    ap.add_argument("--sft-no-gradient-checkpointing", dest="sft_gradient_checkpointing", action="store_false", help="Disable gradient checkpointing during SFT training")
+    # Training mode selection
+    ap.add_argument("--training-mode", type=str, default="ppo-grpo",
+                    choices=["expert-iteration", "ppo-grpo"],
+                    help="Training algorithm: expert-iteration (filtered behavioral cloning) or ppo-grpo (policy gradient). Default: ppo-grpo")
+
+    # SFT/Expert Iteration training settings (for expert-iteration mode)
+    ap.add_argument("--sft-epochs", type=int, default=1, help="Number of epochs for Expert Iteration training (default: 1)")
+    ap.add_argument("--sft-entropy-coeff", type=float, default=0.001, help="Entropy regularization coefficient for Expert Iteration training (default: 0.001, set to 0 to disable)")
+    ap.add_argument("--sft-gradient-checkpointing", action="store_true", default=True, help="Enable gradient checkpointing during Expert Iteration training (default: enabled)")
+    ap.add_argument("--sft-no-gradient-checkpointing", dest="sft_gradient_checkpointing", action="store_false", help="Disable gradient checkpointing during Expert Iteration training")
+
+    # PPO/GRPO training settings (for ppo-grpo mode)
+    ap.add_argument("--ppo-epochs", type=int, default=10, help="Number of epochs for PPO/GRPO training (default: 10)")
+    ap.add_argument("--ppo-learning-rate", type=float, default=1e-6, help="Learning rate for PPO/GRPO training (default: 1e-6)")
+    ap.add_argument("--ppo-batch-size-per-gpu", type=int, default=1, help="Batch size per GPU for PPO/GRPO training (default: 1 due to memory constraints)")
+    ap.add_argument("--ppo-gradient-accumulation-steps", type=int, default=8, help="Gradient accumulation steps for PPO/GRPO training (default: 8)")
+    ap.add_argument("--ppo-clip-ratio", type=float, default=0.2, help="PPO clip ratio for policy gradient clipping (default: 0.2)")
+    ap.add_argument("--ppo-entropy-coeff", type=float, default=0.0, help="Entropy coefficient for PPO/GRPO training (default: 0.0, disabled due to memory)")
 
     # Rollout generation settings
     ap.add_argument("--rollout-temperature", type=float, default=0.7, help="Temperature for sampling during rollout generation (default: 0.7)")
@@ -828,21 +955,21 @@ def main():
     save_root = None
     current_model = args.model_path
     start_round = 0
-    
-    if not args.no_resume:
-        # Try to find existing run to resume
-        if args.resume:
-            # Resume from specific run
-            save_root = find_run_by_name(args.resume)
-            if save_root is None:
-                print(f"Warning: Could not find run '{args.resume}', starting new run")
-            else:
-                print(f"Resuming from specified run: {save_root}")
+
+    if args.resume and not args.no_resume:
+        # Resume from specific run (must be explicitly specified)
+        save_root = find_run_by_name(args.resume)
+        if save_root is None:
+            print(f"Error: Could not find run '{args.resume}'")
+            print(f"Available runs in /home/nickatomlin/georgiazhou/self_play/logs/offline_grpo/:")
+            base_path = Path("/home/nickatomlin/georgiazhou/self_play/logs/offline_grpo")
+            if base_path.exists():
+                for item in sorted(base_path.iterdir()):
+                    if item.is_dir():
+                        print(f"  - {item.name}")
+            sys.exit(1)
         else:
-            # Resume from most recent run
-            save_root = find_most_recent_run()
-            if save_root is not None:
-                print(f"Auto-resuming from most recent run: {save_root}")
+            print(f"Resuming from specified run: {save_root}")
     
     # Analyze existing run state if resuming
     if save_root is not None:
@@ -857,32 +984,52 @@ def main():
         if phase == 'rollout':
             round_dir = save_root / f"round_{current_round:03d}"
             round_dir.mkdir(parents=True, exist_ok=True)
-            
+
             # Try to resume rollout generation
             success = resume_rollout_generation(round_dir, args.games_per_round, current_model, args)
             if success:
+                # For PPO/GRPO mode, disable quality-based filtering
+                if args.training_mode == "ppo-grpo":
+                    import copy
+                    rollout_args = copy.copy(args)
+                    rollout_args.filter_positive_only = False
+                    rollout_args.filter_percentile = 0.0
+                    print(f"PPO/GRPO mode: Disabling quality-based filtering during resume")
+                else:
+                    rollout_args = args
+
                 # Process the rollouts (trim, stats, examples, etc.)
-                rollout_stats = process_rollouts_post_generation(round_dir, save_root, args)
+                rollout_stats = process_rollouts_post_generation(round_dir, save_root, rollout_args)
                 # Update phase to training
                 phase = 'training'
         
         if phase == 'training':
             round_dir = save_root / f"round_{current_round:03d}"
-            
+
             # Run SFT training
             print("Resuming SFT training...")
             train_trimmed_parquet = round_dir / "train_trimmed.parquet"
-            
+
             if not train_trimmed_parquet.exists():
                 raise RuntimeError(f"Training data not found: {train_trimmed_parquet}")
-            
-            # Read training data to get max length
-            df = pd.read_parquet(train_trimmed_parquet)
-            lengths = df["input_ids"].apply(lambda x: len(x))
-            pct95 = int(np.percentile(lengths, 95))
-            if pct95 > 5000:
-                pct95 = 5000
-            max_len_arg = str(pct95)
+
+            # Load max_length from data metadata (trim_threshold computed during rollout processing)
+            data_metadata_path = round_dir / "data_metadata.json"
+            if data_metadata_path.exists():
+                with open(data_metadata_path, 'r') as f:
+                    data_metadata = json.load(f)
+                max_len_arg = str(data_metadata["trim_threshold"])
+                print(f"Loaded trim_threshold={max_len_arg} from data metadata")
+            else:
+                # Fallback: compute from train data (legacy support)
+                print("Warning: data_metadata.json not found, computing trim_threshold from train data")
+                df = pd.read_parquet(train_trimmed_parquet)
+                lengths = df["input_ids"].apply(lambda x: len(x))
+                pct95 = int(np.percentile(lengths, 95))
+                if pct95 > 5000:
+                    pct95 = 5000
+                max_len_arg = str(pct95)
+                print(f"Computed trim_threshold={max_len_arg} from train split (may differ from original)")
 
             # Get validation parquet path
             val_trimmed_parquet = round_dir / "val_trimmed.parquet"
@@ -890,21 +1037,40 @@ def main():
                 # Fallback to using train as val if split wasn't done
                 val_trimmed_parquet = train_trimmed_parquet
 
-            # Run SFT training
-            sft_log = run_sft_training(
-                gpu_string=args.gpus,
-                round_dir=round_dir,
-                train_parquet=train_trimmed_parquet,
-                val_parquet=val_trimmed_parquet,
-                current_model=current_model,
-                max_len_arg=max_len_arg,
-                wandb_project=args.wandb_project,
-                experiment_name=f"{save_root.name}_round_{current_round}_resume",
-                sft_epochs=args.sft_epochs,
-                entropy_coeff=args.sft_entropy_coeff,
-                gradient_checkpointing=args.sft_gradient_checkpointing,
-                wb=None,  # No W&B context in resume
-            )
+            # Run training (uses training mode from args)
+            if args.training_mode == "expert-iteration":
+                train_log = run_expert_iteration_training(
+                    gpu_string=args.gpus,
+                    round_dir=round_dir,
+                    train_parquet=train_trimmed_parquet,
+                    val_parquet=val_trimmed_parquet,
+                    current_model=current_model,
+                    max_len_arg=max_len_arg,
+                    wandb_project=args.wandb_project,
+                    experiment_name=f"{save_root.name}_round_{current_round}_resume",
+                    sft_epochs=args.sft_epochs,
+                    entropy_coeff=args.sft_entropy_coeff,
+                    gradient_checkpointing=args.sft_gradient_checkpointing,
+                    wb=None,  # No W&B context in resume
+                )
+            else:  # ppo-grpo mode
+                train_log = run_ppo_grpo_training(
+                    gpu_string=args.gpus,
+                    round_dir=round_dir,
+                    train_parquet=train_trimmed_parquet,
+                    val_parquet=val_trimmed_parquet,
+                    current_model=current_model,
+                    max_len_arg=max_len_arg,
+                    wandb_project=args.wandb_project,
+                    experiment_name=f"{save_root.name}_round_{current_round}_resume",
+                    group_size=8,  # Default GRPO group size
+                    ppo_epochs=args.ppo_epochs,
+                    learning_rate=args.ppo_learning_rate,
+                    clip_ratio=args.ppo_clip_ratio,
+                    entropy_coeff=args.ppo_entropy_coeff,
+                    gradient_checkpointing=args.sft_gradient_checkpointing,
+                    wb=None,  # No W&B context in resume
+                )
             
             # Log completion and update model
             save_path = str(round_dir / "checkpoints")
@@ -953,8 +1119,13 @@ def main():
     # If no existing run or starting fresh (also handle branching)
     if save_root is None:
         if args.save_root:
+            # Explicit save_root overrides everything
             save_root = Path(args.save_root)
+        elif args.run_name:
+            # Use provided run name
+            save_root = Path(f"/home/nickatomlin/georgiazhou/self_play/logs/offline_grpo/{args.run_name}")
         else:
+            # Default to timestamp
             ts = time.strftime("%Y%m%d_%H%M%S")
             save_root = Path(f"/home/nickatomlin/georgiazhou/self_play/logs/offline_grpo/{ts}")
         save_root.mkdir(parents=True, exist_ok=True)
@@ -1013,9 +1184,26 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
 
         log_file = round_dir / "progress.log"
 
+        # For PPO/GRPO mode, disable quality-based filtering (train on all samples)
+        # Expert Iteration uses filtering to select high-quality examples
+        if args.training_mode == "ppo-grpo":
+            # Create a copy of args with filtering disabled for PPO/GRPO mode
+            import copy
+            rollout_args = copy.copy(args)
+            rollout_args.filter_positive_only = False
+            rollout_args.filter_percentile = 0.0
+            print(f"PPO/GRPO mode: Disabling quality-based filtering (will train on all samples)")
+        else:
+            # Expert Iteration: use args as-is (respects user's filter settings)
+            rollout_args = args
+            if args.filter_positive_only:
+                print(f"Expert Iteration mode: Positive-only filtering enabled")
+            if args.filter_percentile > 0.0:
+                print(f"Expert Iteration mode: Percentile filtering at {args.filter_percentile*100:.0f}th percentile")
+
         # Run rollout pipeline
         rollout_stats = run_rollout_pipeline(
-            args=args,
+            args=rollout_args,
             save_root=save_root,
             round_dir=round_dir,
             current_model=current_model,
@@ -1087,44 +1275,66 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
                     # Restart loop from (r-1)
                     return run_offline_grpo_loop(args, save_root, new_current_model, start_round)
         
-        # Run SFT training
-        print("Running SFT training...")
+        # Run training (mode selected by --training-mode flag)
+        print(f"Running {args.training_mode} training...")
         with open(log_file, "a") as lf:
             lf.write(json.dumps({
-                "event": "sft_start",
+                "event": "training_start",
+                "training_mode": args.training_mode,
                 "timestamp": time.time(),
                 "round": r,
             }) + "\n")
 
-        sft_log = run_sft_training(
-            gpu_string=args.gpus,
-            round_dir=round_dir,
-            train_parquet=train_parquet_for_sft,
-            val_parquet=rollout_stats.val_parquet,
-            current_model=current_model,
-            max_len_arg=max_len_arg,
-            wandb_project=args.wandb_project,
-            experiment_name=f"{save_root.name}_round_{r}",
-            sft_epochs=args.sft_epochs,
-            entropy_coeff=args.sft_entropy_coeff,
-            gradient_checkpointing=args.sft_gradient_checkpointing,
-            wb=wb,
-        )
+        if args.training_mode == "expert-iteration":
+            train_log = run_expert_iteration_training(
+                gpu_string=args.gpus,
+                round_dir=round_dir,
+                train_parquet=train_parquet_for_sft,
+                val_parquet=rollout_stats.val_parquet,
+                current_model=current_model,
+                max_len_arg=max_len_arg,
+                wandb_project=args.wandb_project,
+                experiment_name=f"{save_root.name}_round_{r}",
+                sft_epochs=args.sft_epochs,
+                entropy_coeff=args.sft_entropy_coeff,
+                gradient_checkpointing=args.sft_gradient_checkpointing,
+                wb=wb,
+            )
+        else:  # ppo-grpo mode
+            train_log = run_ppo_grpo_training(
+                gpu_string=args.gpus,
+                round_dir=round_dir,
+                train_parquet=train_parquet_for_sft,
+                val_parquet=rollout_stats.val_parquet,
+                current_model=current_model,
+                max_len_arg=max_len_arg,
+                wandb_project=args.wandb_project,
+                experiment_name=f"{save_root.name}_round_{r}",
+                group_size=8,  # Default GRPO group size
+                ppo_epochs=args.ppo_epochs,
+                learning_rate=args.ppo_learning_rate,
+                clip_ratio=args.ppo_clip_ratio,
+                entropy_coeff=args.ppo_entropy_coeff,
+                gradient_checkpointing=args.sft_gradient_checkpointing,
+                wb=wb,
+            )
 
-        # Parse SFT metrics and log to W&B
-        sft_metrics = parse_sft_metrics(sft_log)
-        if sft_metrics is not None:
-            print(f"SFT metrics: initial_val_loss={sft_metrics['initial_val_loss']:.6f}, final_val_loss={sft_metrics['final_val_loss']:.6f}")
-            # Update W&B with SFT metrics
-            log_rollout_to_wandb(wb, r, rollout_stats, sft_metrics)
+        # Parse training metrics and log to W&B
+        # Note: parse_sft_metrics works for both SFT and PPO logs (looks for validation loss)
+        training_metrics = parse_sft_metrics(train_log)
+        if training_metrics is not None:
+            print(f"Training metrics: initial_val_loss={training_metrics['initial_val_loss']:.6f}, final_val_loss={training_metrics['final_val_loss']:.6f}")
+            # Update W&B with training metrics
+            log_rollout_to_wandb(wb, r, rollout_stats, training_metrics)
 
         save_path = str(round_dir / "checkpoints")
         with open(log_file, "a") as lf:
             lf.write(json.dumps({
-                "event": "sft_done",
+                "event": "training_done",
+                "training_mode": args.training_mode,
                 "timestamp": time.time(),
                 "save_path": save_path,
-                "sft_metrics": sft_metrics,
+                "training_metrics": training_metrics,
             }) + "\n")
 
         # Update model path for next round

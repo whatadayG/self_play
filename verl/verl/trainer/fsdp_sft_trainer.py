@@ -358,6 +358,146 @@ class FSDPSFTTrainer:
         else:
             raise ValueError(f"Unknown lr scheduler: {self.config.optim.lr_scheduler}")
 
+    def _forward_micro_batch(self, batch, temperature=1.0, calculate_entropy=False):
+        """
+        Forward pass to get log probs and entropy (for PPO loss).
+        Adapted from verl's dp_actor._forward_micro_batch() but simplified for pre-tokenized data.
+
+        Args:
+            batch: Dict with input_ids, attention_mask, position_ids
+            temperature: Temperature for scaling logits
+            calculate_entropy: Whether to compute entropy
+
+        Returns:
+            (entropy, log_probs) where:
+                entropy: (bs, seq_len-1) if calculate_entropy else None
+                log_probs: (bs, seq_len-1)
+        """
+        input_ids = batch["input_ids"].to(self.device_name)
+        attention_mask = batch["attention_mask"].to(self.device_name)
+        position_ids = batch["position_ids"].to(self.device_name)
+
+        with torch.autocast(device_type=self.device_name, dtype=torch.bfloat16):
+            # Forward pass
+            output = self.fsdp_model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                use_cache=False,
+            )
+            logits = output.logits  # (bs, seq_len, vocab_size)
+
+            # Temperature scaling
+            logits = logits / temperature
+
+            # Shift for next-token prediction
+            shift_logits = logits[:, :-1, :].contiguous()  # (bs, seq_len-1, vocab_size)
+            shift_labels = input_ids[:, 1:].contiguous()   # (bs, seq_len-1)
+
+            # Compute log probs using verl's function
+            from verl.utils.torch_functional import logprobs_from_logits
+            log_probs = logprobs_from_logits(shift_logits, shift_labels, inplace_backward=False)  # (bs, seq_len-1)
+
+            # Compute entropy if requested
+            entropy = None
+            if calculate_entropy:
+                if not self.config.trainer.get("entropy_checkpointing", False):
+                    entropy = verl_F.entropy_from_logits(shift_logits)  # (bs, seq_len-1)
+                else:
+                    entropy = torch.utils.checkpoint.checkpoint(verl_F.entropy_from_logits, shift_logits)
+
+        return entropy, log_probs
+
+    def _compute_ppo_loss_and_backward(self, batch, do_backward=True):
+        """
+        Compute PPO policy gradient loss (analogous to dp_actor.update_policy).
+        Uses verl's compute_grpo_outcome_advantage and compute_policy_loss.
+
+        Args:
+            batch: Dict with old_log_probs, loss_mask, sample_weight, group_index
+            do_backward: Whether to call backward on the loss
+
+        Returns:
+            loss: Scalar loss tensor
+        """
+        from verl.trainer.ppo.core_algos import compute_policy_loss, compute_grpo_outcome_advantage, agg_loss
+
+        # Get config parameters
+        clip_ratio = self.config.trainer.get('ppo_clip_ratio', 0.2)
+        clip_ratio_low = self.config.trainer.get('ppo_clip_ratio_low', clip_ratio)
+        clip_ratio_high = self.config.trainer.get('ppo_clip_ratio_high', clip_ratio)
+        entropy_coeff = self.config.trainer.get('entropy_coeff', 0.0)
+        temperature = 1.0  # Can be made configurable if needed
+
+        # Extract data from batch
+        old_log_probs = batch.pop("old_log_probs").to(self.device_name)  # (bs, seq_len)
+        loss_mask = batch.pop("loss_mask")[:, :-1].to(self.device_name)  # (bs, seq_len-1) - response mask
+        sample_weight = batch.pop("sample_weight").to(self.device_name)  # (bs,) - rewards
+        group_indices = batch.pop("group_index").cpu().numpy()  # (bs,) - for GRPO
+
+        # Trim old_log_probs to match shifted sequence length
+        old_log_probs = old_log_probs[:, :-1]  # (bs, seq_len-1)
+
+        with torch.autocast(device_type=self.device_name, dtype=torch.bfloat16):
+            # 1. Forward pass to get new log probs
+            calculate_entropy = (entropy_coeff > 0)
+            entropy, new_log_probs = self._forward_micro_batch(
+                batch, temperature=temperature, calculate_entropy=calculate_entropy
+            )
+
+            # 2. Compute token-level rewards
+            # IMPORTANT: GRPO advantage estimators expect terminal rewards (reward only on last token),
+            # NOT broadcast rewards. The compute_grpo_outcome_advantage function sums token_level_rewards
+            # across the sequence (token_level_rewards.sum(dim=-1)), so broadcasting the scalar reward
+            # to all tokens would inflate the sum by ~300x (sequence length).
+            #
+            # This differs from the SFT loss convention where sample_weight is broadcast to all tokens
+            # (see _compute_loss_and_backward), because SFT applies per-token cross-entropy loss,
+            # while GRPO operates on sequence-level outcome rewards.
+            B = sample_weight.size(0)
+            seq_len = loss_mask.size(1)
+            token_rewards = torch.zeros(B, seq_len, device=sample_weight.device, dtype=sample_weight.dtype)
+
+            # Place scalar reward on the last response token (terminal reward)
+            for i in range(B):
+                response_length = loss_mask[i].sum()
+                if response_length > 0:
+                    last_token_idx = int(response_length) - 1
+                    token_rewards[i, last_token_idx] = sample_weight[i]  # (bs, seq_len-1)
+
+            # 3. Compute GRPO advantages using verl's function
+            advantages, returns = compute_grpo_outcome_advantage(
+                token_level_rewards=token_rewards,
+                response_mask=loss_mask,
+                index=group_indices,
+                norm_adv_by_std_in_grpo=True,  # Use std normalization (GRPO-style)
+            )
+
+            # 4. Compute PPO policy loss using verl's function
+            pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower = compute_policy_loss(
+                old_log_prob=old_log_probs,
+                log_prob=new_log_probs,
+                advantages=advantages,
+                response_mask=loss_mask,
+                cliprange=clip_ratio,
+                cliprange_low=clip_ratio_low,
+                cliprange_high=clip_ratio_high,
+                loss_agg_mode="token-mean",
+            )
+
+            # 5. Add entropy regularization
+            if entropy_coeff > 0:
+                entropy_loss = agg_loss(loss_mat=entropy, loss_mask=loss_mask, loss_agg_mode="token-mean")
+                policy_loss = pg_loss - entropy_coeff * entropy_loss
+            else:
+                policy_loss = pg_loss
+
+            # 6. Backward
+            if do_backward:
+                policy_loss.backward()
+
+        return policy_loss
+
     def _compute_loss_and_backward(self, batch, do_backward=True):
         """Compute loss with optional sequence parallelism and remove padding features"""
         use_sp = self.use_remove_padding and self.config.ulysses_sequence_parallel_size > 1
@@ -525,8 +665,15 @@ class FSDPSFTTrainer:
         micro_batches = batch.split(self.config.data.micro_batch_size_per_gpu)
         n_micro_batches = len(micro_batches)
         step_loss = 0
+
+        # Choose loss function based on config
+        use_ppo_loss = self.config.trainer.get('use_ppo_loss', False)
+
         for micro_batch in micro_batches:
-            loss = self._compute_loss_and_backward(batch=micro_batch) / n_micro_batches
+            if use_ppo_loss:
+                loss = self._compute_ppo_loss_and_backward(batch=micro_batch) / n_micro_batches
+            else:
+                loss = self._compute_loss_and_backward(batch=micro_batch) / n_micro_batches
             step_loss += loss.item()
 
         if self.config.model.strategy == "fsdp":
@@ -578,8 +725,15 @@ class FSDPSFTTrainer:
 
     def validation_step(self, batch: TensorDict):
         self.fsdp_model.eval()
+        # Choose loss function based on config
+        use_ppo_loss = self.config.trainer.get('use_ppo_loss', False)
+
         with torch.no_grad():
-            loss = self._compute_loss_and_backward(batch, do_backward=False)
+            if use_ppo_loss:
+                loss = self._compute_ppo_loss_and_backward(batch, do_backward=False)
+            else:
+                loss = self._compute_loss_and_backward(batch, do_backward=False)
+
             if is_cuda_available:
                 torch.distributed.all_reduce(loss, op=torch.distributed.ReduceOp.AVG)
             elif is_npu_available:
@@ -917,8 +1071,8 @@ def run_sft(config):
 
     local_model_path = copy_to_local(src=config.model.partial_pretrain, verbose=True)
     tokenizer = hf_tokenizer(local_model_path, trust_remote_code=config.model.trust_remote_code)
-    train_dataset = create_sft_dataset(config.data.train_files, config.data, tokenizer)
-    val_dataset = create_sft_dataset(config.data.val_files, config.data, tokenizer)
+    train_dataset = create_sft_dataset(config.data.train_files, config.data, tokenizer, full_config=config)
+    val_dataset = create_sft_dataset(config.data.val_files, config.data, tokenizer, full_config=config)
 
     trainer = FSDPSFTTrainer(
         config=config,
@@ -939,8 +1093,15 @@ def main(config):
     run_sft(config)
 
 
-def create_sft_dataset(data_paths, data_config, tokenizer):
-    """Create a dataset."""
+def create_sft_dataset(data_paths, data_config, tokenizer, full_config=None):
+    """Create a dataset.
+
+    Args:
+        data_paths: Path(s) to dataset files
+        data_config: Data configuration (config.data)
+        tokenizer: Tokenizer instance
+        full_config: Optional full config object (for datasets that need access to trainer config)
+    """
     # build dataset
     # First check if a custom dataset class is specified
     if data_config.custom_cls.get("path", None):
@@ -955,7 +1116,18 @@ def create_sft_dataset(data_paths, data_config, tokenizer):
         dataset_cls = SFTDataset
 
     # Create datasets based on the selected class
-    dataset = dataset_cls(parquet_files=data_paths, tokenizer=tokenizer, config=data_config)
+    # For custom datasets (like PreTokenizedSFTDataset), pass full config if available
+    # so they can access trainer settings like use_ppo_loss
+    if full_config is not None and data_config.custom_cls.get("path", None):
+        # Merge data and trainer configs for custom datasets
+        from omegaconf import OmegaConf
+        merged_config = OmegaConf.create({
+            **OmegaConf.to_container(data_config, resolve=True),
+            "trainer": OmegaConf.to_container(full_config.trainer, resolve=True) if hasattr(full_config, "trainer") else {}
+        })
+        dataset = dataset_cls(parquet_files=data_paths, tokenizer=tokenizer, config=merged_config)
+    else:
+        dataset = dataset_cls(parquet_files=data_paths, tokenizer=tokenizer, config=data_config)
     return dataset
 
 

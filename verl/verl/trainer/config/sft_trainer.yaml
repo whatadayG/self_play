@@ -83,3 +83,12 @@ trainer:
     # For more flexibility, you can specify the contents to load from the checkpoint.
     load_contents: ${trainer.checkpoint.save_contents}
   device: cuda
+
+  # PPO/GRPO Loss Configuration
+  # Set use_ppo_loss to true to use policy gradient loss instead of cross-entropy loss
+  use_ppo_loss: false  # Default to SFT (behavioral cloning with sample weighting)
+  ppo_clip_ratio: 0.2  # PPO clipping parameter (symmetric by default)
+  ppo_clip_ratio_low: null  # Optional asymmetric clipping (lower bound)
+  ppo_clip_ratio_high: null  # Optional asymmetric clipping (upper bound)
+  group_size: 8  # GRPO group size for advantage normalization
+  entropy_coeff: 0.001  # Entropy regularization coefficient (applies to both SFT and PPO modes)

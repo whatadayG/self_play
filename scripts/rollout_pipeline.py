@@ -939,6 +939,19 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
         except Exception:
             pass
 
+        # Ensure data_metadata.json exists (may not exist for old runs)
+        data_metadata_path = round_dir / "data_metadata.json"
+        if not data_metadata_path.exists():
+            # Create metadata from what we can infer
+            data_metadata = {
+                "trim_threshold": trim_threshold,
+                "filter_positive_only": True,  # Default assumption
+                "filter_percentile": 0.0,
+            }
+            with open(data_metadata_path, 'w') as f:
+                json.dump(data_metadata, f, indent=2)
+            print(f"Created missing data metadata at {data_metadata_path}")
+
         stats = RolloutStats(
             raw_parquet=train_parquet,
             trimmed_parquet=train_trimmed,
@@ -1203,6 +1216,18 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
 
     # Filter for positive GRPO-normalized examples only (if enabled)
     filter_positive_only = getattr(args, 'filter_positive_only', True) if args else True
+    filter_percentile = getattr(args, 'filter_percentile', 0.0) if args else 0.0
+
+    # Save data processing metadata (trim_threshold, etc.) for resume
+    data_metadata_path = round_dir / "data_metadata.json"
+    data_metadata = {
+        "trim_threshold": pct95,
+        "filter_positive_only": filter_positive_only,
+        "filter_percentile": filter_percentile,
+    }
+    with open(data_metadata_path, 'w') as f:
+        json.dump(data_metadata, f, indent=2)
+    print(f"Saved data metadata to {data_metadata_path}")
     length_trimmed_count_before_filtering = len(kept)
 
     if filter_positive_only:
@@ -1226,7 +1251,6 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
         print(f"\nPositive-only filtering disabled")
 
     # Apply percentile-based filtering (if enabled)
-    filter_percentile = getattr(args, 'filter_percentile', 0.0) if args else 0.0
     if filter_percentile > 0.0 and filter_percentile <= 1.0 and len(kept) > 0:
         grpo_weights = kept["sample_weight"].astype(float)
         percentile_threshold = np.percentile(grpo_weights, filter_percentile * 100)
@@ -1247,9 +1271,10 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
     if len(kept) < 100:
         print(f"\n  WARNING: Only {len(kept)} examples remain after filtering.")
         print(f"  This may be too few for effective training. Consider:")
-        print(f"    - Using --no-filter-positive-only to train on all examples")
+        print(f"    - Using --no-filter-positive-only to train on all examples (or switch to PPO/GRPO mode)")
         print(f"    - Lowering --filter-percentile (currently {filter_percentile})")
-        print(f"    - Increasing --games-per-round to generate more rollouts\n")
+        print(f"    - Increasing --games-per-round to generate more rollouts")
+        print(f"  Note: PPO/GRPO mode automatically disables quality-based filtering\n")
 
     # Split into train (90%) and val (10%)
     from sklearn.model_selection import train_test_split
@@ -1446,10 +1471,10 @@ def main():
                     choices=["hf_dataparallel", "sglang"],
                     help="Method for computing reference model logprobs: 'hf_dataparallel' (default, uses data parallelism with HuggingFace) or 'sglang' (uses tensor parallelism with SGLang)")
 
-    # Data filtering settings
-    ap.add_argument("--filter-positive-only", action="store_true", default=True, help="Train only on positive GRPO-normalized examples (above group mean) (default: enabled)")
-    ap.add_argument("--no-filter-positive-only", dest="filter_positive_only", action="store_false", help="Disable positive-only filtering, train on all examples")
-    ap.add_argument("--filter-percentile", type=float, default=0.0, help="Keep only sequences above this percentile of GRPO-normalized rewards (0.0-1.0). Set to 0 to disable. Applies after positive-only filter if both are enabled. Default: 0.0 (disabled)")
+    # Data filtering settings (EXPERT ITERATION MODE ONLY - GRPO/PPO does not filter by quality)
+    ap.add_argument("--filter-positive-only", action="store_true", default=True, help="[Expert Iteration only] Train only on positive GRPO-normalized examples (above group mean). For PPO/GRPO, use --no-filter-positive-only. (default: enabled)")
+    ap.add_argument("--no-filter-positive-only", dest="filter_positive_only", action="store_false", help="[Expert Iteration only] Disable positive-only filtering, train on all examples. Required for PPO/GRPO mode.")
+    ap.add_argument("--filter-percentile", type=float, default=0.0, help="[Expert Iteration only] Keep only sequences above this percentile of GRPO-normalized rewards (0.0-1.0). Set to 0 to disable. Applies after positive-only filter if both are enabled. Not used in PPO/GRPO mode. Default: 0.0 (disabled)")
 
     # Asymmetric mode arguments (trainee vs opponent)
     ap.add_argument("--opponent-model", type=str, default=None, help="Path to opponent model for asymmetric training (default: None = self-play mode)")

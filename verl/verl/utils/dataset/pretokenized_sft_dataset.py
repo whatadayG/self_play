@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
@@ -19,6 +20,10 @@ class PreTokenizedSFTDataset(Dataset):
       - loss_mask
     Optional:
       - sample_weight (float scalar per-sample)
+
+    For PPO mode (when use_ppo_loss=true):
+      - policy_logprobs (list/array of floats or JSON string)
+      - game_id (int, used to compute group_index for GRPO)
 
     All sequences are assumed to have the same padded length within a file.
     """
@@ -38,6 +43,17 @@ class PreTokenizedSFTDataset(Dataset):
         self.has_weight = "sample_weight" in self.df.columns
         self.max_length = config.get("max_length", None)
 
+        # PPO-specific fields
+        self.use_ppo_loss = config.get("trainer", {}).get("use_ppo_loss", False)
+        if self.use_ppo_loss:
+            # Check for required PPO fields
+            if "policy_logprobs" not in self.df.columns:
+                raise ValueError("PPO mode requires 'policy_logprobs' column in parquet")
+            if "game_id" not in self.df.columns:
+                raise ValueError("PPO mode requires 'game_id' column in parquet")
+            self.group_size = config.get("trainer", {}).get("group_size", 8)
+            print(f"PreTokenizedSFTDataset: PPO mode enabled (group_size={self.group_size})")
+
     def __len__(self) -> int:
         return len(self.df)
 
@@ -53,6 +69,15 @@ class PreTokenizedSFTDataset(Dataset):
         position_ids = self._to_tensor_1d(row["position_ids"])  # (L,) or (3,L) for some models
         loss_mask = self._to_tensor_1d(row["loss_mask"])  # (L,)
 
+        # Load old_log_probs for PPO mode
+        old_log_probs = None
+        if self.use_ppo_loss:
+            # policy_logprobs might be stored as JSON string or native array
+            logprobs_data = row["policy_logprobs"]
+            if isinstance(logprobs_data, str):
+                logprobs_data = json.loads(logprobs_data)
+            old_log_probs = torch.tensor(logprobs_data, dtype=torch.float32)  # (L,)
+
         # Optional length clamp/pad to max_length if provided
         if self.max_length is not None:
             L = input_ids.size(0)
@@ -61,6 +86,8 @@ class PreTokenizedSFTDataset(Dataset):
                 attention_mask = attention_mask[: self.max_length]
                 position_ids = position_ids[: self.max_length] if position_ids.dim() == 1 else position_ids[:, : self.max_length]
                 loss_mask = loss_mask[: self.max_length]
+                if old_log_probs is not None:
+                    old_log_probs = old_log_probs[: self.max_length]
             elif L < self.max_length:
                 pad_len = self.max_length - L
                 pad_token_id = 0
@@ -73,6 +100,8 @@ class PreTokenizedSFTDataset(Dataset):
                     pad_pos = torch.zeros((position_ids.size(0), pad_len), dtype=position_ids.dtype)
                     position_ids = torch.cat([position_ids, pad_pos], dim=1)
                 loss_mask = torch.cat([loss_mask, torch.zeros(pad_len, dtype=loss_mask.dtype)])
+                if old_log_probs is not None:
+                    old_log_probs = torch.cat([old_log_probs, torch.zeros(pad_len, dtype=old_log_probs.dtype)])
 
         item = {
             "input_ids": input_ids,
@@ -83,6 +112,13 @@ class PreTokenizedSFTDataset(Dataset):
 
         if self.has_weight:
             item["sample_weight"] = float(row["sample_weight"])  # scalar
+
+        # Add PPO-specific fields
+        if self.use_ppo_loss:
+            item["old_log_probs"] = old_log_probs  # (L,)
+            # Compute group_index from game_id
+            game_id = int(row["game_id"])
+            item["group_index"] = game_id // self.group_size  # scalar
 
         return item
 
