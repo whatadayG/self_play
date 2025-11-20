@@ -50,6 +50,8 @@ class SGLangModelPlayer(BaseModelPlayer):
         self.processing_class = processing_class
         self.optional = optional or {}
         self.last_generation_logprobs = None  # Store logprobs from last generation
+        self.all_generated_logprobs: List[float] = []  # Store ALL logprobs across all generations
+        self._assistant_prefix_token_count = None  # Cache for assistant prefix token count
         # Validate configuration: exactly one mode should be configured
         # Design intent:
         # - Internal mode: engine and processing_class are provided (for training within verl)
@@ -139,6 +141,12 @@ class SGLangModelPlayer(BaseModelPlayer):
         Returns:
             Tuple of (response_text, input_tokens, output_tokens)
         """
+        # TODO: Consider switching to native /generate endpoint instead of /v1/chat/completions
+        # The native endpoint returns token IDs directly (meta_info.output_token_logprobs[i][1]),
+        # which would avoid tokenization roundtrip issues when reconstructing sequences.
+        # This would make get_generated_logprob_tensor() alignment more robust.
+        # See: test_native_sglang_endpoint.py for example usage.
+
         # Build request ID with game context for cache tracing
         # Format: game_{id}_turn_{n}_player_{role}_msg_{count}
         game_id = self.optional.get("game_id", "unknown")
@@ -180,6 +188,11 @@ class SGLangModelPlayer(BaseModelPlayer):
 
                 response_text = data["choices"][0]["message"]["content"]
 
+                # IMPORTANT: SGLang sometimes includes the role prefix in the response
+                # Strip "\nassistant\n" or similar prefixes if present
+                if response_text.startswith("\nassistant\n"):
+                    response_text = response_text[len("\nassistant\n"):]
+
                 # Get token counts (if provided by server)
                 input_tokens = data.get("usage", {}).get("prompt_tokens", 0)
                 output_tokens = data.get("usage", {}).get("completion_tokens", 0)
@@ -189,10 +202,20 @@ class SGLangModelPlayer(BaseModelPlayer):
                 if logprobs_data and logprobs_data.get("content"):
                     # Extract the logprob values for each token
                     # SGLang returns: {"content": [{"token": "...", "logprob": float, ...}, ...]}
-                    self.last_generation_logprobs = [
+                    all_logprobs = [
                         token_data["logprob"]
                         for token_data in logprobs_data["content"]
                     ]
+                    # IMPORTANT: SGLang returns logprobs ONLY for completion tokens (output)
+                    # The returned logprobs should exactly match output_tokens count
+                    if len(all_logprobs) != output_tokens:
+                        raise RuntimeError(
+                            f"Logprobs count mismatch: SGLang returned {len(all_logprobs)} logprobs "
+                            f"but output_tokens={output_tokens}. SGLang should return exactly one logprob per output token."
+                        )
+                    self.last_generation_logprobs = all_logprobs
+                    # Also accumulate in the full list
+                    self.all_generated_logprobs.extend(self.last_generation_logprobs)
                 else:
                     self.last_generation_logprobs = None
 
@@ -251,7 +274,60 @@ class SGLangModelPlayer(BaseModelPlayer):
                 
                 if self.tokenizer.pad_token is None:
                     self.tokenizer.pad_token = self.tokenizer.eos_token
-    
+
+    def _compute_assistant_prefix_token_count(self) -> int:
+        """Compute the number of tokens in the assistant turn prefix.
+
+        For Qwen chat template, this is '<|im_start|>assistant\\n' which tokenizes to 3 tokens.
+        This is computed once and cached since it's model-specific and doesn't change.
+
+        Returns:
+            Number of tokens in the assistant prefix that the model doesn't generate
+        """
+        # Return cached value if already computed
+        if self._assistant_prefix_token_count is not None:
+            return self._assistant_prefix_token_count
+
+        self._load_tokenizer()
+
+        # Create a minimal message pair to extract the assistant prefix
+        test_messages = [
+            {"role": "user", "content": "test"}
+        ]
+
+        # Get text without generation prompt (stops after user message)
+        without_gen_prompt = self.tokenizer.apply_chat_template(
+            test_messages,
+            tokenize=False,
+            add_generation_prompt=False
+        )
+
+        # Get text with generation prompt (adds assistant prefix)
+        with_gen_prompt = self.tokenizer.apply_chat_template(
+            test_messages,
+            tokenize=False,
+            add_generation_prompt=True
+        )
+
+        # The difference is the assistant prefix (e.g., '<|im_start|>assistant\n')
+        # This is what's in the prompt but not generated by the model
+        if not with_gen_prompt.startswith(without_gen_prompt):
+            raise RuntimeError(
+                "Unexpected chat template structure: text with generation prompt "
+                "doesn't start with text without generation prompt"
+            )
+
+        assistant_prefix_text = with_gen_prompt[len(without_gen_prompt):]
+
+        # Tokenize the prefix to count tokens
+        # Note: We don't add special tokens here because they're already in the text
+        prefix_tokens = self.tokenizer.encode(assistant_prefix_text, add_special_tokens=False)
+
+        # Cache the result
+        self._assistant_prefix_token_count = len(prefix_tokens)
+
+        return self._assistant_prefix_token_count
+
     def get_input_string(self) -> str:
         """Get the input string that would be passed to model inference.
         
@@ -286,13 +362,16 @@ class SGLangModelPlayer(BaseModelPlayer):
         return input_tokens
     
     def get_assistant_mask(self) -> List[int]:
-        """Generate a mask that is 1 for tokens within assistant messages.
-        
+        """Generate a mask that is 1 for tokens actually generated by the model.
+
+        Excludes the chat template prefix ('<|im_start|>assistant\n') since the model
+        doesn't generate those tokens - they're part of the prompt.
+
         Returns:
-            List of 0s and 1s, where 1 indicates assistant tokens
+            List of 0s and 1s, where 1 indicates tokens the model generated
         """
         self._load_tokenizer()
-        
+
         # First, tokenize the full conversation
         full_text = self.tokenizer.apply_chat_template(
             self.messages,
@@ -300,10 +379,14 @@ class SGLangModelPlayer(BaseModelPlayer):
             add_generation_prompt=False
         )
         full_tokens = self.tokenizer.encode(full_text, add_special_tokens=False)
-        
+
         # Create mask initialized to 0
         mask = [0] * len(full_tokens)
-        
+
+        # The assistant prefix that's in the prompt (not generated by the model)
+        # For Qwen: '<|im_start|>assistant\n'
+        assistant_prefix_tokens = self._compute_assistant_prefix_token_count()
+
         # For each assistant message, find where it appears and mark those tokens
         for i, msg in enumerate(self.messages):
             if msg["role"] == "assistant":
@@ -315,7 +398,7 @@ class SGLangModelPlayer(BaseModelPlayer):
                     add_generation_prompt=False
                 )
                 partial_tokens = self.tokenizer.encode(partial_text, add_special_tokens=False)
-                
+
                 # Get the conversation up to before this message
                 if i > 0:
                     prev_messages = self.messages[:i]
@@ -328,12 +411,16 @@ class SGLangModelPlayer(BaseModelPlayer):
                     start_idx = len(prev_tokens)
                 else:
                     start_idx = 0
-                
-                # Mark the assistant tokens
+
+                # Mark the assistant tokens, but SKIP the first 3 tokens (the prefix)
+                # The model only generates: content + <|im_end|>\n
+                # It does NOT generate: <|im_start|>assistant\n
                 end_idx = len(partial_tokens)
-                for j in range(start_idx, min(end_idx, len(mask))):
+                actual_start_idx = start_idx + assistant_prefix_tokens
+
+                for j in range(actual_start_idx, min(end_idx, len(mask))):
                     mask[j] = 1
-        
+
         return mask
     
     def get_masked_sequences_pretty(self) -> str:
@@ -382,6 +469,69 @@ class SGLangModelPlayer(BaseModelPlayer):
             List of logprob values (one per generated token), or None if not available
         """
         return self.last_generation_logprobs
+
+    def get_generated_logprob_tensor(self) -> List[float]:
+        """Create a logprob tensor aligned with input_ids and loss_mask.
+
+        Returns a tensor where:
+        - Positions with loss_mask=1 (generated tokens) have their actual logprobs
+        - Positions with loss_mask=0 (prompt tokens) have 0.0
+
+        The length matches get_input_sequence() and get_assistant_mask().
+
+        Returns:
+            List of logprob values, same length as input_ids
+        """
+        self._load_tokenizer()
+
+        # Get the full input sequence length
+        input_ids = self.get_input_sequence()
+
+        # Initialize tensor with zeros
+        logprob_tensor = [0.0] * len(input_ids)
+
+        # Get assistant mask to know where generated tokens are
+        assistant_mask = self.get_assistant_mask()
+
+        # The all_generated_logprobs contains logprobs for all generated tokens in order
+        # We need to place them at positions where assistant_mask=1
+        generated_positions = [i for i, mask_val in enumerate(assistant_mask) if mask_val == 1]
+
+        if len(self.all_generated_logprobs) != len(generated_positions):
+            # Debug: print details about each assistant message
+            print(f"\nDEBUG: Logprob count mismatch")
+            print(f"  Collected logprobs: {len(self.all_generated_logprobs)}")
+            print(f"  Assistant mask positions: {len(generated_positions)}")
+            print(f"  Total messages: {len(self.messages)}")
+
+            # Show each assistant message and how many tokens it should have
+            assistant_msg_count = 0
+            for i, msg in enumerate(self.messages):
+                if msg["role"] == "assistant":
+                    assistant_msg_count += 1
+                    content = msg["content"]
+                    print(f"  Assistant message {assistant_msg_count}:")
+                    print(f"    Content (first 200 chars): {repr(content[:200])}")
+                    # Tokenize just this message content
+                    content_tokens = self.tokenizer.encode(content, add_special_tokens=False)
+                    # The actual response includes <|im_end|>\n (2 tokens)
+                    expected_gen_tokens = len(content_tokens) + 2
+                    print(f"    Content tokens: {len(content_tokens)}")
+                    print(f"    Expected generated (content + <|im_end|>\\n): {expected_gen_tokens}")
+
+            # Show actual logprob collection history
+            print(f"\n  Total logprobs collected across all generations: {len(self.all_generated_logprobs)}")
+
+            raise RuntimeError(
+                f"Logprob count mismatch: collected {len(self.all_generated_logprobs)} logprobs "
+                f"but assistant_mask has {len(generated_positions)} generated positions"
+            )
+
+        # Fill in the logprobs at generated positions
+        for pos, logprob in zip(generated_positions, self.all_generated_logprobs):
+            logprob_tensor[pos] = logprob
+
+        return logprob_tensor
     
     def _generate_text_internal(self, messages: List[Dict[str, str]], **gen_kwargs) -> Tuple[str, int, int]:
         """Generate text using internal SGLang engine.
