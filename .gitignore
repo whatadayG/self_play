@@ -2,7 +2,6 @@ __pycache__
 *.swp
 *.swo
 *.un~
-data/
 *venv*
 wandb/
 *save_points*
