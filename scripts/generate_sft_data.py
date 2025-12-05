@@ -45,13 +45,16 @@ try:
 except ImportError:
     pass
 
-from dialop.openai_model_player import OpenAIModelPlayer
-from dialop.base_player import OpenAIConfig
-from dialop.envs.optimization import OptimizationEnv
-from rich.console import Console
+# Import the correct game-running logic from generate_rollouts
+# Add scripts directory to path
+scripts_dir = os.path.dirname(__file__)
+if scripts_dir not in sys.path:
+    sys.path.insert(0, scripts_dir)
+
+from generate_rollouts import run_one_game
 
 
-def run_one_game(
+def run_one_game_openai(
     model_id: str,
     instructions: str,
     api_key_path: str,
@@ -64,85 +67,37 @@ def run_one_game(
     game_id: int,
     seed: int,
 ) -> Dict[str, Any]:
-    """Run a single self-play game and return both players' conversation histories.
+    """Wrapper to run a game with OpenAI models using the correct logic from generate_rollouts.
 
     Returns:
         Dict with "players" containing player objects, "game_info", etc.
     """
-    console = Console()
-
-    # Create OpenAI config
-    cfg = OpenAIConfig(
-        model=model_id,
-        temperature=temperature,
-        max_tokens=max_new_tokens,
-        top_p=top_p,
-        api_key_path=api_key_path if api_key_path else OpenAIConfig.api_key_path,
-        organization=organization,
-    )
-
-    # Create instructions for both players
-    instr_p1 = instructions.replace("{unknown_value}", "50")
-    instr_p2 = instructions.replace("{unknown_value}", "50")
-
-    # Create both players
-    p1 = OpenAIModelPlayer(
-        system_prompt=instr_p1,
-        role="player-1",
-        console=console,
-        model_path=model_id,
-        config=cfg,
-    )
-    p2 = OpenAIModelPlayer(
-        system_prompt=instr_p2,
-        role="player-2",
-        console=console,
-        model_path=model_id,
-        config=cfg,
-    )
-
-    # Create environment
-    env = OptimizationEnv(
-        max_turns=max_turns,
-        max_retries_per_turn=max_retries_per_turn
-    )
-
-    # Reset with game-specific seed for determinism
-    obs = env.reset(game_state=None, seed=seed + game_id * 10000)
-    p1.observe(obs["player-1"])
-    p2.observe(obs["player-2"])
-
-    players = {"player-1": p1, "player-2": p2}
-    done = False
-    turn = 0
-
-    while not done and turn < max_turns:
-        for player_name in ["player-1", "player-2"]:
-            if done:
-                break
-
-            response = players[player_name].respond()
-            obs, done, _ = env.step({player_name: response})
-
-            # Give observations to both players
-            for pname in ["player-1", "player-2"]:
-                if pname in obs:
-                    players[pname].observe(obs[pname])
-
-        turn += 1
-
-    # Return result with player objects (they contain conversation history)
-    return {
-        "game_id": game_id,
-        "players": players,
-        "reward": obs.get("info", {}).get("score", 0.0) if done else 0.0,
-        "normalized_reward": obs.get("info", {}).get("score_norm", 0.0) if done else 0.0,
-        "game_info": {
-            "completed": done,
-            "turn_count": turn,
-            "game_normalized_reward": obs.get("info", {}).get("score_norm", 0.0) if done else 0.0,
-        },
+    # Build player config for OpenAI
+    player_cfg = {
+        "temperature": temperature,
+        "top_p": top_p,
+        "max_new_tokens": max_new_tokens,
+        "max_turns": max_turns,
+        "max_retries_per_turn": max_retries_per_turn,
+        "server_url": "dummy",  # Not used for OpenAI but required by signature
     }
+
+    # Add OpenAI-specific config
+    if api_key_path:
+        player_cfg["api_key_path"] = api_key_path
+    if organization:
+        player_cfg["organization"] = organization
+
+    # Call the correct implementation from generate_rollouts
+    return run_one_game(
+        player_cfg=player_cfg,
+        model_id=model_id,
+        instructions=instructions,
+        game_id=game_id,
+        group_size=1,  # No GRPO grouping for SFT
+        base_seed=seed,
+        player_type="openai"
+    )
 
 
 def process_game_to_messages(result: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -160,9 +115,10 @@ def process_game_to_messages(result: Dict[str, Any]) -> List[Dict[str, Any]]:
         rows.append({
             "messages": conversation_history,
             "player_name": player_name,
-            "game_id": result["game_id"],
-            "reward": float(result["normalized_reward"]),
-            "game_info": json.dumps(result["game_info"]),
+            "game_id": result.get("game_id", 0),
+            "game_seed": result.get("game_seed", 0),
+            "reward": float(result.get("normalized_reward", 0.0)),
+            "game_info": json.dumps(result.get("game_info", {})),
         })
     return rows
 
@@ -194,15 +150,21 @@ def worker_process(
                 return
 
             try:
-                result = run_one_game(
+                result = run_one_game_openai(
                     model_id, instructions, api_key_path, organization,
                     temperature, max_new_tokens, top_p,
                     max_turns, max_retries_per_turn, game_id, seed
                 )
-                rows = process_game_to_messages(result)
-                result_queue.put(rows)
+                if result is None:
+                    print(f"[Process {process_id}] Game {game_id} returned None")
+                    result_queue.put([])
+                else:
+                    rows = process_game_to_messages(result)
+                    result_queue.put(rows)
             except Exception as e:
+                import traceback
                 print(f"[Process {process_id}] Game {game_id} failed: {e}")
+                traceback.print_exc()
                 result_queue.put([])
 
     with ThreadPoolExecutor(max_workers=threads_per_proc) as executor:
@@ -225,8 +187,8 @@ def main():
     ap.add_argument("--max-turns", type=int, default=10)
     ap.add_argument("--max-retries-per-turn", type=int, default=2)
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--num-procs", type=int, default=32, help="Number of worker processes")
-    ap.add_argument("--threads-per-proc", type=int, default=8, help="Threads per process")
+    ap.add_argument("--num-procs", type=int, default=8, help="Number of worker processes")
+    ap.add_argument("--threads-per-proc", type=int, default=16, help="Threads per process")
     ap.add_argument("--progress-interval", type=int, default=10, help="Print progress every N games")
     ap.add_argument("--openai-api-key-path", type=str, help="Path to OpenAI API key JSON file")
     ap.add_argument("--openai-organization", type=str, help="OpenAI organization ID")

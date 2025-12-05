@@ -90,11 +90,16 @@ class OpenAIModelPlayer(BaseModelPlayer):
         request_params = {
             "model": self.config.model,
             "messages": messages,
-            "temperature": gen_kwargs.get("temperature", self.config.temperature),
-            "top_p": gen_kwargs.get("top_p", self.config.top_p),
-            "frequency_penalty": self.config.frequency_penalty,
-            "presence_penalty": self.config.presence_penalty,
         }
+
+        # Some models (o1, gpt-5-mini/nano) don't support sampling parameters
+        # Only include them for models that support them
+        models_without_sampling = ["o1-preview", "o1-mini", "o1", "gpt-5-mini", "gpt-5-nano"]
+        if not any(x in self.config.model for x in models_without_sampling):
+            request_params["temperature"] = gen_kwargs.get("temperature", self.config.temperature)
+            request_params["top_p"] = gen_kwargs.get("top_p", self.config.top_p)
+            request_params["frequency_penalty"] = self.config.frequency_penalty
+            request_params["presence_penalty"] = self.config.presence_penalty
 
         # Use max_completion_tokens for newer models, max_tokens for older ones
         max_tokens_value = gen_kwargs.get("max_tokens", self.config.max_tokens)
