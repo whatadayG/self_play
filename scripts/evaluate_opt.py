@@ -634,7 +634,7 @@ def main(
     agent_model_id: Optional[str]="gpt-4.1",
     dry_run: Optional[bool]=False,
     use_word_limit: Optional[bool]=False,
-    track_costs: Optional[bool]=False,
+    track_costs: Optional[bool]=True,
     threshold: Optional[float]=0.5,
     temperature: Optional[float]=0.7,
     load_game_state: Optional[str]=None,#"/home/nickatomlin/georgiazhou/new_dialop/RL-matching/dialop/data/optimization.jsonl",
