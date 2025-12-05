@@ -217,11 +217,9 @@ class SGLangModelPlayer(BaseModelPlayer):
                     self.last_generation_logprobs = all_logprobs
                     # Append as a new sublist (one per assistant message)
                     # Use .copy() to ensure independent sublists (defensive against future modifications)
-                    print(f"[DEBUG] Appending logprobs: len={len(self.last_generation_logprobs)}, "
-                          f"current sublists={len(self.all_generated_logprobs)}")
                     self.all_generated_logprobs.append(self.last_generation_logprobs.copy())
-                    print(f"[DEBUG] After append: sublists={len(self.all_generated_logprobs)}, "
-                          f"lengths={[len(x) for x in self.all_generated_logprobs]}")
+                    # Clear cache since we added new data
+                    self._cached_mask_and_logprobs = None
                 else:
                     self.last_generation_logprobs = None
 
@@ -362,9 +360,9 @@ class SGLangModelPlayer(BaseModelPlayer):
         input_text = self.tokenizer.apply_chat_template(
             self.messages,
             tokenize=False,
-            add_generation_prompt=False  # No generation prompt for completed conversations
+            add_generation_prompt=False
         )
-        input_tokens = self.tokenizer.encode(input_text, add_special_tokens=True)
+        input_tokens = self.tokenizer.encode(input_text, add_special_tokens=False)
         return input_tokens
 
     def _build_mask_and_logprobs(self) -> Tuple[List[int], List[float]]:
@@ -373,8 +371,16 @@ class SGLangModelPlayer(BaseModelPlayer):
         IMPORTANT: Only call this after the conversation is complete. The result is cached.
 
         This method scans through the tokenized conversation looking for assistant message
-        patterns, handling template-added tokens (empty thinking construct, suffix), and
-        aligning with collected logprobs.
+        patterns and aligning them with collected logprobs from SGLang.
+
+        For Qwen3-8B with thinking mode:
+        - Template tokens (NOT generated): <|im_start|>assistant\n
+        - Generated tokens (have logprobs): <think> ... </think> ... response ... <|im_end|>
+
+        CRITICAL: The chat template MUST preserve thinking content for all assistant turns.
+        The default Qwen3 template strips thinking from non-last turns, which breaks alignment.
+        Use modify_chat_template_for_training.py to fix this before training.
+        See CHAT_TEMPLATE_FOR_TRAINING.md for details.
 
         Returns:
             Tuple of (mask, logprob_tensor) where:
@@ -387,7 +393,7 @@ class SGLangModelPlayer(BaseModelPlayer):
 
         self._load_tokenizer()
 
-        # Tokenize full conversation
+        # Tokenize full conversation using chat template
         full_text = self.tokenizer.apply_chat_template(
             self.messages,
             tokenize=False,
@@ -399,16 +405,11 @@ class SGLangModelPlayer(BaseModelPlayer):
         mask = [0] * len(full_tokens)
         logprob_tensor = [0.0] * len(full_tokens)
 
-        # Get special token IDs by tokenizing (not convert_tokens_to_ids which requires exact match)
+        # Get special token IDs
         im_start_id = self.tokenizer.convert_tokens_to_ids("<|im_start|>")
         im_end_id = self.tokenizer.convert_tokens_to_ids("<|im_end|>")
         assistant_id = self.tokenizer.encode("assistant", add_special_tokens=False)[0]
         newline_id = self.tokenizer.encode("\n", add_special_tokens=False)[0]
-
-        # Get thinking-related token IDs
-        think_start_id = self.tokenizer.convert_tokens_to_ids("<think>")
-        think_end_id = self.tokenizer.convert_tokens_to_ids("</think>")
-        double_newline_id = self.tokenizer.encode("\n\n", add_special_tokens=False)[0]
 
         # Count expected assistant messages
         num_assistant_messages = sum(1 for msg in self.messages if msg["role"] == "assistant")
@@ -434,16 +435,8 @@ class SGLangModelPlayer(BaseModelPlayer):
                 full_tokens[i + 2] == newline_id):
 
                 # Skip the assistant header (3 tokens)
+                # These are part of the template, not generated
                 i += 3
-
-                # Check for empty thinking construct: <think>\n\n</think>\n\n
-                if (i + 3 < len(full_tokens) and
-                    full_tokens[i] == think_start_id and
-                    full_tokens[i + 1] == double_newline_id and
-                    full_tokens[i + 2] == think_end_id and
-                    full_tokens[i + 3] == double_newline_id):
-                    # Skip the empty thinking construct (4 tokens)
-                    i += 4
 
                 # Get logprobs for this assistant message
                 if assistant_msg_idx >= len(self.all_generated_logprobs):
@@ -453,51 +446,79 @@ class SGLangModelPlayer(BaseModelPlayer):
                     )
 
                 current_message_logprobs = self.all_generated_logprobs[assistant_msg_idx]
-                print(f"[DEBUG] Processing assistant msg #{assistant_msg_idx + 1}, "
-                      f"logprobs available: {len(current_message_logprobs)}")
                 msg_logprob_idx = 0
 
                 # Now we're at the start of actually generated tokens
-                # Mark tokens and fill in logprobs until we hit <|im_end|>
-                while i < len(full_tokens) and full_tokens[i] != im_end_id:
+                # Mark tokens and fill in logprobs, INCLUDING <|im_end|>
+                # SGLang includes <|im_end|> in the logprobs when finish_reason="stop"
+                start_pos = i
+                while i < len(full_tokens):
+                    # Mark this token as generated and assign its logprob
                     mask[i] = 1
+                    logprob_tensor[i] = current_message_logprobs[msg_logprob_idx]
+                    msg_logprob_idx += 1
 
-                    if msg_logprob_idx < len(current_message_logprobs):
-                        logprob_tensor[i] = current_message_logprobs[msg_logprob_idx]
-                        msg_logprob_idx += 1
-                    else:
-                        raise RuntimeError(
-                            f"Ran out of logprobs for assistant message #{assistant_msg_idx + 1} at token position {i}. "
-                            f"Message has {len(current_message_logprobs)} logprobs but needed at least {msg_logprob_idx + 1}."
-                        )
+                    # If this was <|im_end|>, we should have consumed all logprobs
+                    if full_tokens[i] == im_end_id:
+                        if msg_logprob_idx != len(current_message_logprobs):
+                            raise RuntimeError(
+                                f"Found <|im_end|> at position {i} for assistant message #{assistant_msg_idx + 1}, "
+                                f"but only consumed {msg_logprob_idx}/{len(current_message_logprobs)} logprobs. "
+                                f"Expected <|im_end|> to be the LAST token with logprob (finish_reason='stop'). "
+                                f"This indicates unexpected SGLang behavior or a bug in mask building logic."
+                            )
+                        i += 1
+                        break
+
+                    # Check if we've consumed all logprobs without finding <|im_end|>
+                    if msg_logprob_idx >= len(current_message_logprobs):
+                        # We've consumed all logprobs but haven't hit <|im_end|> yet
+                        # This is expected for finish_reason="length" (generation cut off)
+                        # Verify we don't have more tokens to process before <|im_end|>
+                        remaining_tokens = []
+                        j = i + 1
+                        while j < len(full_tokens) and full_tokens[j] != im_end_id:
+                            remaining_tokens.append(self.tokenizer.decode([full_tokens[j]]))
+                            j += 1
+
+                        if remaining_tokens:
+                            raise RuntimeError(
+                                f"Consumed all {len(current_message_logprobs)} logprobs for assistant message #{assistant_msg_idx + 1}, "
+                                f"but found {len(remaining_tokens)} more tokens before <|im_end|>: {remaining_tokens[:5]}. "
+                                f"This indicates a mismatch between SGLang's logprobs and the reconstructed token sequence. "
+                                f"Possible cause: chat template is stripping/adding tokens."
+                            )
+                        break
 
                     i += 1
-
-                # Verify we found <|im_end|> where expected
-                if i >= len(full_tokens) or full_tokens[i] != im_end_id:
-                    raise RuntimeError(
-                        f"Expected <|im_end|> token at position {i} but found "
-                        f"{self.tokenizer.decode([full_tokens[i]])} (token_id={full_tokens[i]})"
-                    )
 
                 # Verify we consumed all logprobs for this message
                 if msg_logprob_idx != len(current_message_logprobs):
                     # Debug: Show what tokens we found vs what we expected
-                    print(f"[DEBUG ERROR] Message #{assistant_msg_idx + 1} mismatch:")
-                    print(f"  Consumed: {msg_logprob_idx} tokens before <|im_end|>")
-                    print(f"  Expected: {len(current_message_logprobs)} logprobs from SGLang")
-                    print(f"  Difference: {len(current_message_logprobs) - msg_logprob_idx} missing")
-                    print(f"  Message content (first 200 chars): {repr(self.messages[assistant_msg_idx]['content'][:200])}")
-                    raise RuntimeError(
-                        f"Logprob count mismatch for assistant message #{assistant_msg_idx + 1}: "
-                        f"consumed {msg_logprob_idx} logprobs but message has {len(current_message_logprobs)} total."
+                    # Note: assistant_msg_idx indexes into all_generated_logprobs, not self.messages
+                    assistant_messages = [msg for msg in self.messages if msg["role"] == "assistant"]
+                    current_msg_content = assistant_messages[assistant_msg_idx]['content'] if assistant_msg_idx < len(assistant_messages) else "N/A"
+
+                    error_msg = (
+                        f"Logprob/token alignment failure for assistant message #{assistant_msg_idx + 1}:\n"
+                        f"  Consumed: {msg_logprob_idx} tokens from reconstructed sequence\n"
+                        f"  Expected: {len(current_message_logprobs)} logprobs from SGLang\n"
+                        f"  Difference: {len(current_message_logprobs) - msg_logprob_idx} logprobs unmatched\n\n"
+                        f"LIKELY CAUSE: Chat template is stripping thinking content!\n"
+                        f"  The tokenizer's chat template may be removing <think>...</think> content\n"
+                        f"  from assistant messages when reconstructing the sequence, but SGLang\n"
+                        f"  returns logprobs for ALL generated tokens including thinking.\n\n"
+                        f"SOLUTION:\n"
+                        f"  1. Run: python modify_chat_template_for_training.py {self.model_path}\n"
+                        f"  2. Restart any SGLang/vLLM servers using this model\n"
+                        f"  3. See modify_chat_template_for_training.py for details\n\n"
+                        f"Message content (first 200 chars): {repr(current_msg_content[:200])}\n"
                     )
+                    print(f"\n{'='*80}\n{error_msg}{'='*80}\n")
+                    raise RuntimeError(error_msg)
 
                 # Move to next assistant message
                 assistant_msg_idx += 1
-
-                # Skip the <|im_end|> token (we don't mark it as generated)
-                i += 1
             else:
                 i += 1
 
@@ -516,7 +537,10 @@ class SGLangModelPlayer(BaseModelPlayer):
     def get_assistant_mask(self) -> List[int]:
         """Generate a mask that is 1 for tokens actually generated by the model.
 
-        Excludes template-added tokens (assistant header, empty thinking construct, suffix).
+        Excludes template-added tokens (<|im_start|>assistant\n) but includes all
+        generated tokens that have logprobs from SGLang, including <|im_end|>.
+
+        For Qwen3-8B: mask includes <think>, thinking content, </think>, response, <|im_end|>
 
         Returns:
             List of 0s and 1s, where 1 indicates tokens the model generated
