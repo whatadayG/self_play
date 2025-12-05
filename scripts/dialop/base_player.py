@@ -130,13 +130,9 @@ class BaseModelPlayer(ABC):
         }
         
         # Generate response
-        try:
-            response_text, input_tokens, output_tokens = self._generate_text(self.messages, **gen_kwargs)
-        except Exception as e:
-            self.console.print(f"[red]Generation error: {e}[/red]")
-            response_text = "I need to think about this."
-            input_tokens = 0
-            output_tokens = len(response_text.split())
+        # NOTE: Generation failures (server errors, OOM, etc.) are catastrophic
+        # and should propagate to the game loop. Do NOT catch and return fallback.
+        response_text, input_tokens, output_tokens = self._generate_text(self.messages, **gen_kwargs)
         
         # Add assistant response to conversation history
         self.messages.append({"role": "assistant", "content": response_text})

@@ -229,10 +229,14 @@ class OptimizationEnv(DialogueEnv):
             })
             return obss, True
         except Exception as e:
+            # Catastrophic error (not a GameError) - fail the game entirely
+            # These are unexpected errors (bugs, invalid state) that should not
+            # produce training data. The game loop will handle this as terminal.
+            print(f"!!! CATASTROPHIC ERROR - Game failed")
             print(f"!!! {traceback.format_exc()}")
             return {
                 **{p: "error" for p in self.players},
-                "done": False,
+                "done": True,  # Fail the game - don't continue in invalid state
                 "reward": 0,
                 "turn_player": self.players[self.game.turn_player]
             }, True

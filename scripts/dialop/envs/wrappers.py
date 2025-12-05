@@ -138,9 +138,15 @@ class ForceProposal:
             turn_player = obss["turn_player"]
             if turn_player in self.players and turn_player in obss:
                 obss[turn_player] = self._insert_word_limit(obss[turn_player])
-        except Exception:
-            # Defensive — never allow the wrapper to crash; fall back to raw obs
-            pass
+        except Exception as e:
+            # Log the error but continue with raw observation
+            # This is defensive to prevent wrapper bugs from killing games,
+            # but we log loudly so issues don't go unnoticed
+            import traceback
+            print(f"!!! WARNING: ForceProposal wrapper failed to insert word limit")
+            print(f"!!! Exception: {e}")
+            print(f"!!! {traceback.format_exc()}")
+            # Fall back to raw obs without word limit
 
         return obss, resample
 
