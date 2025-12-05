@@ -51,8 +51,10 @@ class SGLangModelPlayer(BaseModelPlayer):
         self.optional = optional or {}
         self.last_generation_logprobs = None  # Store logprobs from last generation
         self.all_generated_logprobs: List[List[float]] = []  # Store logprobs per assistant message (one sublist per message)
+        self.all_generated_tokens: List[List[str]] = []  # Store token strings from SGLang (for debugging)
         self._assistant_prefix_token_count = None  # Cache for assistant prefix token count
         self._cached_mask_and_logprobs = None  # Cache for (mask, logprob_tensor) - only computed after conversation ends
+        self._cached_input_sequence = None  # Cache for token sequence built in _build_mask_and_logprobs
         # Validate configuration: exactly one mode should be configured
         # Design intent:
         # - Internal mode: engine and processing_class are provided (for training within verl)
@@ -201,10 +203,14 @@ class SGLangModelPlayer(BaseModelPlayer):
                 # Extract and store logprobs if available
                 logprobs_data = data["choices"][0].get("logprobs", None)
                 if logprobs_data and logprobs_data.get("content"):
-                    # Extract the logprob values for each token
+                    # Extract the logprob values AND token strings for each token
                     # SGLang returns: {"content": [{"token": "...", "logprob": float, ...}, ...]}
                     all_logprobs = [
                         token_data["logprob"]
+                        for token_data in logprobs_data["content"]
+                    ]
+                    all_tokens = [
+                        token_data["token"]
                         for token_data in logprobs_data["content"]
                     ]
                     # IMPORTANT: SGLang returns logprobs ONLY for completion tokens (output)
@@ -218,8 +224,10 @@ class SGLangModelPlayer(BaseModelPlayer):
                     # Append as a new sublist (one per assistant message)
                     # Use .copy() to ensure independent sublists (defensive against future modifications)
                     self.all_generated_logprobs.append(self.last_generation_logprobs.copy())
+                    self.all_generated_tokens.append(all_tokens.copy())
                     # Clear cache since we added new data
                     self._cached_mask_and_logprobs = None
+                    self._cached_input_sequence = None
                 else:
                     self.last_generation_logprobs = None
 
@@ -263,18 +271,12 @@ class SGLangModelPlayer(BaseModelPlayer):
                 self.tokenizer = self.processing_class
             else:
                 # Load tokenizer for external mode
-                try:
-                    # First try to load as a local path
-                    if os.path.exists(self.model_path):
-                        self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True, local_files_only=True)
-                    else:
-                        # Fall back to loading from Hugging Face hub
-                        self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
-                except Exception as e:
-                    # If loading fails, try a common base model tokenizer as fallback
-                    print(f"Warning: Failed to load tokenizer from {self.model_path}: {e}")
-                    print("Falling back to Qwen2.5-7B-Instruct tokenizer")
-                    self.tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2.5-7B-Instruct", trust_remote_code=True)
+                # Load tokenizer from model_path - fail loudly if it doesn't work
+                if os.path.exists(self.model_path):
+                    self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True, local_files_only=True)
+                else:
+                    # Fall back to loading from Hugging Face hub
+                    self.tokenizer = AutoTokenizer.from_pretrained(self.model_path, trust_remote_code=True)
                 
                 if self.tokenizer.pad_token is None:
                     self.tokenizer.pad_token = self.tokenizer.eos_token
@@ -354,16 +356,14 @@ class SGLangModelPlayer(BaseModelPlayer):
         Returns:
             List of token IDs representing the input sequence
         """
-        self._load_tokenizer()
+        # Use the cached sequence from _build_mask_and_logprobs if available
+        # This ensures get_input_sequence() and get_assistant_mask() use the same tokenization
+        if self._cached_input_sequence is not None:
+            return self._cached_input_sequence
 
-        # Apply chat template and tokenize
-        input_text = self.tokenizer.apply_chat_template(
-            self.messages,
-            tokenize=False,
-            add_generation_prompt=False
-        )
-        input_tokens = self.tokenizer.encode(input_text, add_special_tokens=False)
-        return input_tokens
+        # If not cached, build it (which will cache it)
+        self._build_mask_and_logprobs()
+        return self._cached_input_sequence
 
     def _build_mask_and_logprobs(self) -> Tuple[List[int], List[float]]:
         """Build both assistant mask and logprob tensor by scanning token sequence.
@@ -393,29 +393,78 @@ class SGLangModelPlayer(BaseModelPlayer):
 
         self._load_tokenizer()
 
-        # Tokenize full conversation using chat template
-        full_text = self.tokenizer.apply_chat_template(
-            self.messages,
-            tokenize=False,
-            add_generation_prompt=False
-        )
-        full_tokens = self.tokenizer.encode(full_text, add_special_tokens=False)
+        # Build token sequence from actual generated tokens (not re-tokenization)
+        # For assistant messages, use SGLang's actual tokens to avoid tokenization mismatches
+        full_tokens = []
+
+        # Get special token IDs
+        im_start_id = self.tokenizer.convert_tokens_to_ids("<|im_start|>")
+        im_end_id = self.tokenizer.convert_tokens_to_ids("<|im_end|>")
+        newline_id = self.tokenizer.encode("\n", add_special_tokens=False)[0]
+
+        # Track assistant message index for accessing all_generated_tokens
+        assistant_msg_count = 0
+
+        for msg in self.messages:
+            role = msg["role"]
+            content = msg["content"]
+
+            # Add message header: <|im_start|>{role}\n
+            full_tokens.append(im_start_id)
+            role_tokens = self.tokenizer.encode(role, add_special_tokens=False)
+            full_tokens.extend(role_tokens)
+            full_tokens.append(newline_id)
+
+            # Add message content
+            if role == "assistant":
+                # Use actual generated tokens from SGLang (avoid re-tokenization mismatch)
+                if assistant_msg_count < len(self.all_generated_tokens):
+                    sglang_tokens = self.all_generated_tokens[assistant_msg_count]
+                    # Convert token strings to IDs INCLUDING <|im_end|> if SGLang generated it
+                    # SGLang's tokens include <|im_end|> with its own logprob
+                    sglang_includes_im_end = sglang_tokens and sglang_tokens[-1] == "<|im_end|>"
+
+                    for token_str in sglang_tokens:
+                        # Convert token string to ID
+                        token_id = self.tokenizer.encode(token_str, add_special_tokens=False)[0]
+                        full_tokens.append(token_id)
+
+                    # Add newline after message (this is template-added, not generated)
+                    full_tokens.append(newline_id)
+
+                    assistant_msg_count += 1
+                    continue  # Skip the template <|im_end|> addition below since SGLang included it
+                else:
+                    # Fallback: tokenize normally if we don't have stored tokens
+                    content_tokens = self.tokenizer.encode(content, add_special_tokens=False)
+                    full_tokens.extend(content_tokens)
+                    assistant_msg_count += 1
+            else:
+                # For system/user messages, tokenize normally
+                content_tokens = self.tokenizer.encode(content, add_special_tokens=False)
+                full_tokens.extend(content_tokens)
+
+            # Add message suffix: <|im_end|>\n (for non-assistant or fallback)
+            full_tokens.append(im_end_id)
+            full_tokens.append(newline_id)
 
         # Initialize mask and logprob tensor
         mask = [0] * len(full_tokens)
         logprob_tensor = [0.0] * len(full_tokens)
 
-        # Get special token IDs
-        im_start_id = self.tokenizer.convert_tokens_to_ids("<|im_start|>")
-        im_end_id = self.tokenizer.convert_tokens_to_ids("<|im_end|>")
+        # Get assistant token ID (for scanning)
         assistant_id = self.tokenizer.encode("assistant", add_special_tokens=False)[0]
-        newline_id = self.tokenizer.encode("\n", add_special_tokens=False)[0]
 
         # Count expected assistant messages
         num_assistant_messages = sum(1 for msg in self.messages if msg["role"] == "assistant")
 
         # Validate we have logprobs for all assistant messages
         if len(self.all_generated_logprobs) != num_assistant_messages:
+            self._dump_debug_info_on_error(
+                error_type="logprob_sublist_count_mismatch",
+                num_assistant_messages=num_assistant_messages,
+                num_logprob_sublists=len(self.all_generated_logprobs),
+            )
             raise RuntimeError(
                 f"Mismatch between assistant messages ({num_assistant_messages}) "
                 f"and collected logprob sublists ({len(self.all_generated_logprobs)}). "
@@ -440,6 +489,12 @@ class SGLangModelPlayer(BaseModelPlayer):
 
                 # Get logprobs for this assistant message
                 if assistant_msg_idx >= len(self.all_generated_logprobs):
+                    self._dump_debug_info_on_error(
+                        error_type="assistant_message_without_logprobs",
+                        assistant_msg_idx=assistant_msg_idx,
+                        num_logprob_sublists=len(self.all_generated_logprobs),
+                        position=i,
+                    )
                     raise RuntimeError(
                         f"Found more assistant messages in token sequence than collected logprob sublists. "
                         f"Processing assistant message #{assistant_msg_idx + 1} but only have {len(self.all_generated_logprobs)} sublists."
@@ -461,6 +516,14 @@ class SGLangModelPlayer(BaseModelPlayer):
                     # If this was <|im_end|>, we should have consumed all logprobs
                     if full_tokens[i] == im_end_id:
                         if msg_logprob_idx != len(current_message_logprobs):
+                            self._dump_debug_info_on_error(
+                                error_type="logprob_mismatch_at_im_end",
+                                assistant_msg_idx=assistant_msg_idx + 1,
+                                position=i,
+                                consumed_logprobs=msg_logprob_idx,
+                                expected_logprobs=len(current_message_logprobs),
+                                unclaimed_logprobs=len(current_message_logprobs) - msg_logprob_idx,
+                            )
                             raise RuntimeError(
                                 f"Found <|im_end|> at position {i} for assistant message #{assistant_msg_idx + 1}, "
                                 f"but only consumed {msg_logprob_idx}/{len(current_message_logprobs)} logprobs. "
@@ -482,6 +545,14 @@ class SGLangModelPlayer(BaseModelPlayer):
                             j += 1
 
                         if remaining_tokens:
+                            self._dump_debug_info_on_error(
+                                error_type="tokens_without_logprobs",
+                                assistant_msg_idx=assistant_msg_idx + 1,
+                                position=i,
+                                consumed_logprobs=len(current_message_logprobs),
+                                remaining_tokens_count=len(remaining_tokens),
+                                remaining_tokens_sample=remaining_tokens[:5],
+                            )
                             raise RuntimeError(
                                 f"Consumed all {len(current_message_logprobs)} logprobs for assistant message #{assistant_msg_idx + 1}, "
                                 f"but found {len(remaining_tokens)} more tokens before <|im_end|>: {remaining_tokens[:5]}. "
@@ -498,6 +569,15 @@ class SGLangModelPlayer(BaseModelPlayer):
                     # Note: assistant_msg_idx indexes into all_generated_logprobs, not self.messages
                     assistant_messages = [msg for msg in self.messages if msg["role"] == "assistant"]
                     current_msg_content = assistant_messages[assistant_msg_idx]['content'] if assistant_msg_idx < len(assistant_messages) else "N/A"
+
+                    self._dump_debug_info_on_error(
+                        error_type="chat_template_logprob_mismatch",
+                        assistant_msg_idx=assistant_msg_idx + 1,
+                        consumed_tokens=msg_logprob_idx,
+                        expected_logprobs=len(current_message_logprobs),
+                        difference=len(current_message_logprobs) - msg_logprob_idx,
+                        message_content_preview=current_msg_content[:200] if current_msg_content != "N/A" else "N/A",
+                    )
 
                     error_msg = (
                         f"Logprob/token alignment failure for assistant message #{assistant_msg_idx + 1}:\n"
@@ -524,13 +604,19 @@ class SGLangModelPlayer(BaseModelPlayer):
 
         # Verify we processed all assistant messages
         if assistant_msg_idx != num_assistant_messages:
+            self._dump_debug_info_on_error(
+                error_type="assistant_message_count_mismatch",
+                found_count=assistant_msg_idx,
+                expected_count=num_assistant_messages,
+            )
             raise RuntimeError(
                 f"Found {assistant_msg_idx} assistant messages in token sequence "
                 f"but expected {num_assistant_messages} based on self.messages."
             )
 
-        # Cache the result
+        # Cache the result along with the token sequence
         self._cached_mask_and_logprobs = (mask, logprob_tensor)
+        self._cached_input_sequence = full_tokens
 
         return mask, logprob_tensor
 
@@ -609,7 +695,86 @@ class SGLangModelPlayer(BaseModelPlayer):
         """
         _, logprob_tensor = self._build_mask_and_logprobs()
         return logprob_tensor
-    
+
+    def _get_full_conversation_text(self) -> str:
+        """Get the full conversation as text (for debugging).
+
+        Returns:
+            The full conversation formatted with the chat template
+        """
+        self._load_tokenizer()
+        return self.tokenizer.apply_chat_template(
+            self.messages,
+            tokenize=False,
+            add_generation_prompt=False
+        )
+
+    def _dump_debug_info_on_error(self, error_type: str, **kwargs):
+        """Dump complete state for debugging mask/logprob errors.
+
+        Saves all relevant information to a JSON file for later analysis and replay.
+
+        Args:
+            error_type: Type of error (e.g., "logprob_mismatch", "exception")
+            **kwargs: Additional error-specific details
+        """
+        import json
+        from datetime import datetime
+
+        # Create debug dumps directory
+        debug_dir = "debug_dumps"
+        os.makedirs(debug_dir, exist_ok=True)
+
+        # Unique filename with microsecond precision
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        filename = f"{error_type}_{self.role}_{timestamp}.json"
+        filepath = os.path.join(debug_dir, filename)
+
+        # Load tokenizer if needed
+        self._load_tokenizer()
+
+        # Collect ALL relevant state
+        debug_data = {
+            "error_type": error_type,
+            "error_details": kwargs,
+            "role": self.role,
+            "model_path": self.model_path,
+
+            # Conversation state
+            "messages": self.messages,
+            "num_messages": len(self.messages),
+            "num_assistant_messages": sum(1 for m in self.messages if m["role"] == "assistant"),
+
+            # Logprob collection
+            "all_generated_logprobs": self.all_generated_logprobs,
+            "all_generated_tokens": self.all_generated_tokens,  # Token strings from SGLang
+            "num_sublists": len(self.all_generated_logprobs),
+            "sublist_lengths": [len(s) for s in self.all_generated_logprobs],
+            "total_logprobs": sum(len(s) for s in self.all_generated_logprobs),
+
+            # Tokenization
+            "tokenizer_name": self.tokenizer.name_or_path if self.tokenizer else None,
+            "full_text": self._get_full_conversation_text(),
+            "full_tokens": self.get_input_sequence(),
+            "full_tokens_length": len(self.get_input_sequence()),
+
+            # Config
+            "config": {
+                "temperature": self.config.temperature,
+                "max_tokens": self.config.max_tokens,
+                "top_p": self.config.top_p,
+                "server_url": self.config.server_url if hasattr(self.config, 'server_url') else None,
+            },
+        }
+
+        # Save to file
+        try:
+            with open(filepath, 'w') as f:
+                json.dump(debug_data, f, indent=2, default=str)
+            print(f"\n[DEBUG DUMP] Saved error context to: {filepath}")
+        except Exception as e:
+            print(f"\n[DEBUG DUMP] Failed to save debug info: {e}")
+
     def _generate_text_internal(self, messages: List[Dict[str, str]], **gen_kwargs) -> Tuple[str, int, int]:
         """Generate text using internal SGLang engine.
         

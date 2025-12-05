@@ -159,8 +159,9 @@ def run_one_game(
         current = obs["turn_player"]
         player = p1 if current == "player-1" else p2
 
-        # Update player metadata with current turn number for cache tracing
-        player.optional["turn"] = turn
+        # Update player metadata with current turn number for cache tracing (if supported)
+        if hasattr(player, 'optional') and player.optional is not None:
+            player.optional["turn"] = turn
 
         retries = 0
         while True:
@@ -373,8 +374,9 @@ def run_one_game_vs_opponent(
         player = p1 if current == "player-1" else p2
         is_trainee_turn = (current == trainee.role)
 
-        # Update player metadata with current turn number for cache tracing
-        player.optional["turn"] = turn
+        # Update player metadata with current turn number for cache tracing (if supported)
+        if hasattr(player, 'optional') and player.optional is not None:
+            player.optional["turn"] = turn
 
         retries = 0
         while True:
@@ -468,6 +470,11 @@ def process_game_result(result: Dict[str, Any], max_model_len: int) -> List[Dict
 
         # Get policy logprobs tensor (aligned with input_ids and loss_mask)
         policy_logprobs = p.get_generated_logprob_tensor()
+
+        # Truncate policy_logprobs to max_model_len (same as input_ids truncation)
+        # This preserves alignment checking - if they mismatch for OTHER reasons, we'll catch it
+        if len(policy_logprobs) > max_model_len:
+            policy_logprobs = policy_logprobs[:max_model_len]
 
         rows.append(
             {
