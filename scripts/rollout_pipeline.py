@@ -794,6 +794,104 @@ def _export_example_games(df: pd.DataFrame, output_path: Path, n_per_category: i
         output_path.touch()
 
 
+def _export_single_player_perspective(df: pd.DataFrame, output_path: Path, n_samples: int = 10) -> None:
+    """Export games from a single player's perspective showing what they actually see.
+
+    This helps debug what context the model receives during gameplay.
+
+    Args:
+        df: DataFrame with game data (can be messages-format or pretokenized-format)
+        output_path: Path to write single_player_examples.txt
+        n_samples: Number of random games to export
+    """
+    try:
+        # Check data format
+        has_messages = "messages" in df.columns
+        has_conversation = "conversation" in df.columns
+
+        if not has_messages and not has_conversation:
+            print("Warning: No 'messages' or 'conversation' column found, skipping single-player perspective export")
+            return
+
+        # Sample random games
+        unique_games = df.groupby('game_id').first().reset_index()
+        n_samples = min(n_samples, len(unique_games))
+        sampled_games = unique_games.sample(n=n_samples, random_state=42)
+
+        with open(output_path, "w") as f:
+            f.write("=" * 80 + "\n")
+            f.write("SINGLE PLAYER PERSPECTIVE EXAMPLES\n")
+            f.write("(What the model actually sees during gameplay)\n")
+            f.write("=" * 80 + "\n\n")
+
+            for idx, row in sampled_games.iterrows():
+                game_id = row.get("game_id", "?")
+                player_name = row.get("player_name", "?")
+                reward = row.get("game_normalized_reward", row.get("reward", 0))
+
+                f.write("\n" + "=" * 80 + "\n")
+                f.write(f"Game ID: {game_id}, Player: {player_name}\n")
+                f.write(f"Reward: {reward:.4f}\n")
+                f.write("=" * 80 + "\n\n")
+
+                # Extract conversation data
+                try:
+                    # Try messages column first (SFT format)
+                    if has_messages:
+                        messages = row.get("messages", [])
+                        if isinstance(messages, str):
+                            messages = json.loads(messages)
+
+                        if not messages:
+                            f.write("[No messages found]\n\n")
+                            continue
+
+                        f.write(f"Total messages in conversation: {len(messages)}\n\n")
+
+                        for msg_idx, msg in enumerate(messages):
+                            role = msg.get("role", "unknown")
+                            content = msg.get("content", "")
+
+                            f.write(f"--- Message {msg_idx} ({role}) ---\n")
+                            f.write(content)
+                            f.write("\n\n")
+
+                    # Try conversation column (pretokenized format)
+                    elif has_conversation:
+                        conversation = row.get("conversation", [])
+                        if isinstance(conversation, str):
+                            conversation = json.loads(conversation)
+
+                        if not conversation:
+                            f.write("[No conversation found]\n\n")
+                            continue
+
+                        f.write(f"Total turns in conversation: {len(conversation)}\n\n")
+
+                        for turn_idx, turn in enumerate(conversation):
+                            player = turn.get("player", "unknown")
+                            message = turn.get("message", "")
+                            turn_num = turn.get("turn", turn_idx)
+
+                            f.write(f"--- Turn {turn_num} ({player}) ---\n")
+                            f.write(message)
+                            f.write("\n\n")
+
+                except Exception as e:
+                    f.write(f"[Error parsing conversation: {e}]\n\n")
+
+                f.write("\n" + "=" * 80 + "\n\n")
+
+        print(f"Exported {n_samples} single-player perspective examples to {output_path}")
+
+    except Exception as e:
+        print(f"Warning: Failed to export single-player examples: {e}")
+        import traceback
+        traceback.print_exc()
+        # Create empty file so pipeline doesn't break
+        output_path.touch()
+
+
 def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None) -> RolloutStats:
     """
     Process raw rollouts: compute stats, trim, export examples, log metrics.
@@ -1331,6 +1429,10 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
     # Export example games (from original df including failures, for debugging)
     examples_path = round_dir / "examples.txt"
     _export_example_games(df, examples_path, n_per_category=5)
+
+    # Export single-player perspective examples (shows what model actually sees)
+    single_player_examples_path = round_dir / "single_player_examples.txt"
+    _export_single_player_perspective(df, single_player_examples_path, n_samples=10)
 
     # Create RolloutStats object
     stats = RolloutStats(
