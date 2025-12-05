@@ -137,7 +137,7 @@ class OptimizationEnv(DialogueEnv):
                     must_respond = (self.game.proposal is not None),
                     edited_prompt_propose = False,
                     )
-            type_ = m["mtype"]
+            type_ = m["mtype"].lower()  # Normalize to lowercase for comparison
             content = m["msg"]
             if propose and type_ != "propose":
                 # NOTE: i don't think this ever happen?
@@ -324,17 +324,27 @@ class OptimizationEnv(DialogueEnv):
         return best_option
 
     def _parse_proposal(self, message):
+        # Find "Proposal:" in the message and only parse what comes after it
+        # This allows for explanatory text before "Proposal:" as shown in the prompt:
+        # [propose] <anything you want to say to your partner> Proposal: ...
+        if "Proposal:" not in message:
+            raise GameError(
+                "Your proposal after [propose] <anything you want to say to your partner> must contain 'Proposal:' (capital P, trailing colon). "
+                "You can put a message between '[propose]' and 'Proposal:', but the formal proposal must start with 'Proposal:'"
+            )
+
+        # Extract everything after "Proposal:" (including "Proposal:" itself)
+        proposal_section = "Proposal:" + message.split("Proposal:", 1)[1]
+
         pattern = r"\n|<br/>"
-        proposal_lines = re.split(pattern, message)
+        proposal_lines = re.split(pattern, proposal_section)
         proposal_lines = [line.strip() for line in proposal_lines]
         proposal_lines = [line for line in proposal_lines if line]
-        # print(f"*****************************************************\n{message}")
-        # print(len(proposal_lines))
-        # Validate header line
+
+        # Validate header line (should now always be first line)
         if not proposal_lines[0].startswith("Proposal:"):
             raise GameError(
-                "Your proposal after [propose] <anything you want to say to your partner> must start with 'Proposal:' (capital P, trailing colon)."
-                "Recall that you cannot input any message after 'Proposal:'. You can only put your proposal after 'Proposal:', but you can put a message between '[propose] and 'Proposal:'"
+                "Internal error: Proposal header not found at expected position."
             )
 
         # Validate that the correct number of assignment lines are present
