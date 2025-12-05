@@ -29,13 +29,19 @@ class OptimizationEnv(DialogueEnv):
         self.current_turn = 0
         self.current_retry = 0
 
-    def reset(self, game_state=None):
+    def reset(self, game_state=None, seed=None):
+        """Reset the environment with a new game.
+
+        Args:
+            game_state: Optional saved game state to restore from
+            seed: Optional random seed for deterministic game generation
+        """
         if game_state is not None:
             self.game = OptimizationGame.create_from_game_state(game_state, one_player=self.one_player)
             self.game.action_log = game_state["action_log"]
         else:
             self.game = OptimizationGame({}, one_player=self.one_player)
-            self.game.reset()
+            self.game.reset(seed=seed)
         # Compute score range
         self.best_score = self.game.best_assignment_reward
         self.num_msgs = 0

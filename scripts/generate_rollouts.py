@@ -25,7 +25,27 @@ from dialop.sglang_model_player import SGLangModelPlayer, SGLangConfig
 from dialop.envs.optimization import OptimizationEnv
 
 
-def run_one_game(player_cfg: dict, model_id: str, instructions: str, game_id: int = 0) -> Dict[str, Any]:
+def run_one_game(
+    player_cfg: dict,
+    model_id: str,
+    instructions: str,
+    game_id: int = 0,
+    group_size: int = 8,
+    base_seed: int = 42
+) -> Dict[str, Any]:
+    """Run a single game between two players.
+
+    Args:
+        player_cfg: Player configuration dict
+        model_id: Model identifier
+        instructions: Game instructions
+        game_id: Unique game ID (0 to total_games-1)
+        group_size: Number of replays per unique initial state
+        base_seed: Base random seed for game generation
+
+    Returns:
+        Dict containing game results, players, rewards, etc.
+    """
     # Build two players sharing the same server config
     console = type("_C", (), {"print": lambda *args, **kwargs: None, "rule": lambda *args, **kwargs: None})()
     cfg = SGLangConfig(
@@ -68,7 +88,13 @@ def run_one_game(player_cfg: dict, model_id: str, instructions: str, game_id: in
         max_turns=player_cfg.get("max_turns", 30),
         max_retries_per_turn=player_cfg.get("max_retries_per_turn", 8)
     )
-    obs = env.reset(game_state=None)
+
+    # GRPO grouping: compute unique game seed based on group membership
+    # Games 0-7 (group 0) get same seed, games 8-15 (group 1) get different seed, etc.
+    unique_game_id = game_id // group_size
+    game_seed = base_seed + unique_game_id * 10000  # Large offset to avoid collisions
+
+    obs = env.reset(game_state=None, seed=game_seed)
     p1.observe(obs["player-1"])  # give initial observation
     p2.observe(obs["player-2"])  # give initial observation
 
@@ -180,11 +206,24 @@ def run_one_game_vs_opponent(
     trainee_cfg: dict,
     opponent_cfg: dict,
     game_id: int = 0,
+    group_size: int = 8,
+    base_seed: int = 42,
     trainee_is_p1: bool = True
 ) -> Dict[str, Any]:
     """
     Asymmetric mode: trainee vs fixed opponent with different prompts.
     Only returns trainee player sequences for training.
+
+    Args:
+        trainee_cfg: Trainee player configuration dict
+        opponent_cfg: Opponent player configuration dict
+        game_id: Unique game ID (0 to total_games-1)
+        group_size: Number of replays per unique initial state
+        base_seed: Base random seed for game generation
+        trainee_is_p1: Whether trainee plays as player 1
+
+    Returns:
+        Dict containing game results with only trainee player data
     """
     # Create separate server configs
     trainee_server_cfg = SGLangConfig(
@@ -235,7 +274,12 @@ def run_one_game_vs_opponent(
         max_turns=trainee_cfg.get("max_turns", 30),
         max_retries_per_turn=trainee_cfg.get("max_retries_per_turn", 8)
     )
-    obs = env.reset(game_state=None)
+
+    # GRPO grouping: compute unique game seed based on group membership
+    unique_game_id = game_id // group_size
+    game_seed = base_seed + unique_game_id * 10000  # Large offset to avoid collisions
+
+    obs = env.reset(game_state=None, seed=game_seed)
     p1.observe(obs["player-1"])
     p2.observe(obs["player-2"])
 
@@ -380,6 +424,7 @@ def worker_process(
     model_id: str,
     instructions: str,
     max_model_len: int,
+    group_size: int,
     seed: int,
     process_id: int,
 ):
@@ -393,6 +438,7 @@ def worker_process(
         model_id: Model identifier
         instructions: Game instructions
         max_model_len: Maximum model sequence length
+        group_size: Number of replays per unique initial state
         seed: Random seed base
         process_id: ID of this process for seeding
     """
@@ -408,7 +454,7 @@ def worker_process(
                 return  # No more work
 
             try:
-                result = run_one_game(player_cfg, model_id, instructions, game_id)
+                result = run_one_game(player_cfg, model_id, instructions, game_id, group_size, seed)
                 rows = process_game_result(result, max_model_len)
                 result_queue.put(rows)
             except Exception as e:
@@ -435,6 +481,7 @@ def worker_process_asymmetric(
     trainee_cfg: Dict[str, Any],
     opponent_cfg: Dict[str, Any],
     max_model_len: int,
+    group_size: int,
     seed: int,
     process_id: int,
 ):
@@ -447,6 +494,7 @@ def worker_process_asymmetric(
         trainee_cfg: Trainee player configuration (including instructions, model_id, server_url)
         opponent_cfg: Opponent player configuration
         max_model_len: Maximum model sequence length
+        group_size: Number of replays per unique initial state
         seed: Random seed base
         process_id: ID of this process for seeding
     """
@@ -464,7 +512,7 @@ def worker_process_asymmetric(
             try:
                 # Randomize trainee position for balanced data
                 trainee_is_p1 = (game_id % 2 == 0)
-                result = run_one_game_vs_opponent(trainee_cfg, opponent_cfg, game_id, trainee_is_p1)
+                result = run_one_game_vs_opponent(trainee_cfg, opponent_cfg, game_id, group_size, seed, trainee_is_p1)
                 rows = process_game_result(result, max_model_len)
                 result_queue.put(rows)
             except Exception as e:
@@ -575,13 +623,12 @@ def main():
     # Calculate total games to play: num_games * group_size
     total_games = args.num_games * args.group_size
     total_workers = args.num_procs * args.threads_per_proc
-    print(
-        f"Mode: {args.mode}"
-    )
-    print(
-        f"Starting generation of {total_games} total games "
-        f"({args.num_games} unique games × {args.group_size} plays each)"
-    )
+    print(f"Mode: {args.mode}")
+    print(f"GRPO Grouping Strategy:")
+    print(f"  - {args.num_games} unique initial states (deterministic from seed)")
+    print(f"  - {args.group_size} rollouts per initial state (sampling randomness)")
+    print(f"  - {total_games} total rollouts")
+    print(f"  - Each group of {args.group_size} rollouts shares the same game setup")
     print(
         f"Worker configuration: {args.num_procs} processes × {args.threads_per_proc} threads = {total_workers} concurrent workers"
     )
@@ -617,6 +664,7 @@ def main():
                     args.model_id,
                     instructions,
                     args.max_model_len,
+                    args.group_size,
                     args.seed,
                     proc_id,
                 )
@@ -631,6 +679,7 @@ def main():
                     trainee_cfg,
                     opponent_cfg,
                     args.max_model_len,
+                    args.group_size,
                     args.seed,
                     proc_id,
                 )

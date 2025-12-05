@@ -63,8 +63,15 @@ class Table:
         if self.num_rows != self.num_cols:
           raise NotImplementedError("Only bipartite matchings are supported.")
 
-    def randomize(self):
-        self.values = np.random.randint(0, self.max_val, (self.num_rows, self.num_cols))
+    def randomize(self, rng=None):
+        """Randomize table values.
+
+        Args:
+            rng: Optional numpy RandomState for deterministic generation
+        """
+        if rng is None:
+            rng = np.random
+        self.values = rng.randint(0, self.max_val, (self.num_rows, self.num_cols))
 
     def set_values(self, values):
         self.values = values
@@ -87,9 +94,16 @@ class Table:
         score = self.score(assignment)
         return assignment, score
 
-    def get_random_view(self, p_cell_observed):
-        """Returns a new Table instance representing a view of this table."""
-        unknown = np.random.choice(2, self.values.shape, p=[p_cell_observed,
+    def get_random_view(self, p_cell_observed, rng=None):
+        """Returns a new Table instance representing a view of this table.
+
+        Args:
+            p_cell_observed: Probability that a cell is observed
+            rng: Optional numpy RandomState for deterministic generation
+        """
+        if rng is None:
+            rng = np.random
+        unknown = rng.choice(2, self.values.shape, p=[p_cell_observed,
           1.0 - p_cell_observed])
         output_values = np.ma.masked_array(self.values, mask=unknown)
         output_values = np.ma.filled(output_values, self.empty_val)
@@ -188,9 +202,15 @@ class OptimizationGame(DialogueGame):
         game.combined_tables = None
         return game
 
-    def reset(self, randomize=True):
+    def reset(self, randomize=True, seed=None):
         """Regenerates a new game table and returns initial observations
-        for each player."""
+        for each player.
+
+        Args:
+            randomize: If True, generate a random game. If False, skip generation.
+            seed: Optional random seed for deterministic game generation.
+                  If provided, the same seed will always produce the same game.
+        """
         self.start_time = time.time()
         self.action_log = []
         self.message_history = []
@@ -200,12 +220,28 @@ class OptimizationGame(DialogueGame):
         self.proposal_reward = 0
         self.best_assignment_reward = 0
 
+        # Create random number generators if seed is provided
+        if seed is not None:
+            np_rng = np.random.RandomState(seed)
+            py_rng = random.Random(seed)
+        else:
+            np_rng = None
+            py_rng = None
+
         counter = 0
         while True and randomize:
+            # Create table with explicit randomization using seed
             self.table = Table(self.num_rows, self.num_cols)
-            view1, known1 = self.table.get_random_view(self.p_cell_observed)
-            view2, known2 = self.table.get_random_view(self.p_cell_observed)
-            scale1, scale2 = random.uniform(1,10), random.uniform(1,10)
+            self.table.randomize(rng=np_rng)
+
+            view1, known1 = self.table.get_random_view(self.p_cell_observed, rng=np_rng)
+            view2, known2 = self.table.get_random_view(self.p_cell_observed, rng=np_rng)
+
+            # Use seeded random for scales if seed provided
+            if py_rng is not None:
+                scale1, scale2 = py_rng.uniform(1, 10), py_rng.uniform(1, 10)
+            else:
+                scale1, scale2 = random.uniform(1, 10), random.uniform(1, 10)
             self.scales = [scale1, scale2]
             self.masks = [known1, known2]
             # If neither player knows a value, set it to the mean:
