@@ -27,7 +27,7 @@ from dialop.envs import (
     AsymmetricForceProposal
 )
 from dialop.players import (
-    LLMPlayer,
+    OpenAIModelPlayer,
     HumanPlayer,
     DryRunPlayer,
     OutOfContextError
@@ -187,7 +187,7 @@ def full_conversation_reproposal(
     3. Automatically detects who made the original final proposal 
     4. Sets that same player to make the new proposal
     5. The non-proposer automatically responds with "Lets think step by step. [accept]"
-    6. Both players remain as LLMPlayer objects but auto-acceptance is handled in the game loop
+    6. Both players remain as OpenAIModelPlayer objects but auto-acceptance is handled in the game loop
     """
     for game_idx, game in enumerate(games[resume:end]):
         if game_cls == OptimizationEnv:
@@ -464,13 +464,13 @@ def run(
                         auto_respond_to_proposal = False  # Reset flag
                         print(f"Auto-responding to proposal: {resp}")
                     elif must_propose_now:
-                        if hasattr(players[current_player], 'model_kwargs'):  # LLMPlayer
+                        if hasattr(players[current_player], 'model_kwargs'):  # OpenAIModelPlayer
                             resp = players[current_player].respond(t=t, propose=True)
                         else:  # DryRunPlayer
                             players[current_player].prompt += "System: Remember, you must include '[message]' or '[propose]' or '[accept]' or '[reject]' tags in your response."
                             resp = players[current_player].respond()
                     else:
-                        if hasattr(players[current_player], 'model_kwargs'):  # LLMPlayer
+                        if hasattr(players[current_player], 'model_kwargs'):  # OpenAIModelPlayer
                             resp = players[current_player].respond(t=t)
                         else:  # DryRunPlayer
                             resp = players[current_player].respond()
@@ -789,19 +789,19 @@ def main(
                                                    optional=optional)
                     else:
                         print(f"Warning: Local model players not available, falling back to API")
-                        return LLMPlayer(prompt, role, console,
+                        return OpenAIModelPlayer(prompt, role, console,
                                        optional=optional,
                                        model_kwargs={'model': model_id})
                 else:
                     # Use API-based player
-                    return LLMPlayer(prompt, role, console,
+                    return OpenAIModelPlayer(prompt, role, console,
                                    optional=optional,
                                    model_kwargs={'model': model_id})
             
             player1 = create_player(p1_prompt, p1, agent_model_id, optional1)
             player2 = create_player(p2_prompt, p2, user_model_id, optional2)
             
-            # In full_conversation_reproposal mode, both players remain as LLMPlayer objects
+            # In full_conversation_reproposal mode, both players remain as OpenAIModelPlayer objects
             # The original proposer will naturally make the proposal, and the other will respond naturally
             if current_mode == "full_conversation_reproposal":
                 print(f"Mode: {current_mode} - {current_proposer} will make the proposal, non-proposer will auto-accept with 'Lets think step by step. [accept]'")
