@@ -10,6 +10,7 @@ import requests
 import pandas as pd
 import numpy as np
 from typing import Tuple, Optional, Dict, Any
+from dotenv import load_dotenv
 
 # Make the scripts directory importable so we can load the rollout pipeline
 try:
@@ -736,6 +737,9 @@ def run_tee(cmd: list[str], logfile: Path, env=None):
 
 
 def main():
+    # Load environment variables from .env file (e.g., WANDB_API_KEY)
+    load_dotenv()
+
     ap = argparse.ArgumentParser()
     ap.add_argument("--rounds", type=int, default=1)
     ap.add_argument("--games-per-round", type=int, default=256)
