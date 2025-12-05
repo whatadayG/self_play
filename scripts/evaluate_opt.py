@@ -761,11 +761,15 @@ def main(
             players = {p1: DryRunPlayer(p1_prompt, p1, console),
                        p2:  DryRunPlayer(p2_prompt, p2, console)}
         else:
-            # Create base players - check if model is local or API-based
+            # Player selection logic:
+            # 1. If --use-sglang: Use SGLang server (for training/eval with local models)
+            # 2. Else if model_id contains "/" and not "gpt": Try local model players (HF/vLLM)
+            # 3. Else: Use OpenAI API player (for GPT models like gpt-4, gpt-5-mini, etc.)
             def create_player(prompt, role, model_id, optional=None):
-                # When using sglang, always use the sglang server and ignore model_id
+                # Option 1: SGLang server (highest priority when flag is set)
                 if use_sglang:
-                    print(f"Using SglangModelPlayer for {role} at {sglang_url} (ignoring model_id)")
+                    print(f"[SGLang] Using SglangModelPlayer for {role} at {sglang_url}")
+                    print(f"         (model_id '{model_id}' ignored, using server's loaded model)")
                     return SglangModelPlayer(
                         prompt,
                         role,
@@ -774,29 +778,33 @@ def main(
                         sglang_url=sglang_url,
                         temperature=temperature,
                     )
-                # Check if this is a local model (Hugging Face style path)
+
+                # Option 2: Local model (Hugging Face path like "meta-llama/Llama-2-7b")
                 if "/" in model_id and not model_id.startswith("gpt"):
                     if HFModelPlayer is not None:
-                        print(f"Using HFModelPlayer for {role} with model {model_id}")
+                        print(f"[Local] Using HFModelPlayer for {role} with model {model_id}")
                         return HFModelPlayer(prompt, role, console,
                                            model_path=model_id,
                                            optional=optional,
                                            temperature=temperature)
                     elif LocalModelPlayerVLLM is not None:
-                        print(f"Using LocalModelPlayerVLLM for {role} with model {model_id}")
+                        print(f"[Local] Using LocalModelPlayerVLLM for {role} with model {model_id}")
                         return LocalModelPlayerVLLM(prompt, role, console,
                                                    model_path=model_id,
                                                    optional=optional)
                     else:
-                        print(f"Warning: Local model players not available, falling back to API")
+                        print(f"[Fallback] Local model players not available, using OpenAI API")
+                        print(f"           Requesting model: {model_id}")
                         return OpenAIModelPlayer(prompt, role, console,
                                        optional=optional,
                                        model_kwargs={'model': model_id})
-                else:
-                    # Use API-based player
-                    return OpenAIModelPlayer(prompt, role, console,
-                                   optional=optional,
-                                   model_kwargs={'model': model_id})
+
+                # Option 3: OpenAI API player (GPT models)
+                print(f"[OpenAI API] Using OpenAIModelPlayer for {role}")
+                print(f"             Model: {model_id}")
+                return OpenAIModelPlayer(prompt, role, console,
+                                       optional=optional,
+                                       model_kwargs={'model': model_id})
             
             player1 = create_player(p1_prompt, p1, agent_model_id, optional1)
             player2 = create_player(p2_prompt, p2, user_model_id, optional2)
