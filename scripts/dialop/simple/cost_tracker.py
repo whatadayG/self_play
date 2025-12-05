@@ -32,6 +32,9 @@ class CostTracker:
         "gpt-4.1": {"input": 2.00, "output": 8.00},
         "gpt-4.1-mini": {"input": 0.40, "output": 1.60},
         "o3-2025-04-16": {"input": 1.00, "output": 4.00},
+        "gpt-5": {"input": 1.25, "output": 10.00},
+        "gpt-5-mini": {"input": 0.25, "output": 2.00},
+        "gpt-5-nano": {"input": 0.05, "output": 0.40},
 
         # Add other models as needed
     }

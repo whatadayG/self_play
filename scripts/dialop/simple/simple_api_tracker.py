@@ -37,6 +37,9 @@ class OpenAITracker:
         "gpt-4.1-mini": {"input": 0.4, "output": 1.6},
         "o4-mini": {"input": 1.1, "output": 4.4},
         "o3-2025-04-16": {"input": 2.00, "output": 8.00},
+        "gpt-5": {"input": 1.25, "output": 10.00},
+        "gpt-5-mini": {"input": 0.25, "output": 2.00},
+        "gpt-5-nano": {"input": 0.05, "output": 0.40},
     }
     
     def __init__(self, log_file: str = 'openai_usage.json'):
