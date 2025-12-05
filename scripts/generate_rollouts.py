@@ -582,8 +582,26 @@ def worker_process(
                     rows = process_game_result(result, max_model_len)
                 result_queue.put(rows)
             except Exception as e:
-                # Log failure but don't crash the worker
+                # Log failure with full traceback
+                import traceback
+                import sys
+                tb_str = ''.join(traceback.format_exception(*sys.exc_info()))
                 print(f"[Process {process_id}] Game {game_id} failed: {e}")
+                print(f"[Process {process_id}] Full traceback:\n{tb_str}")
+
+                # Also log to file for later analysis
+                log_dir = os.getenv("ROLLOUT_LOG_DIR", ".")
+                log_file = f"{log_dir}/game_failures_detailed.log"
+                try:
+                    with open(log_file, "a") as f:
+                        f.write(f"\n{'='*80}\n")
+                        f.write(f"Game {game_id} (Process {process_id})\n")
+                        f.write(f"Timestamp: {time.time()}\n")
+                        f.write(tb_str)
+                        f.write(f"\n{'='*80}\n")
+                except Exception as log_err:
+                    print(f"[Process {process_id}] Failed to write to log file: {log_err}")
+
                 # Put empty result to maintain progress tracking
                 result_queue.put([])
 
@@ -940,37 +958,25 @@ def main():
     # Group sequences by unique game sets for GRPO normalization
     print(f"Grouping sequences for GRPO normalization...")
 
-    # Sort rows by unique_game_id to ensure proper grouping
-    all_rows.sort(key=lambda x: x["game_id"] // args.group_size)
+    # Group sequences by their unique_game_id (game_id // group_size)
+    # This ensures we only compare rollouts that started from the SAME initial state
+    from collections import defaultdict
+    groups_by_unique_id = defaultdict(list)
+    for row in all_rows:
+        unique_game_id = row["game_id"] // args.group_size
+        groups_by_unique_id[unique_game_id].append(row)
 
-    # Apply GRPO normalization within each group
-    if args.mode == "selfplay":
-        # Each unique game was played group_size times, creating 2*group_size sequences per unique game
-        sequences_per_group = 2 * args.group_size  # 2 players × group_size plays
-    else:  # asymmetric
-        # Each unique game was played group_size times, creating group_size sequences per unique game (trainee only)
-        sequences_per_group = args.group_size  # 1 trainee × group_size plays
-    total = len(all_rows)
-    full_groups = total // sequences_per_group
+    # Apply GRPO normalization within each group (regardless of group size)
+    all_rows = []
+    for unique_game_id in sorted(groups_by_unique_id.keys()):
+        group = groups_by_unique_id[unique_game_id]
+        group_rewards = [float(row["sample_weight"]) for row in group]
+        baseline = float(np.mean(group_rewards))
+        for row in group:
+            row["sample_weight"] = float(row["sample_weight"] - baseline)
+        all_rows.extend(group)
 
-    if full_groups == 0:
-        print(f"Warning: not enough samples ({total}) to form a full group of size {sequences_per_group}; leaving weights unchanged.")
-    else:
-        remainder = total - full_groups * sequences_per_group
-        if remainder > 0:
-            print(f"Dropping {remainder} leftover samples to form full groups of size {sequences_per_group} for GRPO.")
-        # Only keep full groups
-        all_rows = all_rows[: full_groups * sequences_per_group]
-
-        for g in range(full_groups):
-            start = g * sequences_per_group
-            end = start + sequences_per_group
-            group_rewards = [float(all_rows[j]["sample_weight"]) for j in range(start, end)]
-            baseline = float(np.mean(group_rewards))
-            for j in range(start, end):
-                all_rows[j]["sample_weight"] = float(group_rewards[j - start] - baseline)
-
-        print(f"Applied GRPO normalization to {full_groups} groups of {sequences_per_group} sequences each")
+    print(f"Applied GRPO normalization to {len(groups_by_unique_id)} groups ({len(all_rows)} sequences total)")
 
     # Save parquet
     df = pd.DataFrame(all_rows)
