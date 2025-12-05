@@ -91,11 +91,17 @@ class OpenAIModelPlayer(BaseModelPlayer):
             "model": self.config.model,
             "messages": messages,
             "temperature": gen_kwargs.get("temperature", self.config.temperature),
-            "max_tokens": gen_kwargs.get("max_tokens", self.config.max_tokens),
             "top_p": gen_kwargs.get("top_p", self.config.top_p),
             "frequency_penalty": self.config.frequency_penalty,
             "presence_penalty": self.config.presence_penalty,
         }
+
+        # Use max_completion_tokens for newer models, max_tokens for older ones
+        max_tokens_value = gen_kwargs.get("max_tokens", self.config.max_tokens)
+        if any(x in self.config.model for x in ["gpt-4o", "o1", "gpt-5", "chatgpt-4o"]):
+            request_params["max_completion_tokens"] = max_tokens_value
+        else:
+            request_params["max_tokens"] = max_tokens_value
         
         # Make API call
         response = self.client.chat.completions.create(**request_params)
