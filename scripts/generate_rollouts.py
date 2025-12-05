@@ -22,7 +22,10 @@ if PROJECT_ROOT not in sys.path:
 
 # Local imports (now importable as top-level 'dialop')
 from dialop.sglang_model_player import SGLangModelPlayer, SGLangConfig
+from dialop.openai_model_player import OpenAIModelPlayer
+from dialop.base_player import OpenAIConfig
 from dialop.envs.optimization import OptimizationEnv
+from rich.console import Console
 
 
 def run_one_game(
@@ -31,7 +34,8 @@ def run_one_game(
     instructions: str,
     game_id: int = 0,
     group_size: int = 8,
-    base_seed: int = 42
+    base_seed: int = 42,
+    player_type: str = "sglang"
 ) -> Dict[str, Any]:
     """Run a single game between two players.
 
@@ -42,46 +46,75 @@ def run_one_game(
         game_id: Unique game ID (0 to total_games-1)
         group_size: Number of replays per unique initial state
         base_seed: Base random seed for game generation
+        player_type: Type of player ("sglang" or "openai")
 
     Returns:
         Dict containing game results, players, rewards, etc.
     """
-    # Build two players sharing the same server config
-    console = type("_C", (), {"print": lambda *args, **kwargs: None, "rule": lambda *args, **kwargs: None})()
-    cfg = SGLangConfig(
-        temperature=player_cfg["temperature"],
-        top_p=player_cfg["top_p"],
-        max_tokens=player_cfg["max_new_tokens"],
-        timeout=player_cfg.get("timeout", 120.0),
-    )
-    cfg.server_url = player_cfg["server_url"].rstrip("/")
-    if not cfg.server_url.endswith("/v1"):
-        cfg.server_url += "/v1"
+    # Build two players
+    console = Console() if player_type == "openai" else type("_C", (), {"print": lambda *args, **kwargs: None, "rule": lambda *args, **kwargs: None})()
 
-    # Resolve the {unknown_value} placeholder as in the reference rollout
+    # Resolve the {unknown_value} placeholder
     instr_p1 = instructions.replace("{unknown_value}", "50")
     instr_p2 = instructions.replace("{unknown_value}", "50")
 
-    # Metadata for cache tracing
-    p1_metadata = {"game_id": game_id, "turn": 0}
-    p2_metadata = {"game_id": game_id, "turn": 0}
+    if player_type == "sglang":
+        cfg = SGLangConfig(
+            temperature=player_cfg["temperature"],
+            top_p=player_cfg["top_p"],
+            max_tokens=player_cfg["max_new_tokens"],
+            timeout=player_cfg.get("timeout", 120.0),
+        )
+        cfg.server_url = player_cfg["server_url"].rstrip("/")
+        if not cfg.server_url.endswith("/v1"):
+            cfg.server_url += "/v1"
 
-    p1 = SGLangModelPlayer(
-        system_prompt=instr_p1,
-        role="player-1",
-        console=console,
-        model_path=model_id,
-        config=cfg,
-        optional=p1_metadata,
-    )
-    p2 = SGLangModelPlayer(
-        system_prompt=instr_p2,
-        role="player-2",
-        console=console,
-        model_path=model_id,
-        config=cfg,
-        optional=p2_metadata,
-    )
+        # Metadata for cache tracing
+        p1_metadata = {"game_id": game_id, "turn": 0}
+        p2_metadata = {"game_id": game_id, "turn": 0}
+
+        p1 = SGLangModelPlayer(
+            system_prompt=instr_p1,
+            role="player-1",
+            console=console,
+            model_path=model_id,
+            config=cfg,
+            optional=p1_metadata,
+        )
+        p2 = SGLangModelPlayer(
+            system_prompt=instr_p2,
+            role="player-2",
+            console=console,
+            model_path=model_id,
+            config=cfg,
+            optional=p2_metadata,
+        )
+    elif player_type == "openai":
+        cfg = OpenAIConfig(
+            model=model_id,
+            temperature=player_cfg["temperature"],
+            max_tokens=player_cfg["max_new_tokens"],
+            top_p=player_cfg["top_p"],
+            api_key_path=player_cfg.get("api_key_path", OpenAIConfig.api_key_path),
+            organization=player_cfg.get("organization", None),
+        )
+
+        p1 = OpenAIModelPlayer(
+            system_prompt=instr_p1,
+            role="player-1",
+            console=console,
+            model_path=model_id,
+            config=cfg,
+        )
+        p2 = OpenAIModelPlayer(
+            system_prompt=instr_p2,
+            role="player-2",
+            console=console,
+            model_path=model_id,
+            config=cfg,
+        )
+    else:
+        raise ValueError(f"Unknown player_type: {player_type}")
 
     # Pass game limits to environment so agents can see them
     env = OptimizationEnv(
@@ -173,22 +206,34 @@ def create_player_with_prompt(
     base_instructions: str,
     unknown_value: str,
     model_id: str,
-    server_config: SGLangConfig,
-    game_id: int
-) -> SGLangModelPlayer:
+    server_config,  # Can be SGLangConfig or OpenAIConfig
+    game_id: int,
+    player_type: str = "sglang"
+):
     """Shared logic for creating a player with customized prompt."""
-    console = type("_C", (), {"print": lambda *args, **kwargs: None, "rule": lambda *args, **kwargs: None})()
+    console = Console() if player_type == "openai" else type("_C", (), {"print": lambda *args, **kwargs: None, "rule": lambda *args, **kwargs: None})()
     system_prompt = base_instructions.replace("{unknown_value}", str(unknown_value))
-    metadata = {"game_id": game_id, "turn": 0}
 
-    return SGLangModelPlayer(
-        system_prompt=system_prompt,
-        role=role,
-        console=console,
-        model_path=model_id,
-        config=server_config,
-        optional=metadata,
-    )
+    if player_type == "sglang":
+        metadata = {"game_id": game_id, "turn": 0}
+        return SGLangModelPlayer(
+            system_prompt=system_prompt,
+            role=role,
+            console=console,
+            model_path=model_id,
+            config=server_config,
+            optional=metadata,
+        )
+    elif player_type == "openai":
+        return OpenAIModelPlayer(
+            system_prompt=system_prompt,
+            role=role,
+            console=console,
+            model_path=model_id,
+            config=server_config,
+        )
+    else:
+        raise ValueError(f"Unknown player_type: {player_type}")
 
 
 def run_one_game_vs_opponent(
@@ -197,7 +242,9 @@ def run_one_game_vs_opponent(
     game_id: int = 0,
     group_size: int = 8,
     base_seed: int = 42,
-    trainee_is_p1: bool = True
+    trainee_is_p1: bool = True,
+    trainee_player_type: str = "sglang",
+    opponent_player_type: str = "sglang"
 ) -> Dict[str, Any]:
     """
     Asymmetric mode: trainee vs fixed opponent with different prompts.
@@ -210,30 +257,53 @@ def run_one_game_vs_opponent(
         group_size: Number of replays per unique initial state
         base_seed: Base random seed for game generation
         trainee_is_p1: Whether trainee plays as player 1
+        trainee_player_type: Type of trainee player ("sglang" or "openai")
+        opponent_player_type: Type of opponent player ("sglang" or "openai")
 
     Returns:
         Dict containing game results with only trainee player data
     """
-    # Create separate server configs
-    trainee_server_cfg = SGLangConfig(
-        temperature=trainee_cfg["temperature"],
-        top_p=trainee_cfg["top_p"],
-        max_tokens=trainee_cfg["max_new_tokens"],
-        timeout=trainee_cfg.get("timeout", 120.0),
-    )
-    trainee_server_cfg.server_url = trainee_cfg["server_url"].rstrip("/")
-    if not trainee_server_cfg.server_url.endswith("/v1"):
-        trainee_server_cfg.server_url += "/v1"
+    # Create trainee config
+    if trainee_player_type == "sglang":
+        trainee_server_cfg = SGLangConfig(
+            temperature=trainee_cfg["temperature"],
+            top_p=trainee_cfg["top_p"],
+            max_tokens=trainee_cfg["max_new_tokens"],
+            timeout=trainee_cfg.get("timeout", 120.0),
+        )
+        trainee_server_cfg.server_url = trainee_cfg["server_url"].rstrip("/")
+        if not trainee_server_cfg.server_url.endswith("/v1"):
+            trainee_server_cfg.server_url += "/v1"
+    else:  # openai
+        trainee_server_cfg = OpenAIConfig(
+            model=trainee_cfg["model_id"],
+            temperature=trainee_cfg["temperature"],
+            max_tokens=trainee_cfg["max_new_tokens"],
+            top_p=trainee_cfg["top_p"],
+            api_key_path=trainee_cfg.get("api_key_path", OpenAIConfig.api_key_path),
+            organization=trainee_cfg.get("organization", None),
+        )
 
-    opponent_server_cfg = SGLangConfig(
-        temperature=opponent_cfg["temperature"],
-        top_p=opponent_cfg["top_p"],
-        max_tokens=opponent_cfg["max_new_tokens"],
-        timeout=opponent_cfg.get("timeout", 120.0),
-    )
-    opponent_server_cfg.server_url = opponent_cfg["server_url"].rstrip("/")
-    if not opponent_server_cfg.server_url.endswith("/v1"):
-        opponent_server_cfg.server_url += "/v1"
+    # Create opponent config
+    if opponent_player_type == "sglang":
+        opponent_server_cfg = SGLangConfig(
+            temperature=opponent_cfg["temperature"],
+            top_p=opponent_cfg["top_p"],
+            max_tokens=opponent_cfg["max_new_tokens"],
+            timeout=opponent_cfg.get("timeout", 120.0),
+        )
+        opponent_server_cfg.server_url = opponent_cfg["server_url"].rstrip("/")
+        if not opponent_server_cfg.server_url.endswith("/v1"):
+            opponent_server_cfg.server_url += "/v1"
+    else:  # openai
+        opponent_server_cfg = OpenAIConfig(
+            model=opponent_cfg["model_id"],
+            temperature=opponent_cfg["temperature"],
+            max_tokens=opponent_cfg["max_new_tokens"],
+            top_p=opponent_cfg["top_p"],
+            api_key_path=opponent_cfg.get("api_key_path", OpenAIConfig.api_key_path),
+            organization=opponent_cfg.get("organization", None),
+        )
 
     # Create trainee and opponent players
     trainee = create_player_with_prompt(
@@ -242,7 +312,8 @@ def run_one_game_vs_opponent(
         unknown_value="50",
         model_id=trainee_cfg["model_id"],
         server_config=trainee_server_cfg,
-        game_id=game_id
+        game_id=game_id,
+        player_type=trainee_player_type
     )
 
     opponent = create_player_with_prompt(
@@ -251,7 +322,8 @@ def run_one_game_vs_opponent(
         unknown_value="50",
         model_id=opponent_cfg["model_id"],
         server_config=opponent_server_cfg,
-        game_id=game_id
+        game_id=game_id,
+        player_type=opponent_player_type
     )
 
     # Assign to p1/p2 based on trainee position
@@ -405,6 +477,41 @@ def process_game_result(result: Dict[str, Any], max_model_len: int) -> List[Dict
     return rows
 
 
+def process_game_result_messages(result: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Process game result into messages format (for SFT without pre-tokenization).
+
+    Extracts each player's full conversation history as they experienced it,
+    including system prompts, all exchanges, and any error messages visible
+    only to them.
+
+    Args:
+        result: Game result dict with "players" containing player objects
+
+    Returns:
+        List of dicts with "messages" field containing ChatML-format conversation
+    """
+    rows = []
+    for player_name in result["players"].keys():
+        player = result["players"][player_name]
+
+        # Get player's full conversation history (system + all exchanges)
+        # This is maintained by BaseModelPlayer in self.messages
+        conversation_history = player.get_conversation_history()
+
+        rows.append({
+            "messages": conversation_history,  # List[Dict[str, str]] with role/content
+            "player_name": player_name,
+            "game_id": result["game_id"],
+            "sample_weight": float(result["normalized_reward"]),
+            "game_normalized_reward": float(
+                result.get("game_info", {}).get("game_normalized_reward", result.get("normalized_reward", 0.0))
+            ),
+            "game_info": json.dumps(result["game_info"]),
+            "full_conversation": json.dumps(result.get("full_conversation", [])),  # For debugging
+        })
+    return rows
+
+
 def worker_process(
     task_queue,
     result_queue,
@@ -416,6 +523,8 @@ def worker_process(
     group_size: int,
     seed: int,
     process_id: int,
+    player_type: str = "sglang",
+    output_format: str = "pretokenized",
 ):
     """Worker process for self-play mode that runs a thread pool pulling games from shared queue.
 
@@ -430,6 +539,8 @@ def worker_process(
         group_size: Number of replays per unique initial state
         seed: Random seed base
         process_id: ID of this process for seeding
+        player_type: Type of player ("sglang" or "openai")
+        output_format: Output format ("pretokenized" or "messages")
     """
     # Set unique random seed for this process
     np.random.seed(seed + process_id)
@@ -443,8 +554,11 @@ def worker_process(
                 return  # No more work
 
             try:
-                result = run_one_game(player_cfg, model_id, instructions, game_id, group_size, seed)
-                rows = process_game_result(result, max_model_len)
+                result = run_one_game(player_cfg, model_id, instructions, game_id, group_size, seed, player_type)
+                if output_format == "messages":
+                    rows = process_game_result_messages(result)
+                else:
+                    rows = process_game_result(result, max_model_len)
                 result_queue.put(rows)
             except Exception as e:
                 # Log failure but don't crash the worker
@@ -473,6 +587,9 @@ def worker_process_asymmetric(
     group_size: int,
     seed: int,
     process_id: int,
+    trainee_player_type: str = "sglang",
+    opponent_player_type: str = "sglang",
+    output_format: str = "pretokenized",
 ):
     """Worker process for asymmetric mode (trainee vs opponent).
 
@@ -486,6 +603,9 @@ def worker_process_asymmetric(
         group_size: Number of replays per unique initial state
         seed: Random seed base
         process_id: ID of this process for seeding
+        trainee_player_type: Type of trainee player ("sglang" or "openai")
+        opponent_player_type: Type of opponent player ("sglang" or "openai")
+        output_format: Output format ("pretokenized" or "messages")
     """
     # Set unique random seed for this process
     np.random.seed(seed + process_id)
@@ -501,8 +621,14 @@ def worker_process_asymmetric(
             try:
                 # Randomize trainee position for balanced data
                 trainee_is_p1 = (game_id % 2 == 0)
-                result = run_one_game_vs_opponent(trainee_cfg, opponent_cfg, game_id, group_size, seed, trainee_is_p1)
-                rows = process_game_result(result, max_model_len)
+                result = run_one_game_vs_opponent(
+                    trainee_cfg, opponent_cfg, game_id, group_size, seed, trainee_is_p1,
+                    trainee_player_type, opponent_player_type
+                )
+                if output_format == "messages":
+                    rows = process_game_result_messages(result)
+                else:
+                    rows = process_game_result(result, max_model_len)
                 result_queue.put(rows)
             except Exception as e:
                 # Log failure but don't crash the worker
@@ -549,6 +675,20 @@ def main():
     ap.add_argument("--opponent-server-url", type=str, help="Opponent SGLang server URL (required for asymmetric mode)")
     ap.add_argument("--opponent-instructions", type=str, help="Path to opponent instructions file (required for asymmetric mode)")
 
+    # Player type and output format (for SFT data generation with OpenAI)
+    ap.add_argument("--player-type", type=str, choices=["sglang", "openai"], default="sglang",
+                    help="Type of player to use: sglang (local model via SGLang server) or openai (OpenAI API)")
+    ap.add_argument("--output-format", type=str, choices=["pretokenized", "messages"], default="pretokenized",
+                    help="Output format: pretokenized (for PPO/GRPO training) or messages (for SFT training)")
+    ap.add_argument("--openai-api-key-path", type=str, help="Path to OpenAI API key JSON file (optional, defaults to ~/.api_key)")
+    ap.add_argument("--openai-organization", type=str, help="OpenAI organization ID (optional)")
+
+    # Asymmetric player types (for mixed setups)
+    ap.add_argument("--trainee-player-type", type=str, choices=["sglang", "openai"],
+                    help="Player type for trainee in asymmetric mode (defaults to --player-type)")
+    ap.add_argument("--opponent-player-type", type=str, choices=["sglang", "openai"],
+                    help="Player type for opponent in asymmetric mode (defaults to --player-type)")
+
     args = ap.parse_args()
 
     np.random.seed(args.seed)
@@ -564,6 +704,10 @@ def main():
         if not args.opponent_model_id or not args.opponent_server_url or not args.opponent_instructions:
             raise ValueError("Asymmetric mode requires --opponent-model-id, --opponent-server-url, and --opponent-instructions")
 
+    # Determine player types for asymmetric mode
+    trainee_player_type = args.trainee_player_type if args.trainee_player_type else args.player_type
+    opponent_player_type = args.opponent_player_type if args.opponent_player_type else args.player_type
+
     # Load instructions
     if args.mode == "selfplay":
         instructions_path = Path(__file__).parent / "dialop" / "envs" / "data" / "optimization.txt"
@@ -577,6 +721,12 @@ def main():
             "max_turns": getattr(args, 'max_turns', 10),
             "max_retries_per_turn": getattr(args, 'max_retries_per_turn', 2),
         }
+        # Add OpenAI-specific fields if using OpenAI player
+        if args.player_type == "openai":
+            if args.openai_api_key_path:
+                player_cfg["api_key_path"] = args.openai_api_key_path
+            if args.openai_organization:
+                player_cfg["organization"] = args.openai_organization
     else:  # asymmetric mode
         # Load trainee instructions (default)
         instructions_path = Path(__file__).parent / "dialop" / "envs" / "data" / "optimization.txt"
@@ -597,6 +747,12 @@ def main():
             "max_turns": getattr(args, 'max_turns', 10),
             "max_retries_per_turn": getattr(args, 'max_retries_per_turn', 2),
         }
+        # Add OpenAI-specific fields for trainee if using OpenAI
+        if trainee_player_type == "openai":
+            if args.openai_api_key_path:
+                trainee_cfg["api_key_path"] = args.openai_api_key_path
+            if args.openai_organization:
+                trainee_cfg["organization"] = args.openai_organization
 
         opponent_cfg = {
             "model_id": args.opponent_model_id,
@@ -608,6 +764,12 @@ def main():
             "max_turns": getattr(args, 'max_turns', 10),
             "max_retries_per_turn": getattr(args, 'max_retries_per_turn', 2),
         }
+        # Add OpenAI-specific fields for opponent if using OpenAI
+        if opponent_player_type == "openai":
+            if args.openai_api_key_path:
+                opponent_cfg["api_key_path"] = args.openai_api_key_path
+            if args.openai_organization:
+                opponent_cfg["organization"] = args.openai_organization
 
     # Calculate total games to play: num_games * group_size
     total_games = args.num_games * args.group_size
@@ -656,6 +818,8 @@ def main():
                     args.group_size,
                     args.seed,
                     proc_id,
+                    args.player_type,
+                    args.output_format,
                 )
             )
         else:  # asymmetric
@@ -671,6 +835,9 @@ def main():
                     args.group_size,
                     args.seed,
                     proc_id,
+                    trainee_player_type,
+                    opponent_player_type,
+                    args.output_format,
                 )
             )
         p.start()
