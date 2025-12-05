@@ -26,20 +26,23 @@ class OpenAIModelPlayer(BaseModelPlayer):
         console: Console,
         model_path: str = "gpt-4-turbo-preview",
         config: Optional[OpenAIConfig] = None,
+        optional: Optional[dict] = None,
     ):
         """Initialize OpenAI model player.
-        
+
         Args:
             system_prompt: Initial system prompt that defines the player
             role: Role of the player
             console: Rich console for output
             model_path: OpenAI model name
             config: OpenAI configuration
+            optional: Optional metadata (ignored, for compatibility with SGLangModelPlayer)
         """
         self.config = config or OpenAIConfig()
         if model_path != self.config.model:
             self.config.model = model_path
         self.client = None
+        self.optional = optional  # Store for compatibility
         super().__init__(system_prompt, role, console, model_path, self.config)
     
     def _setup_model(self) -> None:
