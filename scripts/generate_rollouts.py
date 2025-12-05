@@ -691,6 +691,12 @@ def main():
 
     args = ap.parse_args()
 
+    # Override group_size for SFT data generation (messages format doesn't need GRPO grouping)
+    if args.output_format == "messages" and args.group_size != 1:
+        print(f"[INFO] Setting group_size=1 for SFT data generation (was {args.group_size})")
+        print(f"       GRPO grouping only needed for policy gradient training, not SFT")
+        args.group_size = 1
+
     np.random.seed(args.seed)
 
     # Set log directory for generation failures
