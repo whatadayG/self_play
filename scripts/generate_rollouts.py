@@ -26,7 +26,10 @@ try:
     env_path = Path(PROJECT_ROOT) / ".env"
     if env_path.exists():
         load_dotenv(env_path)
-        print(f"[INFO] Loaded environment variables from {env_path}")
+        # Explicitly set OPENAI_API_KEY in os.environ so child processes inherit it
+        # (multiprocessing.Process doesn't inherit dotenv-loaded vars otherwise)
+        if "OPENAI_API_KEY" in os.environ:
+            print(f"[INFO] Loaded OPENAI_API_KEY from {env_path}")
 except ImportError:
     # python-dotenv not installed, environment variables must be set manually
     pass
