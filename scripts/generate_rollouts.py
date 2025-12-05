@@ -20,6 +20,17 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+# Load environment variables from .env file if present
+try:
+    from dotenv import load_dotenv
+    env_path = Path(PROJECT_ROOT) / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
+        print(f"[INFO] Loaded environment variables from {env_path}")
+except ImportError:
+    # python-dotenv not installed, environment variables must be set manually
+    pass
+
 # Local imports (now importable as top-level 'dialop')
 from dialop.sglang_model_player import SGLangModelPlayer, SGLangConfig
 from dialop.openai_model_player import OpenAIModelPlayer
