@@ -24,9 +24,13 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import multiprocessing
 from multiprocessing import Manager, Process
 import queue
+import threading
 
 import numpy as np
 import pandas as pd
+
+# Global semaphore for rate limiting (initialized per-process)
+_request_semaphore = None
 
 # Make project root importable
 import sys
@@ -138,9 +142,24 @@ def worker_process(
     max_retries_per_turn: int,
     seed: int,
     process_id: int,
+    max_concurrent: int = 50,
+    max_api_retries: int = 5,
+    num_procs: int = 4,
 ):
-    """Worker process that runs games in parallel threads."""
+    """Worker process that runs games in parallel threads.
+
+    Args:
+        max_concurrent: Maximum concurrent API requests (total across all processes)
+        max_api_retries: Maximum retries for API failures (rate limits, timeouts)
+        num_procs: Total number of worker processes (for dividing rate limit)
+    """
+    global _request_semaphore
     np.random.seed(seed + process_id)
+
+    # Initialize per-process semaphore for rate limiting
+    # Each process gets its share of the concurrent limit
+    per_process_limit = max(1, max_concurrent // num_procs)
+    _request_semaphore = threading.Semaphore(per_process_limit)
 
     def thread_worker():
         while True:
@@ -149,22 +168,52 @@ def worker_process(
             except queue.Empty:
                 return
 
-            try:
-                result = run_one_game_openai(
-                    model_id, instructions, api_key_path, organization,
-                    temperature, max_new_tokens, top_p,
-                    max_turns, max_retries_per_turn, game_id, seed
-                )
-                if result is None:
-                    print(f"[Process {process_id}] Game {game_id} returned None")
-                    result_queue.put([])
-                else:
-                    rows = process_game_to_messages(result)
-                    result_queue.put(rows)
-            except Exception as e:
-                import traceback
-                print(f"[Process {process_id}] Game {game_id} failed: {e}")
-                traceback.print_exc()
+            # Retry loop for API failures (rate limits, timeouts)
+            last_error = None
+            for attempt in range(max_api_retries):
+                try:
+                    # Acquire semaphore to limit concurrent requests
+                    with _request_semaphore:
+                        result = run_one_game_openai(
+                            model_id, instructions, api_key_path, organization,
+                            temperature, max_new_tokens, top_p,
+                            max_turns, max_retries_per_turn, game_id, seed
+                        )
+
+                    if result is None:
+                        print(f"[Process {process_id}] Game {game_id} returned None")
+                        result_queue.put([])
+                    else:
+                        rows = process_game_to_messages(result)
+                        result_queue.put(rows)
+                    break  # Success, exit retry loop
+
+                except Exception as e:
+                    last_error = e
+                    error_str = str(e).lower()
+
+                    # Check if it's a retryable error (rate limit, timeout, server error)
+                    is_retryable = any(x in error_str for x in [
+                        'rate', 'limit', 'timeout', '429', '500', '502', '503', '504',
+                        'overloaded', 'capacity', 'retry'
+                    ])
+
+                    if is_retryable and attempt < max_api_retries - 1:
+                        # Exponential backoff: 1s, 2s, 4s, 8s, 16s
+                        wait_time = 2 ** attempt
+                        print(f"[Process {process_id}] Game {game_id} API error (attempt {attempt + 1}/{max_api_retries}): {e}")
+                        print(f"[Process {process_id}] Retrying in {wait_time}s...")
+                        time.sleep(wait_time)
+                    else:
+                        # Non-retryable error or max retries exceeded
+                        import traceback
+                        print(f"[Process {process_id}] Game {game_id} failed after {attempt + 1} attempts: {e}")
+                        traceback.print_exc()
+                        result_queue.put([])
+                        break
+            else:
+                # All retries exhausted
+                print(f"[Process {process_id}] Game {game_id} failed after {max_api_retries} retries: {last_error}")
                 result_queue.put([])
 
     with ThreadPoolExecutor(max_workers=threads_per_proc) as executor:
@@ -187,8 +236,16 @@ def main():
     ap.add_argument("--max-turns", type=int, default=10)
     ap.add_argument("--max-retries-per-turn", type=int, default=2)
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--num-procs", type=int, default=8, help="Number of worker processes")
-    ap.add_argument("--threads-per-proc", type=int, default=16, help="Threads per process")
+
+    # Concurrency settings
+    ap.add_argument("--num-procs", type=int, default=4, help="Number of worker processes")
+    ap.add_argument("--threads-per-proc", type=int, default=8, help="Threads per process")
+    ap.add_argument("--max-concurrent", type=int, default=50,
+                    help="Maximum concurrent API requests (across all processes). "
+                         "OpenAI rate limits vary by model; 50 is conservative for most models.")
+    ap.add_argument("--max-api-retries", type=int, default=5,
+                    help="Maximum retries for API failures (rate limits, timeouts)")
+
     ap.add_argument("--progress-interval", type=int, default=10, help="Print progress every N games")
     ap.add_argument("--openai-api-key-path", type=str, help="Path to OpenAI API key JSON file")
     ap.add_argument("--openai-organization", type=str, help="OpenAI organization ID")
@@ -201,10 +258,18 @@ def main():
     instructions_path = Path(__file__).parent / "dialop" / "envs" / "data" / "optimization.txt"
     instructions = instructions_path.read_text().strip()
 
+    total_workers = args.num_procs * args.threads_per_proc
     print(f"Generating SFT data with {args.model_id}")
     print(f"  Games: {args.num_games}")
-    print(f"  Workers: {args.num_procs} processes × {args.threads_per_proc} threads = {args.num_procs * args.threads_per_proc} concurrent")
+    print(f"  Workers: {args.num_procs} processes × {args.threads_per_proc} threads = {total_workers} workers")
+    print(f"  Rate limit: {args.max_concurrent} max concurrent API requests")
+    print(f"  API retries: {args.max_api_retries} (with exponential backoff)")
     print(f"  Output: {args.out}")
+
+    # Warn if worker count exceeds rate limit
+    if total_workers > args.max_concurrent:
+        print(f"  NOTE: Worker count ({total_workers}) > max concurrent ({args.max_concurrent}), "
+              f"workers will wait for rate limit slots")
 
     start_time = time.time()
 
@@ -228,6 +293,7 @@ def main():
                 args.temperature, args.max_new_tokens, args.top_p,
                 args.max_turns, args.max_retries_per_turn,
                 args.seed, proc_id,
+                args.max_concurrent, args.max_api_retries, args.num_procs,
             )
         )
         p.start()
