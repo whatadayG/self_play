@@ -443,7 +443,7 @@ class FSDPSFTTrainer:
 
         # Extract data from batch
         old_log_probs = batch.pop("old_log_probs").to(self.device_name)  # (bs, seq_len)
-        loss_mask = batch.pop("loss_mask")[:, :-1].to(self.device_name)  # (bs, seq_len-1) - response mask
+        loss_mask = batch.pop("loss_mask")[:, 1:].to(self.device_name)  # (bs, seq_len-1) - response mask
         sample_weight = batch.pop("sample_weight").to(self.device_name)  # (bs,) - rewards
         group_indices = batch.pop("group_index").cpu().numpy()  # (bs,) - for GRPO
 
