@@ -19,6 +19,17 @@ TODO(zhangchi.usc1992)
 """
 
 import os
+from pathlib import Path
+
+# Load environment variables from .env file (for WANDB_API_KEY, etc.)
+try:
+    from dotenv import load_dotenv
+    # Look for .env in self_play root (3 levels up from verl/verl/trainer/)
+    env_path = Path(__file__).parent.parent.parent.parent / ".env"
+    if env_path.exists():
+        load_dotenv(env_path)
+except ImportError:
+    pass  # python-dotenv not installed
 
 os.environ["NCCL_DEBUG"] = "WARN"
 os.environ["TOKENIZERS_PARALLELISM"] = "true"
@@ -76,6 +87,7 @@ from verl.utils.ulysses import (
     get_ulysses_sequence_parallel_world_size,
     ulysses_pad_and_slice_inputs,
 )
+from verl.utils.wikitext_eval import compute_wikitext_loss
 from verl.workers.sharding_manager.fsdp_ulysses import FSDPUlyssesShardingManager
 
 if is_cuda_available:
@@ -981,6 +993,28 @@ class FSDPSFTTrainer:
             if rank == 0:
                 val_loss = torch.mean(torch.stack(val_losses))
                 metric = {"val/loss": val_loss.detach().item()}
+
+                # Wikitext evaluation (if enabled)
+                if self.config.trainer.get("eval_wikitext", False):
+                    wikitext_path = self.config.trainer.get("wikitext_path", "data/eval/wikitext_sample.txt")
+                    max_seq_length = self.config.trainer.get("wikitext_max_seq_length", 2048)
+                    batch_size = self.config.trainer.get("wikitext_batch_size", 8)
+
+                    print(f"Running wikitext evaluation on {wikitext_path}...")
+                    try:
+                        wikitext_metrics = compute_wikitext_loss(
+                            model=self.fsdp_model,
+                            tokenizer=self.tokenizer,
+                            wikitext_path=wikitext_path,
+                            max_seq_length=max_seq_length,
+                            batch_size=batch_size,
+                            device=self.device_name,
+                        )
+                        metric.update(wikitext_metrics)
+                        print(f"Wikitext metrics: {wikitext_metrics}")
+                    except Exception as e:
+                        print(f"Warning: Wikitext evaluation failed: {e}")
+
                 tracking.log(data=metric, step=global_step)
                 last_valid_metric = metric
                 print(f"Initial validation metrics: {metric}")
@@ -1037,6 +1071,28 @@ class FSDPSFTTrainer:
                     if rank == 0:
                         val_loss = torch.mean(torch.stack(val_losses))
                         metric = {"val/loss": val_loss.detach().item()}
+
+                        # Wikitext evaluation (if enabled)
+                        if self.config.trainer.get("eval_wikitext", False):
+                            wikitext_path = self.config.trainer.get("wikitext_path", "data/eval/wikitext_sample.txt")
+                            max_seq_length = self.config.trainer.get("wikitext_max_seq_length", 2048)
+                            batch_size = self.config.trainer.get("wikitext_batch_size", 8)
+
+                            print(f"Running wikitext evaluation on {wikitext_path}...")
+                            try:
+                                wikitext_metrics = compute_wikitext_loss(
+                                    model=self.fsdp_model,
+                                    tokenizer=self.tokenizer,
+                                    wikitext_path=wikitext_path,
+                                    max_seq_length=max_seq_length,
+                                    batch_size=batch_size,
+                                    device=self.device_name,
+                                )
+                                metric.update(wikitext_metrics)
+                                print(f"Wikitext metrics: {wikitext_metrics}")
+                            except Exception as e:
+                                print(f"Warning: Wikitext evaluation failed: {e}")
+
                         tracking.log(data=metric, step=global_step)
                         last_valid_metric = metric
                     torch.distributed.barrier()
@@ -1070,7 +1126,12 @@ def run_sft(config):
     from verl.utils import hf_tokenizer
 
     local_model_path = copy_to_local(src=config.model.partial_pretrain, verbose=True)
-    tokenizer = hf_tokenizer(local_model_path, trust_remote_code=config.model.trust_remote_code)
+    chat_template_path = config.model.get("chat_template_path", None)
+    tokenizer = hf_tokenizer(
+        local_model_path,
+        trust_remote_code=config.model.trust_remote_code,
+        chat_template_path=chat_template_path,
+    )
     train_dataset = create_sft_dataset(config.data.train_files, config.data, tokenizer, full_config=config)
     val_dataset = create_sft_dataset(config.data.val_files, config.data, tokenizer, full_config=config)
 
