@@ -55,6 +55,7 @@ class SGLangModelPlayer(BaseModelPlayer):
         self._assistant_prefix_token_count = None  # Cache for assistant prefix token count
         self._cached_mask_and_logprobs = None  # Cache for (mask, logprob_tensor) - only computed after conversation ends
         self._cached_input_sequence = None  # Cache for token sequence built in _build_mask_and_logprobs
+        self._in_error_dump = False  # Recursion guard for error dumping
         # Validate configuration: exactly one mode should be configured
         # Design intent:
         # - Internal mode: engine and processing_class are provided (for training within verl)
@@ -718,62 +719,90 @@ class SGLangModelPlayer(BaseModelPlayer):
             error_type: Type of error (e.g., "logprob_mismatch", "exception")
             **kwargs: Additional error-specific details
         """
-        import json
-        from datetime import datetime
+        # Recursion guard: prevent infinite loop if error dump itself fails
+        if self._in_error_dump:
+            print(f"[WARNING] Skipping nested error dump (already dumping) for {error_type}")
+            return
 
-        # Create debug dumps directory
-        debug_dir = "debug_dumps"
-        os.makedirs(debug_dir, exist_ok=True)
-
-        # Unique filename with microsecond precision
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-        filename = f"{error_type}_{self.role}_{timestamp}.json"
-        filepath = os.path.join(debug_dir, filename)
-
-        # Load tokenizer if needed
-        self._load_tokenizer()
-
-        # Collect ALL relevant state
-        debug_data = {
-            "error_type": error_type,
-            "error_details": kwargs,
-            "role": self.role,
-            "model_path": self.model_path,
-
-            # Conversation state
-            "messages": self.messages,
-            "num_messages": len(self.messages),
-            "num_assistant_messages": sum(1 for m in self.messages if m["role"] == "assistant"),
-
-            # Logprob collection
-            "all_generated_logprobs": self.all_generated_logprobs,
-            "all_generated_tokens": self.all_generated_tokens,  # Token strings from SGLang
-            "num_sublists": len(self.all_generated_logprobs),
-            "sublist_lengths": [len(s) for s in self.all_generated_logprobs],
-            "total_logprobs": sum(len(s) for s in self.all_generated_logprobs),
-
-            # Tokenization
-            "tokenizer_name": self.tokenizer.name_or_path if self.tokenizer else None,
-            "full_text": self._get_full_conversation_text(),
-            "full_tokens": self.get_input_sequence(),
-            "full_tokens_length": len(self.get_input_sequence()),
-
-            # Config
-            "config": {
-                "temperature": self.config.temperature,
-                "max_tokens": self.config.max_tokens,
-                "top_p": self.config.top_p,
-                "server_url": self.config.server_url if hasattr(self.config, 'server_url') else None,
-            },
-        }
-
-        # Save to file
+        self._in_error_dump = True
         try:
-            with open(filepath, 'w') as f:
-                json.dump(debug_data, f, indent=2, default=str)
-            print(f"\n[DEBUG DUMP] Saved error context to: {filepath}")
-        except Exception as e:
-            print(f"\n[DEBUG DUMP] Failed to save debug info: {e}")
+            import json
+            from datetime import datetime
+
+            # Create debug dumps directory
+            debug_dir = "debug_dumps"
+            os.makedirs(debug_dir, exist_ok=True)
+
+            # Unique filename with microsecond precision
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+            filename = f"{error_type}_{self.role}_{timestamp}.json"
+            filepath = os.path.join(debug_dir, filename)
+
+            # Load tokenizer if needed
+            self._load_tokenizer()
+
+            # Safely get full text (may fail if template is broken)
+            try:
+                full_text = self._get_full_conversation_text()
+            except Exception as e:
+                full_text = f"<ERROR: Failed to render conversation text: {e}>"
+
+            # Safely get token sequence (recursion guard prevents infinite loop)
+            try:
+                full_tokens = self.get_input_sequence()
+                full_tokens_length = len(full_tokens)
+            except Exception as e:
+                full_tokens = f"<ERROR: Failed to get input sequence: {e}>"
+                full_tokens_length = -1
+
+            # Collect ALL relevant state
+            debug_data = {
+                "error_type": error_type,
+                "error_details": kwargs,
+                "role": self.role,
+                "model_path": self.model_path,
+
+                # Conversation state
+                "messages": self.messages,
+                "num_messages": len(self.messages),
+                "num_assistant_messages": sum(1 for m in self.messages if m["role"] == "assistant"),
+
+                # Logprob collection
+                "all_generated_logprobs": self.all_generated_logprobs,
+                "all_generated_tokens": self.all_generated_tokens,  # Token strings from SGLang
+                "num_sublists": len(self.all_generated_logprobs),
+                "sublist_lengths": [len(s) for s in self.all_generated_logprobs],
+                "total_logprobs": sum(len(s) for s in self.all_generated_logprobs),
+
+                # Tokenization (with safe fallbacks)
+                "tokenizer_name": self.tokenizer.name_or_path if self.tokenizer else None,
+                "full_text": full_text,
+                "full_tokens": full_tokens,
+                "full_tokens_length": full_tokens_length,
+
+                # Config
+                "config": {
+                    "temperature": self.config.temperature,
+                    "max_tokens": self.config.max_tokens,
+                    "top_p": self.config.top_p,
+                    "server_url": self.config.server_url if hasattr(self.config, 'server_url') else None,
+                },
+            }
+
+            # Save to file (still inside try block to ensure variables are defined)
+            try:
+                with open(filepath, 'w') as f:
+                    json.dump(debug_data, f, indent=2, default=str)
+                print(f"\n[DEBUG DUMP] Saved error context to: {filepath}")
+            except Exception as save_err:
+                print(f"\n[DEBUG DUMP] Failed to save debug info: {save_err}")
+
+        except Exception as outer_err:
+            # If anything goes wrong during debug dump, log it but don't crash
+            print(f"\n[DEBUG DUMP] Error while collecting debug data: {outer_err}")
+        finally:
+            # Always reset recursion guard, even if dump fails
+            self._in_error_dump = False
 
     def _generate_text_internal(self, messages: List[Dict[str, str]], **gen_kwargs) -> Tuple[str, int, int]:
         """Generate text using internal SGLang engine.
