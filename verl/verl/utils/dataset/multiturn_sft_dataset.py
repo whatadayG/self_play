@@ -205,17 +205,27 @@ class MultiTurnSFTDataset(Dataset):
         if len(concat_tokens) != len(full_tokens_list) or not all(
             a == b for a, b in zip(concat_tokens, full_tokens_list, strict=True)
         ):
-            logging.warning(
-                f"Token mismatch detected! Full tokenization length: {len(full_tokens_list)}, Concatenated tokens "
-                f"length: {len(concat_tokens)}. Using concatenated version."
-                # f"full tokens text: {self.tokenizer.decode(full_tokens_list)}"
-                # f"concat tokens text: {self.tokenizer.decode(concat_tokens)}"
+            # FAIL LOUDLY: This indicates a chat template bug that will cause training issues
+            error_msg = (
+                f"\n{'='*80}\n"
+                f"CRITICAL ERROR: Chat template tokenization mismatch detected!\n"
+                f"{'='*80}\n\n"
+                f"Full tokenization length: {len(full_tokens_list)}\n"
+                f"Concatenated tokenization length: {len(concat_tokens)}\n"
+                f"Difference: {len(concat_tokens) - len(full_tokens_list)} tokens\n\n"
+                f"This mismatch is typically caused by bugs in the model's chat template\n"
+                f"(e.g., Qwen3's template has known issues with empty thinking tags).\n\n"
+                f"SOLUTION:\n"
+                f"1. Use a corrected chat template with model.chat_template_path parameter\n"
+                f"2. See commit 28e5be4 for an example of chat template fixes\n"
+                f"3. Refer to modify_chat_template_for_training.py for template modification\n\n"
+                f"Example usage:\n"
+                f"  model.chat_template_path=/path/to/corrected_chat_template.jinja\n\n"
+                f"DO NOT ignore this error - it will cause incorrect loss masking and\n"
+                f"degraded training quality.\n"
+                f"{'='*80}\n"
             )
-            return (
-                torch.tensor(concat_tokens, dtype=torch.long),
-                torch.tensor(concat_loss_mask, dtype=torch.long),
-                torch.tensor(concat_attention_mask, dtype=torch.long),
-            )
+            raise RuntimeError(error_msg)
 
         return (
             full_tokens,
