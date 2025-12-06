@@ -670,8 +670,26 @@ def worker_process_asymmetric(
                     rows = process_game_result(result, max_model_len)
                 result_queue.put(rows)
             except Exception as e:
-                # Log failure but don't crash the worker
+                # Log failure with full traceback
+                import traceback
+                import sys
+                tb_str = ''.join(traceback.format_exception(*sys.exc_info()))
                 print(f"[Process {process_id}] Game {game_id} failed: {e}")
+                print(f"[Process {process_id}] Full traceback:\n{tb_str}")
+
+                # Also log to file for later analysis
+                log_dir = os.getenv("ROLLOUT_LOG_DIR", ".")
+                log_file = f"{log_dir}/game_failures_detailed.log"
+                try:
+                    with open(log_file, "a") as f:
+                        f.write(f"\n{'='*80}\n")
+                        f.write(f"Game {game_id} (Process {process_id})\n")
+                        f.write(f"Timestamp: {time.time()}\n")
+                        f.write(tb_str)
+                        f.write(f"\n{'='*80}\n")
+                except Exception as log_err:
+                    print(f"[Process {process_id}] Failed to write to log file: {log_err}")
+
                 # Put empty result to maintain progress tracking
                 result_queue.put([])
 
