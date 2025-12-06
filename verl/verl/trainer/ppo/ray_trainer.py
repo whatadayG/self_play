@@ -60,6 +60,7 @@ from verl.utils.metric import (
 from verl.utils.seqlen_balancing import get_seqlen_balanced_partitions, log_seqlen_unbalance
 from verl.utils.torch_functional import masked_mean
 from verl.utils.tracking import ValidationGenerationsLogger
+from verl.utils.wikitext_eval import compute_wikitext_loss_fsdp
 
 WorkerType = type[Worker]
 
@@ -820,6 +821,25 @@ class RayPPOTrainer:
             metric_dict["val-aux/num_turns/min"] = sample_turns.min()
             metric_dict["val-aux/num_turns/max"] = sample_turns.max()
             metric_dict["val-aux/num_turns/mean"] = sample_turns.mean()
+
+        # Wikitext evaluation (if enabled)
+        if self.config.trainer.get("eval_wikitext", False):
+            wikitext_path = self.config.trainer.get("wikitext_path", "data/eval/wikitext_sample.txt")
+            max_seq_length = self.config.trainer.get("wikitext_max_seq_length", 2048)
+            batch_size = self.config.trainer.get("wikitext_batch_size", 8)
+
+            print(f"Running wikitext evaluation on {wikitext_path}...")
+            try:
+                wikitext_metrics = compute_wikitext_loss_fsdp(
+                    worker_group=self.actor_rollout_wg,
+                    wikitext_path=wikitext_path,
+                    max_seq_length=max_seq_length,
+                    batch_size=batch_size,
+                )
+                metric_dict.update(wikitext_metrics)
+                print(f"Wikitext metrics: {wikitext_metrics}")
+            except Exception as e:
+                print(f"Warning: Wikitext evaluation failed: {e}")
 
         return metric_dict
 
