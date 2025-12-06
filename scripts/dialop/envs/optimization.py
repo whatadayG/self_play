@@ -170,7 +170,8 @@ class OptimizationEnv(DialogueEnv):
 
                 # Update game state with the proposal (content does not include the tag)
                 if "Proposal:" in content:
-                    proposal_content = "Proposal:" + content.split("Proposal:")[1].strip()
+                    # Don't strip - it removes the newline between "Proposal:" and first assignment
+                    proposal_content = "Proposal:" + content.split("Proposal:")[1]
                 else:
                     proposal_content = content
                 self._propose(proposal_content)
@@ -341,15 +342,28 @@ class OptimizationEnv(DialogueEnv):
         proposal_section = "Proposal:" + message.split("Proposal:", 1)[1]
 
         pattern = r"\n|<br/>"
-        proposal_lines = re.split(pattern, proposal_section)
-        proposal_lines = [line.strip() for line in proposal_lines]
-        proposal_lines = [line for line in proposal_lines if line]
+        all_lines = re.split(pattern, proposal_section)
+        all_lines = [line.strip() for line in all_lines]
+        all_lines = [line for line in all_lines if line]
 
         # Validate header line (should now always be first line)
-        if not proposal_lines[0].startswith("Proposal:"):
+        if not all_lines[0].startswith("Proposal:"):
             raise GameError(
                 "Internal error: Proposal header not found at expected position."
             )
+
+        # Only include lines that look like assignments (start with '-')
+        # This ignores any explanatory text the model adds after the assignments
+        # Note: Handle HTML entities like &emsp; that may precede the dash
+        proposal_lines = [all_lines[0]]  # Keep header
+        for line in all_lines[1:]:
+            # Strip common HTML whitespace entities before checking for dash
+            check_line = line.lstrip("&emsp;").lstrip("&nbsp;").lstrip()
+            if check_line.startswith("-"):
+                proposal_lines.append(line)
+            else:
+                # Stop at first non-assignment line (extra text after proposal)
+                break
 
         # Validate that the correct number of assignment lines are present
         expected_assignments = self.game.num_rows  # number of papers/reviewers in the game (default 8)
@@ -359,7 +373,7 @@ class OptimizationEnv(DialogueEnv):
                 f"Your proposal must list exactly {expected_assignments} paper–reviewer assignments (one per paper). "
                 f"I detected {provided_assignments}. Example format:\n"
                 "Proposal:<br/>&emsp; - PAPER_1: REVIEWER_A<br/>&emsp; - PAPER_2: REVIEWER_B<br/>&emsp; ..."
-                
+
             )
         # Use the original (unmutated) lists so that indices correspond to the
         # true row/column numbers in the table.
