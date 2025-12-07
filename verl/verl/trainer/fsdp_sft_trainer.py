@@ -530,69 +530,72 @@ class FSDPSFTTrainer:
         context = self.sharding_manager if use_sp else nullcontext()
         with context, torch.autocast(device_type=self.device_name, dtype=torch.bfloat16):
             # Check if we should use Liger's fused linear+cross-entropy kernel
-            use_liger = self.config.model.get("use_liger", False) and not use_sp and entropy_coeff == 0
+            use_liger_config = self.config.model.get("use_liger", False)
+            use_liger = use_liger_config and not use_sp and entropy_coeff == 0
+
+            # Debug logging for Liger activation status (only on rank 0)
+            if self.config.trainer.get('local_rank', 0) == 0 and hasattr(self, '_liger_debug_logged') is False:
+                self._liger_debug_logged = True
+                if not use_liger:
+                    reasons = []
+                    if not use_liger_config:
+                        reasons.append("model.use_liger=False")
+                    if use_sp:
+                        reasons.append("sequence_parallel=True")
+                    if entropy_coeff != 0:
+                        reasons.append(f"entropy_coeff={entropy_coeff} (must be 0)")
+                    print(f"\n{'='*80}\n[LIGER DISABLED] Reasons: {', '.join(reasons)}\nUsing standard PyTorch cross-entropy (materializes logits)\n{'='*80}\n")
 
             if use_liger:
                 # ========== LIGER FUSED LINEAR+CROSS-ENTROPY PATH ==========
-                # This avoids materializing (B, L, V) logits tensor, saving ~13GB memory
-                from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
+                # Use Liger's monkey-patched forward (handles FSDP correctly)
 
-                # 1. Get hidden states from base model (skip lm_head)
-                outputs = self.fsdp_model.model(  # .model = decoder without lm_head
+                # 1. Prepare labels for causal LM (mark padding/non-assistant tokens with -100)
+                labels = input_ids.clone()
+
+                # Apply loss mask: set non-assistant tokens to -100 (ignored by Liger)
+                # loss_mask is already (B*(L-1),) flattened, need to reshape
+                B = input_ids.size(0)
+                L = input_ids.size(1)
+                loss_mask_2d = loss_mask.view(B, L - 1)  # (B, L-1)
+
+                # For next-token prediction: labels[i] = input_ids[i+1]
+                # So we set labels[:, :-1] based on loss_mask, and labels[:, -1] = -100
+                labels[:, :-1][loss_mask_2d == 0] = -100  # Mask non-assistant tokens
+                labels[:, -1] = -100  # Last token has no target
+
+                # 2. Call monkey-patched forward with labels
+                # Liger's patched forward will use fused linear+CE when labels are provided
+                output = self.fsdp_model(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                     position_ids=position_ids,
+                    labels=labels,  # Triggers Liger's fused path
                     use_cache=False
                 )
-                hidden_states = outputs[0]  # (B, L, H)
 
-                # 2. Prepare for next-token prediction (shift by 1)
-                shift_hidden = hidden_states[:, :-1, :].contiguous()  # (B, L-1, H)
-                shift_labels = input_ids[:, 1:].contiguous()  # (B, L-1)
+                # 3. Extract loss (already computed by Liger's fused kernel)
+                # NOTE: Liger computes reduction='mean' over non-ignored tokens
+                # We need to convert this to match our expected behavior
+                base_loss = output.loss  # Scalar, averaged over valid tokens
 
-                # 3. Apply loss mask using ignore_index
-                # Mark non-assistant tokens with -100 so they're ignored by Liger
-                shift_labels = shift_labels.clone()
-                B, L_minus_1 = shift_labels.shape
-                loss_mask_2d = loss_mask.view(B, L_minus_1)  # (B, L-1)
-                shift_labels[loss_mask_2d == 0] = -100
-
-                # 4. Flatten for fused kernel
-                H = shift_hidden.size(-1)
-                flat_hidden = shift_hidden.reshape(-1, H)  # (B*(L-1), H)
-                flat_labels = shift_labels.reshape(-1)  # (B*(L-1),)
-
-                # 5. Initialize and call Liger fused kernel
-                fused_ce = LigerFusedLinearCrossEntropyLoss(
-                    ignore_index=-100,
-                    reduction='sum',  # We'll handle averaging manually
-                )
-
-                total_loss = fused_ce(
-                    self.fsdp_model.lm_head.weight,  # (V, H)
-                    flat_hidden,  # (B*(L-1), H)
-                    flat_labels,  # (B*(L-1),)
-                )
-
-                # 6. Handle sample weighting (GRPO rewards)
-                # TODO: Liger doesn't support per-sample weights natively
-                # For now, we apply uniform weighting
-                # Future: can implement per-sequence loop if needed
+                # 4. Handle sample weighting (GRPO rewards)
+                # TODO: Liger's internal loss doesn't support per-sample weights
+                # For now, we use uniform weighting
+                # Future: can re-implement with per-sequence losses if needed
                 if sample_weight is not None:
                     # Warning: sample weighting not yet implemented for Liger path
                     # This is a known limitation - all samples weighted equally
                     pass
 
-                # 7. Compute average loss (divide by number of valid tokens)
-                valid_token_this_rank = loss_mask.sum()
-
+                # 5. The loss is already averaged, but we need to apply dp_size scaling
+                # to match the behavior of the standard path
                 if self.config.data.balance_dp_token:
-                    torch.distributed.all_reduce(valid_token_this_rank)
                     dp_size = torch.distributed.get_world_size()
                 else:
                     dp_size = 1
 
-                loss = total_loss / (valid_token_this_rank + 1e-8) * dp_size
+                loss = base_loss * dp_size
 
                 # No entropy bonus with Liger (disabled by use_liger condition)
 
