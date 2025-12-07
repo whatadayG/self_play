@@ -566,11 +566,13 @@ class FSDPSFTTrainer:
 
                 # 2. Call monkey-patched forward with labels
                 # Liger's patched forward will use fused linear+CE when labels are provided
+                # skip_logits=True forces fused kernel even during validation (model.training=False)
                 output = self.fsdp_model(
                     input_ids=input_ids,
                     attention_mask=attention_mask,
                     position_ids=position_ids,
                     labels=labels,  # Triggers Liger's fused path
+                    skip_logits=True,  # Force fused kernel in validation too
                     use_cache=False
                 )
 
