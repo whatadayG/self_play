@@ -995,6 +995,7 @@ class FSDPSFTTrainer:
 
     def fit(self):
         rank = self.device_mesh.get_rank()
+        world_size = self.device_mesh.size()
 
         # TODO: add a unified tracking
         if rank == 0:
@@ -1061,30 +1062,39 @@ class FSDPSFTTrainer:
                 )
                 val_loss = self.validation_step(val_data)
                 val_losses.append(val_loss)
+            # Wikitext evaluation (if enabled) - runs on all ranks with data parallelism
+            wikitext_metrics = None
+            if self.config.trainer.get("eval_wikitext", False):
+                wikitext_path = self.config.trainer.get("wikitext_path", "data/eval/wikitext_sample.txt")
+                max_seq_length = self.config.trainer.get("wikitext_max_seq_length", 2048)
+                wikitext_batch_size = self.config.trainer.get("wikitext_batch_size", 32)
+
+                if rank == 0:
+                    print(f"Running wikitext evaluation on {wikitext_path}...")
+                try:
+                    wikitext_metrics = compute_wikitext_loss(
+                        model=self.fsdp_model,
+                        tokenizer=self.tokenizer,
+                        wikitext_path=wikitext_path,
+                        max_seq_length=max_seq_length,
+                        batch_size=wikitext_batch_size,
+                        device=self.device_name,
+                        distributed=True,
+                        rank=rank,
+                        world_size=world_size,
+                    )
+                    if rank == 0:
+                        print(f"Wikitext metrics: {wikitext_metrics}")
+                except Exception as e:
+                    if rank == 0:
+                        print(f"Warning: Wikitext evaluation failed: {e}")
+
             if rank == 0:
                 val_loss = torch.mean(torch.stack(val_losses))
                 metric = {"val/loss": val_loss.detach().item()}
 
-                # Wikitext evaluation (if enabled)
-                if self.config.trainer.get("eval_wikitext", False):
-                    wikitext_path = self.config.trainer.get("wikitext_path", "data/eval/wikitext_sample.txt")
-                    max_seq_length = self.config.trainer.get("wikitext_max_seq_length", 2048)
-                    batch_size = self.config.trainer.get("wikitext_batch_size", 8)
-
-                    print(f"Running wikitext evaluation on {wikitext_path}...")
-                    try:
-                        wikitext_metrics = compute_wikitext_loss(
-                            model=self.fsdp_model,
-                            tokenizer=self.tokenizer,
-                            wikitext_path=wikitext_path,
-                            max_seq_length=max_seq_length,
-                            batch_size=batch_size,
-                            device=self.device_name,
-                        )
-                        metric.update(wikitext_metrics)
-                        print(f"Wikitext metrics: {wikitext_metrics}")
-                    except Exception as e:
-                        print(f"Warning: Wikitext evaluation failed: {e}")
+                if wikitext_metrics is not None:
+                    metric.update(wikitext_metrics)
 
                 tracking.log(data=metric, step=global_step)
                 last_valid_metric = metric
@@ -1139,30 +1149,39 @@ class FSDPSFTTrainer:
                         )
                         val_loss = self.validation_step(val_data)
                         val_losses.append(val_loss)
+                    # Wikitext evaluation (if enabled) - runs on all ranks with data parallelism
+                    wikitext_metrics = None
+                    if self.config.trainer.get("eval_wikitext", False):
+                        wikitext_path = self.config.trainer.get("wikitext_path", "data/eval/wikitext_sample.txt")
+                        max_seq_length = self.config.trainer.get("wikitext_max_seq_length", 2048)
+                        wikitext_batch_size = self.config.trainer.get("wikitext_batch_size", 32)
+
+                        if rank == 0:
+                            print(f"Running wikitext evaluation on {wikitext_path}...")
+                        try:
+                            wikitext_metrics = compute_wikitext_loss(
+                                model=self.fsdp_model,
+                                tokenizer=self.tokenizer,
+                                wikitext_path=wikitext_path,
+                                max_seq_length=max_seq_length,
+                                batch_size=wikitext_batch_size,
+                                device=self.device_name,
+                                distributed=True,
+                                rank=rank,
+                                world_size=world_size,
+                            )
+                            if rank == 0:
+                                print(f"Wikitext metrics: {wikitext_metrics}")
+                        except Exception as e:
+                            if rank == 0:
+                                print(f"Warning: Wikitext evaluation failed: {e}")
+
                     if rank == 0:
                         val_loss = torch.mean(torch.stack(val_losses))
                         metric = {"val/loss": val_loss.detach().item()}
 
-                        # Wikitext evaluation (if enabled)
-                        if self.config.trainer.get("eval_wikitext", False):
-                            wikitext_path = self.config.trainer.get("wikitext_path", "data/eval/wikitext_sample.txt")
-                            max_seq_length = self.config.trainer.get("wikitext_max_seq_length", 2048)
-                            batch_size = self.config.trainer.get("wikitext_batch_size", 8)
-
-                            print(f"Running wikitext evaluation on {wikitext_path}...")
-                            try:
-                                wikitext_metrics = compute_wikitext_loss(
-                                    model=self.fsdp_model,
-                                    tokenizer=self.tokenizer,
-                                    wikitext_path=wikitext_path,
-                                    max_seq_length=max_seq_length,
-                                    batch_size=batch_size,
-                                    device=self.device_name,
-                                )
-                                metric.update(wikitext_metrics)
-                                print(f"Wikitext metrics: {wikitext_metrics}")
-                            except Exception as e:
-                                print(f"Warning: Wikitext evaluation failed: {e}")
+                        if wikitext_metrics is not None:
+                            metric.update(wikitext_metrics)
 
                         tracking.log(data=metric, step=global_step)
                         last_valid_metric = metric

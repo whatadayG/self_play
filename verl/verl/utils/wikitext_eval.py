@@ -10,6 +10,7 @@ from typing import Optional
 
 import torch
 import torch.nn.functional as F
+from tqdm import tqdm
 from transformers import PreTrainedTokenizer
 
 
@@ -31,8 +32,11 @@ def compute_wikitext_loss(
     tokenizer: PreTrainedTokenizer,
     wikitext_path: str,
     max_seq_length: int = 2048,
-    batch_size: int = 8,
+    batch_size: int = 32,
     device: Optional[str] = None,
+    distributed: bool = False,
+    rank: int = 0,
+    world_size: int = 1,
 ) -> dict[str, float]:
     """Compute next token prediction loss on wikitext.
 
@@ -43,6 +47,9 @@ def compute_wikitext_loss(
         max_seq_length: Maximum sequence length for evaluation chunks
         batch_size: Number of chunks to process in parallel
         device: Device to run evaluation on (defaults to model device)
+        distributed: Whether to run in distributed mode (shards chunks across ranks)
+        rank: Current process rank (for distributed mode)
+        world_size: Total number of processes (for distributed mode)
 
     Returns:
         Dictionary containing:
@@ -70,13 +77,24 @@ def compute_wikitext_loss(
         if len(chunk) >= 2:  # Need at least 2 tokens (input + target)
             chunks.append(chunk)
 
+    # In distributed mode, each rank processes a shard of the chunks
+    if distributed and world_size > 1:
+        chunks = chunks[rank::world_size]
+
     total_loss = 0.0
     total_tokens = 0
 
     model.eval()
+    num_batches = (len(chunks) + batch_size - 1) // batch_size
+    show_progress = (not distributed) or (rank == 0)
     with torch.no_grad():
         # Process chunks in batches
-        for batch_start in range(0, len(chunks), batch_size):
+        for batch_start in tqdm(
+            range(0, len(chunks), batch_size),
+            total=num_batches,
+            desc="Wikitext eval",
+            disable=not show_progress,
+        ):
             batch_chunks = chunks[batch_start : batch_start + batch_size]
 
             # Find max length in this batch (excluding last token for input)
@@ -128,6 +146,13 @@ def compute_wikitext_loss(
 
             total_loss += loss.item()
             total_tokens += (target_ids != -100).sum().item()
+
+    # In distributed mode, all-reduce the totals
+    if distributed and world_size > 1:
+        totals = torch.tensor([total_loss, total_tokens], dtype=torch.float64, device=device)
+        torch.distributed.all_reduce(totals, op=torch.distributed.ReduceOp.SUM)
+        total_loss = totals[0].item()
+        total_tokens = int(totals[1].item())
 
     # Compute average loss and perplexity
     avg_loss = total_loss / total_tokens if total_tokens > 0 else float("inf")
