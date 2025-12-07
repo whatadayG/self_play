@@ -581,6 +581,7 @@ class FSDPSFTTrainer:
                 # We need to convert this to match our expected behavior
                 base_loss = output.loss  # Scalar, averaged over valid tokens
 
+
                 # 4. Handle sample weighting (GRPO rewards)
                 # TODO: Liger's internal loss doesn't support per-sample weights
                 # For now, we use uniform weighting
@@ -598,8 +599,11 @@ class FSDPSFTTrainer:
                     dp_size = 1
 
                 loss = base_loss * dp_size
-
                 # No entropy bonus with Liger (disabled by use_liger condition)
+                # Liger path: loss is already averaged, skip the final division
+                if do_backward:
+                    loss.backward()
+                return loss
 
             elif not use_sp:
                 # ========== STANDARD PATH (original code) ==========
