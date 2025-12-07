@@ -30,10 +30,10 @@ args=(
     data.truncation=right
     # data.micro_batch_size_per_gpu=2
     # data.train_batch_size=8
-    # +data.val_batch_size_per_gpu=4
-    data.micro_batch_size_per_gpu=1
-    data.train_batch_size=32
-    +data.val_batch_size_per_gpu=16
+    # +data.val_batch_size_per_gpu=2
+    data.micro_batch_size_per_gpu=16
+    data.train_batch_size=64
+    +data.val_batch_size_per_gpu=8
 
     # Model configuration
     model.partial_pretrain=Qwen/Qwen3-8B
@@ -42,9 +42,9 @@ args=(
     model.fsdp_config.model_dtype=bf16
     model.use_liger=true
     model.enable_gradient_checkpointing=true
-    # model.lora_rank=32  # Set to 8, 16, 32, or 64 to enable LoRA (0 = disabled)
-    #model.lora_alpha=32  # LoRA alpha scaling factor (typical: 16 or 32)
-    # model.target_modules=all-linear  # LoRA target modules
+    model.lora_rank=32  # Set to 8, 16, 32, or 64 to enable LoRA (0 = disabled)
+    model.lora_alpha=32  # LoRA alpha scaling factor (typical: 16 or 32)
+    model.target_modules=all-linear  # LoRA target modules
 
     # Optimizer configuration
     optim.lr=1e-5  # Claude suggests a much higher LR if LoRA is enabled , like 2e-4, but verl/ examples give only 3x as high a learning rate.
@@ -57,6 +57,7 @@ args=(
     trainer.total_epochs=5
     trainer.save_freq=500
     trainer.test_freq=100
+    trainer.entropy_coeff=0
     +trainer.eval_wikitext=true  # Enable wikitext evaluation
     +trainer.wikitext_path=data/eval/wikitext_sample.txt
     +trainer.wikitext_max_seq_length=2048
