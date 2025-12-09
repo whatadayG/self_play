@@ -18,6 +18,11 @@ from transformers import AutoTokenizer
 from .base_player import BaseModelPlayer, SGLangConfig
 
 
+class MaxTokensExceededError(Exception):
+    """Raised when a response hits the max_tokens limit, indicating degenerate output."""
+    pass
+
+
 class SGLangModelPlayer(BaseModelPlayer):
     """Player that queries an SGLang server via HTTP API or internal engine."""
     
@@ -200,6 +205,21 @@ class SGLangModelPlayer(BaseModelPlayer):
                 # Get token counts (if provided by server)
                 input_tokens = data.get("usage", {}).get("prompt_tokens", 0)
                 output_tokens = data.get("usage", {}).get("completion_tokens", 0)
+
+                # Check if generation was truncated due to max_tokens limit
+                # This indicates degenerate output (e.g., repetition loops) and should fail the game
+                finish_reason = data["choices"][0].get("finish_reason", "stop")
+                if finish_reason == "length":
+                    self._dump_max_tokens_exceeded(
+                        response_text=response_text,
+                        output_tokens=output_tokens,
+                        max_tokens=gen_kwargs.get("max_tokens", self.config.max_tokens),
+                    )
+                    raise MaxTokensExceededError(
+                        f"Response hit max_tokens limit ({output_tokens} tokens). "
+                        f"This indicates degenerate output (e.g., repetition loop). "
+                        f"Debug info saved to max_tokens_exceeded_dumps/"
+                    )
 
                 # Extract and store logprobs if available
                 logprobs_data = data["choices"][0].get("logprobs", None)
@@ -709,6 +729,62 @@ class SGLangModelPlayer(BaseModelPlayer):
             tokenize=False,
             add_generation_prompt=False
         )
+
+    def _dump_max_tokens_exceeded(self, response_text: str, output_tokens: int, max_tokens: int):
+        """Dump conversation when a response hits max_tokens limit.
+
+        This indicates degenerate output (e.g., repetition loops) and saves
+        the full conversation for debugging.
+
+        Args:
+            response_text: The truncated response that hit the limit
+            output_tokens: Number of tokens generated
+            max_tokens: The max_tokens limit that was hit
+        """
+        import json
+        from datetime import datetime
+
+        # Create dedicated directory for max tokens exceeded dumps
+        debug_dir = "max_tokens_exceeded_dumps"
+        os.makedirs(debug_dir, exist_ok=True)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        filename = f"max_tokens_{self.role}_{timestamp}.json"
+        filepath = os.path.join(debug_dir, filename)
+
+        # Collect conversation state
+        debug_data = {
+            "error_type": "max_tokens_exceeded",
+            "role": self.role,
+            "model_path": self.model_path,
+            "output_tokens": output_tokens,
+            "max_tokens": max_tokens,
+
+            # The problematic response
+            "truncated_response": response_text,
+            "truncated_response_length_chars": len(response_text),
+
+            # Show the end of the response to see repetition pattern
+            "response_last_500_chars": response_text[-500:] if len(response_text) > 500 else response_text,
+
+            # Full conversation history
+            "messages": self.messages,
+            "num_messages": len(self.messages),
+
+            # Config
+            "config": {
+                "temperature": self.config.temperature,
+                "max_tokens": self.config.max_tokens,
+                "top_p": self.config.top_p,
+            },
+        }
+
+        try:
+            with open(filepath, 'w') as f:
+                json.dump(debug_data, f, indent=2, default=str)
+            print(f"\n[MAX TOKENS EXCEEDED] Saved debug info to: {filepath}")
+        except Exception as e:
+            print(f"\n[MAX TOKENS EXCEEDED] Failed to save debug info: {e}")
 
     def _dump_debug_info_on_error(self, error_type: str, **kwargs):
         """Dump complete state for debugging mask/logprob errors.

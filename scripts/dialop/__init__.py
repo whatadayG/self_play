@@ -4,7 +4,7 @@ Dialop player module exports.
 
 # Import all player types
 from .hf_model_player import HFModelPlayer
-from .sglang_model_player import SGLangModelPlayer, SglangModelPlayer
+from .sglang_model_player import SGLangModelPlayer, SglangModelPlayer, MaxTokensExceededError
 from .openai_model_player import OpenAIModelPlayer
 from .vllm_model_player import VLLMModelPlayer
 
@@ -24,7 +24,9 @@ __all__ = [
     "LocalModelPlayerVLLM",  # Backward compatibility
     # Legacy classes
     "LLMPlayer",
-    "HumanPlayer", 
+    "HumanPlayer",
     "DryRunPlayer",
     "OutOfContextError",
+    # Exceptions
+    "MaxTokensExceededError",
 ]
