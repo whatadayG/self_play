@@ -5,12 +5,48 @@ import time
 import json
 import argparse
 import subprocess
+import socket
+import random
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 
 import pandas as pd
 import numpy as np
 import requests
+
+
+def _is_port_free(port: int) -> bool:
+    """Check if a port is available for binding."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("127.0.0.1", port))
+            return True
+    except OSError:
+        return False
+
+
+def find_free_ports(n: int = 2, min_port: int = 10000, max_port: int = 65535) -> List[int]:
+    """Find n available ports in the given range.
+
+    Returns a list of n ports that are currently free.
+    Raises RuntimeError if unable to find enough free ports.
+    """
+    ports = []
+    attempts = 0
+    max_attempts = n * 100  # Give up after many failed attempts
+
+    while len(ports) < n and attempts < max_attempts:
+        port = random.randint(min_port, max_port)
+        if port not in ports and _is_port_free(port):
+            ports.append(port)
+        attempts += 1
+
+    if len(ports) < n:
+        raise RuntimeError(f"Could not find {n} free ports after {max_attempts} attempts")
+
+    print(f"[rollout_pipeline] Found {n} free ports: {ports}")
+    return ports
 
 
 # Import RolloutStats dataclass
@@ -197,35 +233,42 @@ def _generate_asymmetric_mode(
     # Hardcoded path to shy agent prompt
     shy_prompt_path = Path(__file__).parent / "dialop" / "envs" / "data" / "optimization_shy.txt"
 
+    # Find two free ports for asymmetric mode
+    asym_ports = find_free_ports(n=2)
+    trainee_port, opponent_port = asym_ports[0], asym_ports[1]
+
     # Start both servers with separate log files
     trainee_log = round_dir / "sglang_server_trainee.log"
     opponent_log = round_dir / "sglang_server_opponent.log"
 
-    print("Starting trainee server on GPUs 0,1...")
+    print(f"Starting trainee server on GPUs 0,1 (port {trainee_port})...")
     trainee_server = _start_sglang_server(
         model_path=trainee_model,
         gpus=f"{gpu_list[0]},{gpu_list[1]}",
         tp=2,
         mem_util=args.server_mem_fraction,
-        port=30002,
+        port=trainee_port,
         enable_torch_compile=args.server_enable_torch_compile,
         disable_cuda_graph=args.server_disable_cuda_graph,
         log_level=args.server_log_level,
         log_file=trainee_log,
     )
 
-    print("Starting opponent server on GPUs 2,3...")
+    print(f"Starting opponent server on GPUs 2,3 (port {opponent_port})...")
     opponent_server = _start_sglang_server(
         model_path=opponent_model,
         gpus=f"{gpu_list[2]},{gpu_list[3]}",
         tp=2,
         mem_util=args.server_mem_fraction,
-        port=30003,
+        port=opponent_port,
         enable_torch_compile=args.server_enable_torch_compile,
         disable_cuda_graph=args.server_disable_cuda_graph,
         log_level=args.server_log_level,
         log_file=opponent_log,
     )
+
+    trainee_url = f"http://127.0.0.1:{trainee_port}"
+    opponent_url = f"http://127.0.0.1:{opponent_port}"
 
     with open(log_file, "a") as lf:
         lf.write(json.dumps({
@@ -246,15 +289,15 @@ def _generate_asymmetric_mode(
 
         def wait_trainee():
             try:
-                _wait_for_sglang("http://127.0.0.1:30002", trainee_server, timeout_sec=args.server_wait_seconds, interval_sec=5)
-                print("Trainee server ready!")
+                _wait_for_sglang(trainee_url, trainee_server, timeout_sec=args.server_wait_seconds, interval_sec=5)
+                print(f"Trainee server ready on port {trainee_port}!")
             except Exception as e:
                 errors.append(("trainee", e))
 
         def wait_opponent():
             try:
-                _wait_for_sglang("http://127.0.0.1:30003", opponent_server, timeout_sec=args.server_wait_seconds, interval_sec=5)
-                print("Opponent server ready!")
+                _wait_for_sglang(opponent_url, opponent_server, timeout_sec=args.server_wait_seconds, interval_sec=5)
+                print(f"Opponent server ready on port {opponent_port}!")
             except Exception as e:
                 errors.append(("opponent", e))
 
@@ -277,9 +320,9 @@ def _generate_asymmetric_mode(
         gen_cmd = [
             python_bin, "scripts/generate_rollouts.py",
             "--mode", "asymmetric",
-            "--server-url", "http://127.0.0.1:30002",
+            "--server-url", trainee_url,
             "--model-id", trainee_model,
-            "--opponent-server-url", "http://127.0.0.1:30003",
+            "--opponent-server-url", opponent_url,
             "--opponent-model-id", opponent_model,
             "--opponent-instructions", str(shy_prompt_path),
             "--out", str(out_parquet),
@@ -375,30 +418,34 @@ def function_A_start_server_and_generate(
     if num_gpus == 4 and args.dual_server:
         print("Detected 4 GPUs: using dual-server mode (2×TP2) for better performance...")
 
+        # Find two free ports for dual-server mode
+        dual_ports = find_free_ports(n=2)
+        port1, port2 = dual_ports[0], dual_ports[1]
+
         # Start both servers with separate log files
         server1_log = round_dir / "sglang_server1.log"
         server2_log = round_dir / "sglang_server2.log"
 
-        print("Starting server 1 on GPUs 0,1...")
+        print(f"Starting server 1 on GPUs 0,1 (port {port1})...")
         server1 = _start_sglang_server(
             model_path=current_model,
             gpus=f"{gpu_list[0]},{gpu_list[1]}",
             tp=2,
             mem_util=args.server_mem_fraction,
-            port=30002,  # Dual server port 1
+            port=port1,
             enable_torch_compile=args.server_enable_torch_compile,
             disable_cuda_graph=args.server_disable_cuda_graph,
             log_level=args.server_log_level,
             log_file=server1_log,
         )
 
-        print("Starting server 2 on GPUs 2,3...")
+        print(f"Starting server 2 on GPUs 2,3 (port {port2})...")
         server2 = _start_sglang_server(
             model_path=current_model,
             gpus=f"{gpu_list[2]},{gpu_list[3]}",
             tp=2,
             mem_util=args.server_mem_fraction,
-            port=30003,  # Dual server port 2
+            port=port2,
             enable_torch_compile=args.server_enable_torch_compile,
             disable_cuda_graph=args.server_disable_cuda_graph,
             log_level=args.server_log_level,
@@ -419,19 +466,22 @@ def function_A_start_server_and_generate(
             print("Waiting for both servers to become ready...")
             import threading
 
+            server1_url = f"http://127.0.0.1:{port1}"
+            server2_url = f"http://127.0.0.1:{port2}"
+
             errors = []
 
             def wait_server1():
                 try:
-                    _wait_for_sglang("http://127.0.0.1:30002", server1, timeout_sec=args.server_wait_seconds, interval_sec=5)
-                    print("Server 1 ready!")
+                    _wait_for_sglang(server1_url, server1, timeout_sec=args.server_wait_seconds, interval_sec=5)
+                    print(f"Server 1 ready on port {port1}!")
                 except Exception as e:
                     errors.append(("server1", e))
 
             def wait_server2():
                 try:
-                    _wait_for_sglang("http://127.0.0.1:30003", server2, timeout_sec=args.server_wait_seconds, interval_sec=5)
-                    print("Server 2 ready!")
+                    _wait_for_sglang(server2_url, server2, timeout_sec=args.server_wait_seconds, interval_sec=5)
+                    print(f"Server 2 ready on port {port2}!")
                 except Exception as e:
                     errors.append(("server2", e))
 
@@ -456,7 +506,7 @@ def function_A_start_server_and_generate(
             print(f"Launching parallel generation: {num_games_per_server} unique games per server...")
             gen_cmd1 = [
                 python_bin, "scripts/generate_rollouts.py",
-                "--server-url", "http://127.0.0.1:30002",
+                "--server-url", server1_url,
                 "--model-id", current_model,
                 "--out", str(out1),
                 "--num-games", str(num_games_per_server),
@@ -471,7 +521,7 @@ def function_A_start_server_and_generate(
 
             gen_cmd2 = [
                 python_bin, "scripts/generate_rollouts.py",
-                "--server-url", "http://127.0.0.1:30003",
+                "--server-url", server2_url,
                 "--model-id", current_model,
                 "--out", str(out2),
                 "--num-games", str(num_games_per_server),
@@ -582,18 +632,21 @@ def function_A_start_server_and_generate(
         tp = num_gpus if num_gpus > 0 else 1
         print(f"Using single-server mode (TP={tp})...")
 
+        # Find a free port for single-server mode
+        single_port = find_free_ports(n=1)[0]
+
         server_proc = _start_sglang_server(
             model_path=current_model,
             gpus=gpu_string,
             tp=tp,
             mem_util=args.server_mem_fraction,
-            port=args.server_port,
+            port=single_port,
             enable_torch_compile=args.server_enable_torch_compile,
             disable_cuda_graph=args.server_disable_cuda_graph,
             log_level=args.server_log_level,
         )
 
-        server_url = f"http://127.0.0.1:{args.server_port}"
+        server_url = f"http://127.0.0.1:{single_port}"
         with open(log_file, "a") as lf:
             lf.write(json.dumps({
                 "event": "server_started",
@@ -1106,13 +1159,16 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
         print(f"{'='*80}\n")
 
         # Compute reference logprobs
+        # Note: server_port is not currently used by either method (hf_dataparallel or sglang Runtime)
+        # but we find a free port anyway for future-proofing
+        ref_port = find_free_ports(n=1)[0]
         ref_logprobs_list = compute_reference_logprobs(
             df=df,
             reference_model_path=args.reference_model,
             gpus=args.gpus,
             method=kl_method,
             # Parameters below only used by sglang method
-            server_port=30004,  # Reference model port (different from policy and dual servers)
+            server_port=ref_port,
             server_wait_seconds=args.server_wait_seconds,
             server_mem_fraction=args.server_mem_fraction,
             server_log_level=args.server_log_level,
