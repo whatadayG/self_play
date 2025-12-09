@@ -36,7 +36,7 @@ def run_expert_iteration_training(
     wandb_project: str,
     experiment_name: str,
     sft_epochs: int = 1,
-    entropy_coeff: float = 0.001,
+    entropy_coeff: float = 0.0,  # Disabled to enable Liger fused CE (was 0.001)
     gradient_checkpointing: bool = True,
     wb = None,
 ) -> Path:
@@ -52,7 +52,7 @@ def run_expert_iteration_training(
         wandb_project: W&B project name
         experiment_name: W&B experiment name
         sft_epochs: Number of training epochs (default: 1)
-        entropy_coeff: Entropy regularization coefficient (default: 0.001)
+        entropy_coeff: Entropy regularization coefficient (default: 0.0, disabled to enable Liger fused CE)
         gradient_checkpointing: Enable gradient checkpointing (default: True)
         wb: Optional W&B run object from main loop
 
@@ -68,14 +68,16 @@ def run_expert_iteration_training(
     nproc = num_gpus if num_gpus > 0 else 1
 
     # Determine batch sizes based on available GPUs
+    # Note: Liger fused linear+CE kernel enables larger batch sizes (saves ~13GB memory)
+    # Now works in both training AND validation (skip_logits=True forces fused kernel)
     if num_gpus >= 4:
-        micro_batch_size_per_gpu = 2
-        train_batch_size = 8
-        val_batch_size_per_gpu = 4
+        micro_batch_size_per_gpu = 8  # Increased from 2 (enabled by Liger fused CE)
+        train_batch_size = 32  # Increased from 8 (8 per GPU * 4 GPUs)
+        val_batch_size_per_gpu = 8  # Can use same as training (Liger works in validation now)
     else:
-        micro_batch_size_per_gpu = 1
+        micro_batch_size_per_gpu = 4  # Increased from 1 (for 2-GPU systems)
         train_batch_size = 8
-        val_batch_size_per_gpu = 2
+        val_batch_size_per_gpu = 4  # Can use same as training (Liger works in validation now)
 
     print(f"Running Expert Iteration training (filtered BC) with {nproc} GPU(s)")
     print(f"  CUDA_VISIBLE_DEVICES={sft_visible}")
@@ -92,13 +94,14 @@ def run_expert_iteration_training(
         f"data.train_batch_size={train_batch_size}",
         f"data.val_batch_size_per_gpu={val_batch_size_per_gpu}",
         f"model.partial_pretrain={current_model}",
+        "model.use_liger=true",  # EXPLICIT: Enable Liger fused linear+CE
         f"model.enable_gradient_checkpointing={'true' if gradient_checkpointing else 'false'}",
         f"trainer.total_epochs={sft_epochs}",
         "trainer.save_freq=900",
         "trainer.test_freq=33",
         # "+trainer.val_before_train=true",
         "trainer.checkpoint.save_contents=[\"hf_model\"]",
-        f"trainer.entropy_coeff={entropy_coeff}",
+        f"trainer.entropy_coeff={entropy_coeff}",  # Must be 0 for Liger
         f"data.max_length={max_len_arg}",
         "data.custom_cls.path=verl/verl/utils/dataset/pretokenized_sft_dataset.py",
         "data.custom_cls.name=PreTokenizedSFTDataset",
@@ -179,9 +182,9 @@ def run_ppo_grpo_training(
     ppo_visible = ",".join(gpu_list)
     nproc = num_gpus if num_gpus > 0 else 1
 
-    # Batch size = 1 for PPO due to memory constraints (need to store old_log_probs)
-    micro_batch_size_per_gpu = 8
-    train_batch_size = 32
+    micro_batch_size_per_gpu = 4
+    train_batch_size = 16
+    val_batch_size_per_gpu = 4  # Can use same as training (Liger works in validation now)
 
     print(f"Running PPO/GRPO training with {nproc} GPU(s)")
     print(f"  CUDA_VISIBLE_DEVICES={ppo_visible}")
@@ -203,7 +206,7 @@ def run_ppo_grpo_training(
         f"model.enable_gradient_checkpointing={'true' if gradient_checkpointing else 'false'}",
         f"trainer.total_epochs={ppo_epochs}",
         "trainer.save_freq=900",
-        "trainer.test_freq=33",
+        "trainer.test_freq=50",
         # "+trainer.val_before_train=true",
         "trainer.checkpoint.save_contents=[\"hf_model\"]",
         f"data.max_length={max_len_arg}",
@@ -212,9 +215,7 @@ def run_ppo_grpo_training(
         f"trainer.project_name={wandb_project}",
         f"trainer.experiment_name={experiment_name}",
         f"optim.lr={learning_rate}",
-        "optim.lr_scheduler=wsd",
-        "+optim.stable_ratio=0.99",
-        "+optim.min_lr_ratio=0.1",
+            # note, warmup and cosine annealing have been restored, since this is a multi-epoch operation, it makes far more sense than it used to
         # PPO-specific flags
         "trainer.use_ppo_loss=true",  # Enable PPO mode
         f"trainer.ppo_clip_ratio={clip_ratio}",
@@ -856,7 +857,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--rounds", type=int, default=1)
     ap.add_argument("--games-per-round", type=int, default=256)
-    ap.add_argument("--model-path", default="/home/nickatomlin/georgiazhou/self_play/checkpoints/sft_qwen3_8b/global_step_4800_merged")
+    ap.add_argument("--model-path", default="/home/nickatomlin/georgiazhou/self_play/checkpoints/sft_qwen3_8b/global_step_3600_merged")
     ap.add_argument("--save-root", default="")
     ap.add_argument("--gpus", default="0,1,2,3")
     ap.add_argument("--server-port", type=int, default=30001, help="Port for policy model server (default: 30001)")
@@ -898,7 +899,7 @@ def main():
 
     # Game termination settings
     ap.add_argument("--max-turns", type=int, default=10, help="Maximum number of turns per game (default: 10)")
-    ap.add_argument("--max-retries-per-turn", type=int, default=2, help="Maximum retries per turn before terminating (default: 2)")
+    ap.add_argument("--max-retries-per-turn", type=int, default=3, help="Maximum retries per turn before terminating (default: 3)")
 
     # Data filtering settings (EXPERT ITERATION MODE ONLY - GRPO does not filter by quality)
     ap.add_argument("--filter-positive-only", action="store_true", default=True, help="[Expert Iteration only] Train only on positive GRPO-normalized examples (above group mean). Ignored in ppo-grpo mode. (default: enabled for expert-iteration)")
