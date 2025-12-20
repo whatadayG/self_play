@@ -131,14 +131,9 @@ def run_expert_iteration_training(
     # Determine batch sizes based on available GPUs
     # Note: Liger fused linear+CE kernel enables larger batch sizes (saves ~13GB memory)
     # Now works in both training AND validation (skip_logits=True forces fused kernel)
-    if num_gpus >= 4:
-        micro_batch_size_per_gpu = 8  # Increased from 2 (enabled by Liger fused CE)
-        train_batch_size = 32  # Increased from 8 (8 per GPU * 4 GPUs)
-        val_batch_size_per_gpu = 8  # Can use same as training (Liger works in validation now)
-    else:
-        micro_batch_size_per_gpu = 4  # Increased from 1 (for 2-GPU systems)
-        train_batch_size = 8
-        val_batch_size_per_gpu = 4  # Can use same as training (Liger works in validation now)
+    micro_batch_size_per_gpu = 2  # Increased from 1 (for 2-GPU systems)
+    train_batch_size = 32
+    val_batch_size_per_gpu = 2  # Can use same as training (Liger works in validation now)
 
     print(f"Running Expert Iteration training (filtered BC) with {nproc} GPU(s)")
     print(f"  CUDA_VISIBLE_DEVICES={sft_visible}")
