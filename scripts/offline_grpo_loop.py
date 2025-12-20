@@ -12,6 +12,67 @@ import numpy as np
 from typing import Tuple, Optional, Dict, Any
 from dotenv import load_dotenv
 
+
+class TeeStream:
+    """Tee stdout/stderr to a log file while preserving console output."""
+
+    def __init__(self, log_path: Path):
+        self.log_path = log_path
+        self.log_file = None
+        self._original_stdout = None
+        self._original_stderr = None
+
+    def __enter__(self):
+        self.log_path.parent.mkdir(parents=True, exist_ok=True)
+        self.log_file = open(self.log_path, "a", buffering=1)  # Line buffered
+        self._original_stdout = sys.stdout
+        self._original_stderr = sys.stderr
+        sys.stdout = _TeeWriter(self._original_stdout, self.log_file)
+        sys.stderr = _TeeWriter(self._original_stderr, self.log_file)
+        # Write header
+        self.log_file.write(f"\n{'='*60}\n")
+        self.log_file.write(f"Session started: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        self.log_file.write(f"Command: {' '.join(sys.argv)}\n")
+        self.log_file.write(f"{'='*60}\n\n")
+        self.log_file.flush()
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # Restore original streams
+        if self._original_stdout:
+            sys.stdout = self._original_stdout
+        if self._original_stderr:
+            sys.stderr = self._original_stderr
+        if self.log_file:
+            self.log_file.write(f"\n{'='*60}\n")
+            self.log_file.write(f"Session ended: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+            if exc_type:
+                self.log_file.write(f"Exception: {exc_type.__name__}: {exc_val}\n")
+            self.log_file.write(f"{'='*60}\n")
+            self.log_file.close()
+        return False  # Don't suppress exceptions
+
+
+class _TeeWriter:
+    """Write to both console and log file."""
+
+    def __init__(self, console, log_file):
+        self.console = console
+        self.log_file = log_file
+
+    def write(self, message):
+        self.console.write(message)
+        if self.log_file and not self.log_file.closed:
+            self.log_file.write(message)
+
+    def flush(self):
+        self.console.flush()
+        if self.log_file and not self.log_file.closed:
+            self.log_file.flush()
+
+    def isatty(self):
+        return hasattr(self.console, 'isatty') and self.console.isatty()
+
 # Make the scripts directory importable so we can load the rollout pipeline
 try:
     scripts_dir = str(Path(__file__).parent)
@@ -1073,48 +1134,22 @@ def main():
                     wb=None,  # No W&B context in resume
                 )
             
-            # Log completion and update model
-            save_path = str(round_dir / "checkpoints")
-            log_file = round_dir / "progress.log"
-            with open(log_file, "a") as lf:
-                lf.write(json.dumps({
-                    "event": "sft_done",
-                    "timestamp": time.time(),
-                    "save_path": save_path
-                }) + "\n")
-            
             # Update current model
             latest_model = find_latest_model_from_round(round_dir)
             if latest_model:
                 current_model = latest_model
-            
-            # Mark round complete
-            with open(log_file, "a") as lf:
-                lf.write(json.dumps({
-                    "event": "round_complete",
-                    "timestamp": time.time(),
-                    "next_model": current_model
-                }) + "\n")
             
             # Move to next round
             start_round = current_round + 1
         
         elif phase == 'finish_round':
             round_dir = save_root / f"round_{current_round:03d}"
-            
+
             # Just update the model and mark round complete
             latest_model = find_latest_model_from_round(round_dir)
             if latest_model:
                 current_model = latest_model
-            
-            log_file = round_dir / "progress.log"
-            with open(log_file, "a") as lf:
-                lf.write(json.dumps({
-                    "event": "round_complete",
-                    "timestamp": time.time(),
-                    "next_model": current_model
-                }) + "\n")
-            
+
             start_round = current_round + 1
     
     # If no existing run or starting fresh (also handle branching)
@@ -1146,6 +1181,71 @@ def main():
                         current_model = prev_model
             else:
                 print(f"Warning: --branch-from path not found: {src}")
+
+    # Install stdout/stderr tee to log file
+    log_path = save_root / "output.log"
+    with TeeStream(log_path):
+        return _run_offline_grpo_loop_inner(
+            args=args,
+            save_root=save_root,
+            current_model=current_model,
+            start_round=start_round,
+        )
+
+
+def _run_offline_grpo_loop_inner(args, save_root: Path, current_model: str, start_round: int):
+    """Inner implementation of run_offline_grpo_loop, wrapped with TeeStream."""
+    # Log run information to a text file
+    run_info_path = save_root / "run_info.txt"
+    is_resume = run_info_path.exists()
+    with open(run_info_path, "a") as f:
+        if is_resume:
+            f.write(f"\n{'='*60}\n")
+            f.write(f"Run resumed: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        else:
+            f.write(f"Run started: {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"Command: {' '.join(sys.argv)}\n")
+        f.write(f"\n=== Configuration ===\n")
+        f.write(f"Training mode: {args.training_mode}\n")
+        f.write(f"Model path: {args.model_path}\n")
+        f.write(f"Current model: {current_model}\n")
+        f.write(f"Rounds: {args.rounds}\n")
+        f.write(f"Games per round: {args.games_per_round}\n")
+        f.write(f"GPUs: {args.gpus}\n")
+        f.write(f"Start round: {start_round}\n")
+        f.write(f"Save root: {save_root}\n")
+        f.write(f"\n=== Server Settings ===\n")
+        f.write(f"Server port: {args.server_port}\n")
+        f.write(f"Server mem fraction: {args.server_mem_fraction}\n")
+        f.write(f"Dual server: {args.dual_server}\n")
+        f.write(f"Enable torch compile: {args.server_enable_torch_compile}\n")
+        f.write(f"Disable CUDA graph: {args.server_disable_cuda_graph}\n")
+        f.write(f"\n=== Training Settings ===\n")
+        if args.training_mode == "ppo-grpo":
+            f.write(f"PPO epochs: {args.ppo_epochs}\n")
+            f.write(f"PPO learning rate: {args.ppo_learning_rate}\n")
+            f.write(f"PPO clip ratio: {args.ppo_clip_ratio}\n")
+            f.write(f"PPO entropy coeff: {args.ppo_entropy_coeff}\n")
+        else:
+            f.write(f"SFT epochs: {args.sft_epochs}\n")
+            f.write(f"SFT entropy coeff: {args.sft_entropy_coeff}\n")
+            f.write(f"Filter positive only: {args.filter_positive_only}\n")
+            f.write(f"Filter percentile: {args.filter_percentile}\n")
+        f.write(f"\n=== KL Settings ===\n")
+        f.write(f"Use KL: {args.use_kl}\n")
+        if args.use_kl:
+            f.write(f"KL coef: {args.kl_coef}\n")
+            f.write(f"KL method: {args.kl_method}\n")
+            f.write(f"Reference model: {args.reference_model}\n")
+        f.write(f"\n=== Rollout Settings ===\n")
+        f.write(f"Rollout temperature: {args.rollout_temperature}\n")
+        f.write(f"Max turns: {args.max_turns}\n")
+        f.write(f"Max retries per turn: {args.max_retries_per_turn}\n")
+        if args.shy_setup:
+            f.write(f"\n=== Asymmetric Mode ===\n")
+            f.write(f"Shy setup enabled: True\n")
+            f.write(f"Shy opponent model: {args.shy_opponent_model}\n")
+    print(f"Run info saved to: {run_info_path}")
 
     # Run the main loop
     run_offline_grpo_loop(args, save_root, current_model, start_round)
@@ -1182,8 +1282,6 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
         print(f"=== Round {r} ===")
         round_dir = save_root / f"round_{r:03d}"
         round_dir.mkdir(parents=True, exist_ok=True)
-
-        log_file = round_dir / "progress.log"
 
         # For PPO/GRPO mode, disable quality-based filtering (train on all samples)
         # Expert Iteration uses filtering to select high-quality examples
@@ -1278,13 +1376,6 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
         
         # Run training (mode selected by --training-mode flag)
         print(f"Running {args.training_mode} training...")
-        with open(log_file, "a") as lf:
-            lf.write(json.dumps({
-                "event": "training_start",
-                "training_mode": args.training_mode,
-                "timestamp": time.time(),
-                "round": r,
-            }) + "\n")
 
         if args.training_mode == "expert-iteration":
             train_log = run_expert_iteration_training(
@@ -1328,21 +1419,12 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
             # Update W&B with training metrics
             log_rollout_to_wandb(wb, r, rollout_stats, training_metrics)
 
-        save_path = str(round_dir / "checkpoints")
-        with open(log_file, "a") as lf:
-            lf.write(json.dumps({
-                "event": "training_done",
-                "training_mode": args.training_mode,
-                "timestamp": time.time(),
-                "save_path": save_path,
-                "training_metrics": training_metrics,
-            }) + "\n")
-
         # Update model path for next round
+        save_path = str(round_dir / "checkpoints")
         latest = None
         for p in Path(save_path).glob("global_step_*"):
             latest = p if (latest is None or p.stat().st_mtime > latest.stat().st_mtime) else latest
-        
+
         if latest is None:
             print("Warning: no SFT checkpoint found; keeping current model for next round.")
         else:
@@ -1352,13 +1434,6 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
             else:
                 print(f"Warning: HF directory not found under {latest}, falling back to checkpoint root")
                 current_model = str(latest)
-        
-        with open(log_file, "a") as lf:
-            lf.write(json.dumps({
-                "event": "round_complete",
-                "timestamp": time.time(),
-                "next_model": current_model
-            }) + "\n")
 
         # Cleanup old checkpoints when round is a multiple of 5
         if r > 0 and r % 5 == 0:
