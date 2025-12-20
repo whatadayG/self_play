@@ -353,13 +353,6 @@ def _generate_asymmetric_mode(
         if not out_parquet.exists():
             raise FileNotFoundError(f"Expected output {out_parquet} not found after generation")
 
-        with open(log_file, "a") as lf:
-            lf.write(json.dumps({
-                "event": "asymmetric_generation_complete",
-                "timestamp": time.time(),
-                "output": str(out_parquet),
-            }) + "\n")
-
         return out_parquet
 
     finally:
@@ -371,11 +364,6 @@ def _generate_asymmetric_mode(
             subprocess.run(["pkill", "-f", "sglang"], check=False)
         except Exception as e:
             print(f"Warning: pkill failed: {e}")
-        with open(log_file, "a") as lf:
-            lf.write(json.dumps({
-                "event": "asymmetric_servers_stopped",
-                "timestamp": time.time(),
-            }) + "\n")
 
 
 def function_A_start_server_and_generate(
@@ -452,15 +440,6 @@ def function_A_start_server_and_generate(
             log_level=args.server_log_level,
             log_file=server2_log,
         )
-
-        with open(log_file, "a") as lf:
-            lf.write(json.dumps({
-                "event": "dual_servers_started",
-                "timestamp": time.time(),
-                "model": current_model,
-                "server1_gpus": f"{gpu_list[0]},{gpu_list[1]}",
-                "server2_gpus": f"{gpu_list[2]},{gpu_list[3]}",
-            }) + "\n")
 
         try:
             # Wait for both servers in parallel
@@ -610,15 +589,6 @@ def function_A_start_server_and_generate(
             if out2.exists():
                 out2.unlink()
 
-            with open(log_file, "a") as lf:
-                lf.write(json.dumps({
-                    "event": "dual_generation_done",
-                    "timestamp": time.time(),
-                    "out": str(out_parquet),
-                    "server1_sequences": len(df1),
-                    "server2_sequences": len(df2),
-                }) + "\n")
-
             return out_parquet
 
         finally:
@@ -650,14 +620,6 @@ def function_A_start_server_and_generate(
         )
 
         server_url = f"http://127.0.0.1:{single_port}"
-        with open(log_file, "a") as lf:
-            lf.write(json.dumps({
-                "event": "server_started",
-                "timestamp": time.time(),
-                "model": current_model,
-                "gpus": gpu_string,
-                "tp": tp,
-            }) + "\n")
 
         try:
             _wait_for_sglang(server_url, server_proc, timeout_sec=args.server_wait_seconds, interval_sec=5)
@@ -708,12 +670,6 @@ def function_A_start_server_and_generate(
                 else:
                     raise
 
-            with open(log_file, "a") as lf:
-                lf.write(json.dumps({
-                    "event": "generation_done",
-                    "timestamp": time.time(),
-                    "out": str(out_parquet),
-                }) + "\n")
             return out_parquet
         finally:
             print("Stopping SGLang server...")
@@ -1268,18 +1224,6 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
         print(f"  Empty policy logprobs: {empty_policy}/{len(df)}")
         print(f"  Empty ref logprobs: {empty_ref}/{len(df)}")
 
-        # Log KL stats
-        log_file = round_dir / "progress.log"
-        with open(log_file, "a") as lf:
-            lf.write(json.dumps({
-                "event": "kl_penalty_applied",
-                "timestamp": time.time(),
-                "mean_kl": mean_kl,
-                "std_kl": std_kl,
-                "kl_coef": kl_coef,
-                "mean_penalty": kl_coef * mean_kl,
-            }) + "\n")
-
         # Overwrite the parquet with adjusted rewards
         df.to_parquet(str(train_parquet))
         print(f"Saved adjusted rewards to {train_parquet}\n")
@@ -1523,37 +1467,8 @@ def process_rollouts_post_generation(round_dir: Path, save_root: Path, args=None
         zero_reward_count=zero_reward_count,
     )
 
-    # Log to progress.log
-    log_file = round_dir / "progress.log"
-
     # Calculate length-trimmed count before positive filtering
     length_trimmed_count = len(df_no_failures[lengths <= pct95])
-
-    with open(log_file, "a") as lf:
-        lf.write(json.dumps({
-            "event": "filter_and_trim_done",
-            "timestamp": time.time(),
-            "total": int(len(df)),
-            "failed": failure_count,
-            "after_failure_filter": int(len(df_no_failures)),
-            "pct95_threshold": pct95,
-            "after_length_trim": length_trimmed_count,
-            "filter_positive_only_enabled": filter_positive_only,
-            "filter_percentile": filter_percentile,
-            "final_kept": int(len(kept)),
-        }) + "\n")
-        lf.write(json.dumps({
-            "event": "rollout_metrics",
-            "timestamp": time.time(),
-            "game_reward_mean": game_reward_mean,
-            "game_reward_std": game_reward_std,
-            "game_reward_p50": game_reward_p50,
-            "perfect_score_ratio": perfect_score_ratio,
-            "perfect_score_ratio_after_trim": perfect_score_ratio_after_trim,
-            "grpo_weight_mean": grpo_weight_mean,
-            "grpo_weight_pos_ratio": grpo_weight_pos_ratio,
-            "failure_ratio": failure_ratio,
-        }) + "\n")
 
     print(f"\nRollout summary:")
     print(f"  Total sequences: {len(df)}")
