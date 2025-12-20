@@ -78,6 +78,7 @@ def run_one_game(
             top_p=player_cfg["top_p"],
             max_tokens=player_cfg["max_new_tokens"],
             timeout=player_cfg.get("timeout", 120.0),
+            max_thinking_tokens=player_cfg.get("max_thinking_tokens"),
         )
         cfg.server_url = player_cfg["server_url"].rstrip("/")
         if not cfg.server_url.endswith("/v1"):
@@ -285,6 +286,7 @@ def run_one_game_vs_opponent(
             top_p=trainee_cfg["top_p"],
             max_tokens=trainee_cfg["max_new_tokens"],
             timeout=trainee_cfg.get("timeout", 120.0),
+            max_thinking_tokens=trainee_cfg.get("max_thinking_tokens"),
         )
         trainee_server_cfg.server_url = trainee_cfg["server_url"].rstrip("/")
         if not trainee_server_cfg.server_url.endswith("/v1"):
@@ -306,6 +308,7 @@ def run_one_game_vs_opponent(
             top_p=opponent_cfg["top_p"],
             max_tokens=opponent_cfg["max_new_tokens"],
             timeout=opponent_cfg.get("timeout", 120.0),
+            max_thinking_tokens=opponent_cfg.get("max_thinking_tokens"),
         )
         opponent_server_cfg.server_url = opponent_cfg["server_url"].rstrip("/")
         if not opponent_server_cfg.server_url.endswith("/v1"):
@@ -713,6 +716,8 @@ def main():
     ap.add_argument("--temperature", type=float, default=0.7)
     ap.add_argument("--top-p", type=float, default=0.9)
     ap.add_argument("--max-new-tokens", type=int, default=8192)
+    ap.add_argument("--max-thinking-tokens", type=int, default=None,
+                    help="Maximum tokens for Qwen3 thinking block (None=unlimited, 0=skip thinking)")
     # Use a large default; external server's KV cache is governed by mem fraction, not this cap
     ap.add_argument("--max-model-len", type=int, default=32768)
     # GRPO grouping size (k). Rewards will be transformed to relative rewards within each group.
@@ -781,6 +786,7 @@ def main():
             "temperature": args.temperature,
             "top_p": args.top_p,
             "max_new_tokens": args.max_new_tokens,
+            "max_thinking_tokens": args.max_thinking_tokens,
             "max_turns": getattr(args, 'max_turns', 10),
             "max_retries_per_turn": getattr(args, 'max_retries_per_turn', 2),
         }
@@ -807,6 +813,7 @@ def main():
             "temperature": args.temperature,
             "top_p": args.top_p,
             "max_new_tokens": args.max_new_tokens,
+            "max_thinking_tokens": args.max_thinking_tokens,
             "max_turns": getattr(args, 'max_turns', 10),
             "max_retries_per_turn": getattr(args, 'max_retries_per_turn', 2),
         }
@@ -824,6 +831,7 @@ def main():
             "temperature": args.temperature,
             "top_p": args.top_p,
             "max_new_tokens": args.max_new_tokens,
+            "max_thinking_tokens": args.max_thinking_tokens,
             "max_turns": getattr(args, 'max_turns', 10),
             "max_retries_per_turn": getattr(args, 'max_retries_per_turn', 2),
         }

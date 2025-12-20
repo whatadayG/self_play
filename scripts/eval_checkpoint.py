@@ -170,6 +170,7 @@ def generate_eval_rollouts(
             "--out", str(output_path),
             "--num-games", str(num_games),
             "--max-new-tokens", "8192",
+            "--max-thinking-tokens", "7000",
             "--group-size", "1",  # KEY DIFFERENCE: Only play each game once
             "--temperature", "0.7",
             "--top-p", "0.9",
