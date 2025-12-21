@@ -594,40 +594,14 @@ def read_mean_from_stats(stats_path: Path) -> Optional[float]:
 def branch_run(src_run: Path, dst_run: Path, rounds_to_link: int = 2) -> None:
     """Create a new run directory that branches from src_run, symlinking early rounds.
 
-    For each of the first `rounds_to_link` rounds, symlink the existing parquet(s) and checkpoints
-    into the new run directory and compute stats.txt for the trimmed parquet if available, else the raw parquet.
+    For each of the first `rounds_to_link` rounds, symlink the entire round directory.
     """
     dst_run.mkdir(parents=True, exist_ok=True)
     for r in range(rounds_to_link):
         src_round = src_run / f"round_{r:03d}"
         dst_round = dst_run / f"round_{r:03d}"
-        dst_round.mkdir(parents=True, exist_ok=True)
-        if not src_round.exists():
-            continue
-        # Symlink key files if present
-        for name in ["train.parquet", "train_trimmed.parquet"]:
-            s = src_round / name
-            d = dst_round / name
-            if s.exists() and not d.exists():
-                try:
-                    os.symlink(os.fspath(s), os.fspath(d))
-                except FileExistsError:
-                    pass
-        # Symlink checkpoints directory
-        src_ckpt = src_round / "checkpoints"
-        dst_ckpt = dst_round / "checkpoints"
-        if src_ckpt.exists() and not dst_ckpt.exists():
-            try:
-                os.symlink(os.fspath(src_ckpt), os.fspath(dst_ckpt))
-            except FileExistsError:
-                pass
-        # Compute stats for existing parquet(s) (prefer full rollout set)
-        parquet = dst_round / "train.parquet"
-        if not parquet.exists():
-            parquet = dst_round / "train_trimmed.parquet"
-        stats_path = dst_round / "stats.txt"
-        if parquet.exists() and not stats_path.exists():
-            compute_and_save_stats(parquet, stats_path)
+        if src_round.exists() and not dst_round.exists():
+            os.symlink(src_round, dst_round)
 
 def find_run_by_name(run_name: str, base_logs_dir: str = "/home/nickatomlin/georgiazhou/self_play/logs/offline_grpo") -> Optional[Path]:
     """Find a run directory by name or timestamp."""
