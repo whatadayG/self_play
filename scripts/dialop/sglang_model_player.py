@@ -176,17 +176,6 @@ class SGLangModelPlayer(BaseModelPlayer):
             "rid": rid,  # Include structured request ID for cache tracing
         }
 
-        # Add max_thinking_tokens if configured (for Qwen3 thinking budget limitation)
-        # NOTE: This requires the SGLang thinking budget patch to be applied.
-        # If the patch is not applied, SGLang will silently ignore this parameter.
-        max_thinking_tokens = gen_kwargs.get("max_thinking_tokens", getattr(self.config, "max_thinking_tokens", None))
-        if max_thinking_tokens is not None:
-            payload["max_thinking_tokens"] = max_thinking_tokens
-            # Store for validation after response
-            self._expected_max_thinking_tokens = max_thinking_tokens
-        else:
-            self._expected_max_thinking_tokens = None
-
         # Use longer timeout to account for queueing at high concurrency
         timeout = 900.0
         max_retries = 5
@@ -270,9 +259,6 @@ class SGLangModelPlayer(BaseModelPlayer):
                     self._cached_input_sequence = None
                 else:
                     self.last_generation_logprobs = None
-
-                # Validate max_thinking_tokens was respected (detect if patch not applied)
-                self._validate_thinking_budget(response_text, output_tokens)
 
                 return response_text, input_tokens, output_tokens
 
@@ -752,46 +738,6 @@ class SGLangModelPlayer(BaseModelPlayer):
             add_generation_prompt=False
         )
 
-    def _validate_thinking_budget(self, response_text: str, output_tokens: int):
-        """Validate that max_thinking_tokens was respected.
-
-        If max_thinking_tokens was set but the thinking block exceeds it significantly,
-        this indicates the SGLang patch was not applied. Log loudly but don't crash.
-        """
-        import logging
-        import re
-
-        max_thinking = getattr(self, '_expected_max_thinking_tokens', None)
-        if max_thinking is None:
-            return  # No limit was set
-
-        # Extract thinking block from response
-        # Format: <think>...</think>
-        think_match = re.search(r'<think>(.*?)</think>', response_text, re.DOTALL)
-        if not think_match:
-            return  # No thinking block found
-
-        thinking_content = think_match.group(1)
-
-        # Rough token estimate: ~4 chars per token for English
-        # This is imprecise but good enough for detecting violations
-        estimated_thinking_tokens = len(thinking_content) // 4
-
-        if estimated_thinking_tokens > max_thinking:
-            logger = logging.getLogger(__name__)
-            warning_msg = (
-                f"[WARNING] max_thinking_tokens={max_thinking} was set but thinking block "
-                f"has ~{estimated_thinking_tokens} tokens. "
-                f"This suggests the SGLang thinking budget patch is NOT applied! "
-                f"Run: python sglang_patch/apply_patch.py"
-            )
-            logger.warning(warning_msg)
-            self.console.print(f"[yellow bold]{warning_msg}[/yellow bold]")
-
-            # Also print to stderr for visibility in logs
-            import sys
-            print(warning_msg, file=sys.stderr)
-
     def _dump_max_tokens_exceeded(self, response_text: str, output_tokens: int, max_tokens: int):
         """Dump conversation when a response hits max_tokens limit.
 
@@ -969,16 +915,7 @@ class SGLangModelPlayer(BaseModelPlayer):
             "max_new_tokens": gen_kwargs.get("max_tokens", self.config.max_tokens),
             "n": 1,
         }
-
-        # Add max_thinking_tokens if configured (for Qwen3 thinking budget limitation)
-        # NOTE: This requires the SGLang thinking budget patch to be applied.
-        max_thinking_tokens = gen_kwargs.get("max_thinking_tokens", getattr(self.config, "max_thinking_tokens", None))
-        if max_thinking_tokens is not None:
-            sampling_params["max_thinking_tokens"] = max_thinking_tokens
-            self._expected_max_thinking_tokens = max_thinking_tokens
-        else:
-            self._expected_max_thinking_tokens = None
-
+        
         # Log generation start
         import logging
         logger = logging.getLogger(__name__)
@@ -1010,10 +947,6 @@ class SGLangModelPlayer(BaseModelPlayer):
             output_tokens = len(output["output_ids"]) - input_tokens
             
             logger.debug(f"[SGLangPlayer] Generated {output_tokens} tokens")
-
-            # Validate max_thinking_tokens was respected (detect if patch not applied)
-            self._validate_thinking_budget(response_text, output_tokens)
-
             return response_text, input_tokens, output_tokens
 
         except Exception as e:

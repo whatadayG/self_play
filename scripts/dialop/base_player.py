@@ -24,7 +24,6 @@ class SGLangConfig(ModelConfig):
     server_url: str = "http://localhost:30000"
     api_key: str = "EMPTY"
     timeout: float = 120.0
-    max_thinking_tokens: Optional[int] = None  # Limit thinking tokens for Qwen3 models
 
 
 @dataclass 
