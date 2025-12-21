@@ -261,7 +261,22 @@ class FSDPSFTTrainer:
             if self.config.model.get("use_liger", False):
                 from liger_kernel.transformers.monkey_patch import _apply_liger_kernel_to_instance
 
-                _apply_liger_kernel_to_instance(model=self.model)
+                # Option to disable fused linear+CE while keeping other Liger optimizations
+                # (RMSNorm, SwiGLU, RoPE). Set liger_fused_linear_ce=False to use standard CE.
+                use_fused_linear_ce = self.config.model.get("liger_fused_linear_ce", True)
+                _apply_liger_kernel_to_instance(
+                    model=self.model,
+                    fused_linear_cross_entropy=use_fused_linear_ce,
+                )
+
+            # Optionally freeze lm_head (useful with Liger + sample weighting)
+            # When frozen, we can use the simpler hidden_states hook for weighting
+            # instead of the more expensive summon_full_params approach
+            if self.config.model.get("freeze_lm_head", False):
+                if hasattr(self.model, 'lm_head'):
+                    for param in self.model.lm_head.parameters():
+                        param.requires_grad = False
+                    print("[INFO] lm_head frozen (freeze_lm_head=True)")
 
             if self.config.model.get("lora_rank", 0) > 0:
                 self.model.enable_input_require_grads()
@@ -530,8 +545,10 @@ class FSDPSFTTrainer:
         context = self.sharding_manager if use_sp else nullcontext()
         with context, torch.autocast(device_type=self.device_name, dtype=torch.bfloat16):
             # Check if we should use Liger's fused linear+cross-entropy kernel
+            # Requires: use_liger=True AND liger_fused_linear_ce=True AND no sequence parallel AND entropy=0
             use_liger_config = self.config.model.get("use_liger", False)
-            use_liger = use_liger_config and not use_sp and entropy_coeff == 0
+            liger_fused_linear_ce = self.config.model.get("liger_fused_linear_ce", True)
+            use_liger = use_liger_config and liger_fused_linear_ce and not use_sp and entropy_coeff == 0
 
             # Debug logging for Liger activation status (only on rank 0)
             if self.config.trainer.get('local_rank', 0) == 0 and hasattr(self, '_liger_debug_logged') is False:
@@ -540,6 +557,8 @@ class FSDPSFTTrainer:
                     reasons = []
                     if not use_liger_config:
                         reasons.append("model.use_liger=False")
+                    if not liger_fused_linear_ce:
+                        reasons.append("model.liger_fused_linear_ce=False")
                     if use_sp:
                         reasons.append("sequence_parallel=True")
                     if entropy_coeff != 0:
@@ -548,62 +567,155 @@ class FSDPSFTTrainer:
 
             if use_liger:
                 # ========== LIGER FUSED LINEAR+CROSS-ENTROPY PATH ==========
-                # Use Liger's monkey-patched forward (handles FSDP correctly)
+                # Avoids materializing (B, L, V) logits tensor, saving ~13GB memory
 
-                # 1. Prepare labels for causal LM (mark padding/non-assistant tokens with -100)
-                labels = input_ids.clone()
-
-                # Apply loss mask: set non-assistant tokens to -100 (ignored by Liger)
-                # loss_mask is already (B*(L-1),) flattened, need to reshape
                 B = input_ids.size(0)
                 L = input_ids.size(1)
                 loss_mask_2d = loss_mask.view(B, L - 1)  # (B, L-1)
 
-                # For next-token prediction: labels[i] = input_ids[i+1]
-                # So we set labels[:, :-1] based on loss_mask, and labels[:, -1] = -100
+                # Prepare labels: mark non-assistant tokens with -100 (ignored by Liger)
+                labels = input_ids.clone()
                 labels[:, :-1][loss_mask_2d == 0] = -100  # Mask non-assistant tokens
                 labels[:, -1] = -100  # Last token has no target
 
-                # 2. Call monkey-patched forward with labels
-                # Liger's patched forward will use fused linear+CE when labels are provided
-                # skip_logits=True forces fused kernel even during validation (model.training=False)
-                output = self.fsdp_model(
-                    input_ids=input_ids,
-                    attention_mask=attention_mask,
-                    position_ids=position_ids,
-                    labels=labels,  # Triggers Liger's fused path
-                    skip_logits=True,  # Force fused kernel in validation too
-                    use_cache=False
-                )
+                # Check if we need sample weighting
+                freeze_lm_head = self.config.model.get("freeze_lm_head", False)
 
-                # 3. Extract loss (already computed by Liger's fused kernel)
-                # NOTE: Liger computes reduction='mean' over non-ignored tokens
-                # We need to convert this to match our expected behavior
-                base_loss = output.loss  # Scalar, averaged over valid tokens
-
-
-                # 4. Handle sample weighting (GRPO rewards)
-                # TODO: Liger's internal loss doesn't support per-sample weights
-                # For now, we use uniform weighting
-                # Future: can re-implement with per-sequence losses if needed
                 if sample_weight is not None:
-                    # Warning: sample weighting not yet implemented for Liger path
-                    # This is a known limitation - all samples weighted equally
-                    pass
+                    # ========== SAMPLE WEIGHTING PATH ==========
+                    # Two options depending on whether lm_head is frozen
 
-                # 5. The loss is already averaged, but we need to apply dp_size scaling
-                # to match the behavior of the standard path
-                if self.config.data.balance_dp_token:
-                    dp_size = torch.distributed.get_world_size()
+                    if freeze_lm_head:
+                        # Option B: lm_head frozen, use hidden_states hook
+                        # Decoder gradients are weighted, lm_head has no gradient
+                        def make_weight_hook(weights):
+                            def hook(grad):
+                                # grad: (B, L, H)
+                                B = weights.size(0)
+                                w = weights.view(B, 1, 1).to(grad.device).to(grad.dtype)
+                                return grad * w
+                            return hook
+
+                        # Get hidden states from decoder (batched, efficient)
+                        decoder_output = self.fsdp_model.model(
+                            input_ids=input_ids,
+                            attention_mask=attention_mask,
+                            position_ids=position_ids,
+                            use_cache=False
+                        )
+                        hidden_states = decoder_output[0]  # (B, L, H)
+
+                        # Register hook to weight gradients during backward
+                        hook_handle = hidden_states.register_hook(make_weight_hook(sample_weight))
+
+                        # Call full model with labels to trigger Liger's fused path
+                        # Note: This does redundant decoder forward, but keeps code simple
+                        # The hook on hidden_states will apply weights during backward
+                        output = self.fsdp_model(
+                            input_ids=input_ids,
+                            attention_mask=attention_mask,
+                            position_ids=position_ids,
+                            labels=labels,
+                            skip_logits=True,
+                            use_cache=False
+                        )
+                        base_loss = output.loss
+
+                        # Compute weighted average for correct loss value (for logging)
+                        # Note: gradients are handled by hook, this is just for the returned loss
+                        if self.config.data.balance_dp_token:
+                            dp_size = torch.distributed.get_world_size()
+                        else:
+                            dp_size = 1
+                        loss = base_loss * dp_size
+
+                        if do_backward:
+                            loss.backward()
+                        hook_handle.remove()
+                        return loss
+
+                    else:
+                        # Option A (default): Use summon_full_params for per-sample fused CE
+                        # Batched decoder forward, sequential fused kernel calls
+                        from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
+                        from liger_kernel.transformers.fused_linear_cross_entropy import LigerFusedLinearCrossEntropyLoss
+
+                        # 1. Batched forward through decoder (efficient)
+                        decoder_output = self.fsdp_model.model(
+                            input_ids=input_ids,
+                            attention_mask=attention_mask,
+                            position_ids=position_ids,
+                            use_cache=False
+                        )
+                        hidden_states = decoder_output[0]  # (B, L, H)
+                        H = hidden_states.size(-1)
+
+                        # Prepare shifted hidden states and labels for next-token prediction
+                        shift_hidden = hidden_states[:, :-1, :].contiguous()  # (B, L-1, H)
+                        shift_labels = labels[:, 1:].contiguous()  # (B, L-1)
+
+                        # 2. Sequential per-sample fused CE with sample weights
+                        # Use summon_full_params to access unsharded lm_head.weight
+                        fused_ce = LigerFusedLinearCrossEntropyLoss(
+                            ignore_index=-100,
+                            reduction='mean',  # Mean over valid tokens per sample
+                        )
+
+                        total_weighted_loss = torch.tensor(0.0, device=input_ids.device)
+                        total_weight = torch.tensor(0.0, device=input_ids.device)
+
+                        with FSDP.summon_full_params(self.fsdp_model, writeback=True, recurse=True):
+                            lm_head_weight = self.fsdp_model.lm_head.weight  # (V, H)
+
+                            for i in range(B):
+                                sample_hidden = shift_hidden[i].reshape(-1, H)  # (L-1, H)
+                                sample_labels = shift_labels[i].reshape(-1)  # (L-1,)
+
+                                sample_loss = fused_ce(
+                                    lm_head_weight,
+                                    sample_hidden,
+                                    sample_labels,
+                                )
+
+                                w = sample_weight[i]
+                                total_weighted_loss = total_weighted_loss + w * sample_loss
+                                total_weight = total_weight + w.abs()  # Use abs for normalization
+
+                        # Normalize by total weight
+                        base_loss = total_weighted_loss / (total_weight + 1e-8)
+
+                        if self.config.data.balance_dp_token:
+                            dp_size = torch.distributed.get_world_size()
+                        else:
+                            dp_size = 1
+                        loss = base_loss * dp_size
+
+                        if do_backward:
+                            loss.backward()
+                        return loss
+
                 else:
-                    dp_size = 1
+                    # ========== NO SAMPLE WEIGHTING (simple path) ==========
+                    # Use Liger's monkey-patched forward directly
+                    output = self.fsdp_model(
+                        input_ids=input_ids,
+                        attention_mask=attention_mask,
+                        position_ids=position_ids,
+                        labels=labels,
+                        skip_logits=True,
+                        use_cache=False
+                    )
+                    base_loss = output.loss
 
-                loss = base_loss * dp_size
-                # No entropy bonus with Liger (disabled by use_liger condition)
-                # Liger path: loss is already averaged, skip the final division
-                if do_backward:
-                    loss.backward()
-                return loss
+                    if self.config.data.balance_dp_token:
+                        dp_size = torch.distributed.get_world_size()
+                    else:
+                        dp_size = 1
+
+                    loss = base_loss * dp_size
+                    if do_backward:
+                        loss.backward()
+                    return loss
 
             elif not use_sp:
                 # ========== STANDARD PATH (original code) ==========

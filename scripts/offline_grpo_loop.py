@@ -99,6 +99,7 @@ def run_expert_iteration_training(
     sft_epochs: int = 1,
     entropy_coeff: float = 0.0,  # Disabled to enable Liger fused CE (was 0.001)
     gradient_checkpointing: bool = True,
+    liger_fused_linear_ce: bool = True,  # Use Liger's fused linear+CE (memory efficient)
     wb = None,
 ) -> Path:
     """Run Expert Iteration training (filtered behavioral cloning with GRPO-style normalization) and return path to log file.
@@ -115,6 +116,8 @@ def run_expert_iteration_training(
         sft_epochs: Number of training epochs (default: 1)
         entropy_coeff: Entropy regularization coefficient (default: 0.0, disabled to enable Liger fused CE)
         gradient_checkpointing: Enable gradient checkpointing (default: True)
+        liger_fused_linear_ce: Use Liger's fused linear+CE kernel (default: True). Set False to use
+            standard PyTorch CE while keeping other Liger optimizations (RMSNorm, SwiGLU, RoPE).
         wb: Optional W&B run object from main loop
 
     Returns:
@@ -150,7 +153,8 @@ def run_expert_iteration_training(
         f"data.train_batch_size={train_batch_size}",
         f"data.val_batch_size_per_gpu={val_batch_size_per_gpu}",
         f"model.partial_pretrain={current_model}",
-        "model.use_liger=true",  # EXPLICIT: Enable Liger fused linear+CE
+        "model.use_liger=true",  # Enable Liger optimizations (RMSNorm, SwiGLU, RoPE, and optionally fused CE)
+        f"+model.liger_fused_linear_ce={'true' if liger_fused_linear_ce else 'false'}",
         f"model.enable_gradient_checkpointing={'true' if gradient_checkpointing else 'false'}",
         f"trainer.total_epochs={sft_epochs}",
         "trainer.save_freq=900",
@@ -969,9 +973,11 @@ def main():
 
     # SFT/Expert Iteration training settings (for expert-iteration mode)
     ap.add_argument("--sft-epochs", type=int, default=1, help="Number of epochs for Expert Iteration training (default: 1)")
-    ap.add_argument("--sft-entropy-coeff", type=float, default=0.001, help="Entropy regularization coefficient for Expert Iteration training (default: 0.001, set to 0 to disable)")
+    ap.add_argument("--sft-entropy-coeff", type=float, default=0, help="Entropy regularization coefficient for Expert Iteration training (default: 0.001, set to 0 to disable)")
     ap.add_argument("--sft-gradient-checkpointing", action="store_true", default=True, help="Enable gradient checkpointing during Expert Iteration training (default: enabled)")
     ap.add_argument("--sft-no-gradient-checkpointing", dest="sft_gradient_checkpointing", action="store_false", help="Disable gradient checkpointing during Expert Iteration training")
+    ap.add_argument("--liger-fused-linear-ce", action="store_true", default=False, help="Use Liger's fused linear+CE kernel for memory efficiency (default: disabled, uses standard PyTorch CE)")
+    ap.add_argument("--no-liger-fused-linear-ce", dest="liger_fused_linear_ce", action="store_false", help="Disable Liger's fused linear+CE kernel (use standard PyTorch CE)")
 
     # PPO/GRPO training settings (for ppo-grpo mode)
     ap.add_argument("--ppo-epochs", type=int, default=10, help="Number of epochs for PPO/GRPO training (default: 10)")
@@ -1108,6 +1114,7 @@ def main():
                     sft_epochs=args.sft_epochs,
                     entropy_coeff=args.sft_entropy_coeff,
                     gradient_checkpointing=args.sft_gradient_checkpointing,
+                    liger_fused_linear_ce=args.liger_fused_linear_ce,
                     wb=None,  # No W&B context in resume
                 )
             else:  # ppo-grpo mode
@@ -1385,6 +1392,7 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
                 sft_epochs=args.sft_epochs,
                 entropy_coeff=args.sft_entropy_coeff,
                 gradient_checkpointing=args.sft_gradient_checkpointing,
+                liger_fused_linear_ce=args.liger_fused_linear_ce,
                 wb=wb,
             )
         else:  # ppo-grpo mode
