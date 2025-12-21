@@ -220,6 +220,14 @@ class SGLangModelPlayer(BaseModelPlayer):
                 # Check if generation was truncated due to max_tokens limit
                 # This indicates degenerate output (e.g., repetition loops) and should fail the game
                 finish_reason = data["choices"][0].get("finish_reason", "stop")
+
+                # Log non-stop finish reasons for debugging truncation issues
+                if finish_reason != "stop":
+                    print(
+                        f"[SGLangPlayer WARNING] finish_reason='{finish_reason}' "
+                        f"after {output_tokens} tokens (max_tokens={gen_kwargs.get('max_tokens', self.config.max_tokens)})"
+                    )
+
                 if finish_reason == "length":
                     self._dump_max_tokens_exceeded(
                         response_text=response_text,
