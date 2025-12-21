@@ -225,44 +225,106 @@ def _generate_asymmetric_mode(
     """Generate rollouts in asymmetric mode (trainee vs opponent).
 
     If opponent_is_openai is False: uses 2 servers (trainee on GPUs 0-1, opponent on GPUs 2-3).
-    If opponent_is_openai is True: only launches trainee server (GPUs 0-1), opponent uses OpenAI API.
+    If opponent_is_openai is True with 4 GPUs: dual-server mode (2 trainee servers), opponent uses OpenAI API.
+    If opponent_is_openai is True with 2 GPUs: single trainee server, opponent uses OpenAI API.
     """
+    num_gpus = len(gpu_list)
+    use_dual_trainee = opponent_is_openai and num_gpus >= 4
+
     print("=== ASYMMETRIC MODE: Trainee vs Opponent ===")
     print(f"Trainee model: {trainee_model}")
     print(f"Opponent model: {opponent_model}")
     if opponent_is_openai:
         print("Opponent is an OpenAI API model (no local server needed)")
+    if use_dual_trainee:
+        print("Using dual-server mode for trainee (2×TP2) for better throughput")
 
     # Hardcoded path to shy agent prompt
     shy_prompt_path = Path(__file__).parent / "dialop" / "envs" / "data" / "optimization_shy.txt"
 
-    # Find port(s) for asymmetric mode
-    if opponent_is_openai:
+    servers_to_cleanup = []
+
+    if use_dual_trainee:
+        # Dual trainee servers with OpenAI opponent
+        ports = find_free_ports(n=2)
+        trainee_port1, trainee_port2 = ports[0], ports[1]
+
+        trainee_log1 = round_dir / "sglang_server_trainee1.log"
+        trainee_log2 = round_dir / "sglang_server_trainee2.log"
+
+        print(f"Starting trainee server 1 on GPUs {gpu_list[0]},{gpu_list[1]} (port {trainee_port1})...")
+        trainee_server1 = _start_sglang_server(
+            model_path=trainee_model,
+            gpus=f"{gpu_list[0]},{gpu_list[1]}",
+            tp=2,
+            mem_util=args.server_mem_fraction,
+            port=trainee_port1,
+            enable_torch_compile=args.server_enable_torch_compile,
+            disable_cuda_graph=args.server_disable_cuda_graph,
+            log_level=args.server_log_level,
+            log_file=trainee_log1,
+        )
+        servers_to_cleanup.append(trainee_server1)
+
+        print(f"Starting trainee server 2 on GPUs {gpu_list[2]},{gpu_list[3]} (port {trainee_port2})...")
+        trainee_server2 = _start_sglang_server(
+            model_path=trainee_model,
+            gpus=f"{gpu_list[2]},{gpu_list[3]}",
+            tp=2,
+            mem_util=args.server_mem_fraction,
+            port=trainee_port2,
+            enable_torch_compile=args.server_enable_torch_compile,
+            disable_cuda_graph=args.server_disable_cuda_graph,
+            log_level=args.server_log_level,
+            log_file=trainee_log2,
+        )
+        servers_to_cleanup.append(trainee_server2)
+
+        trainee_url1 = f"http://127.0.0.1:{trainee_port1}"
+        trainee_url2 = f"http://127.0.0.1:{trainee_port2}"
+
+    elif opponent_is_openai:
+        # Single trainee server with OpenAI opponent
         trainee_port = find_free_ports(n=1)[0]
-        opponent_port = None
+        trainee_log = round_dir / "sglang_server_trainee.log"
+
+        print(f"Starting trainee server on GPUs {gpu_list[0]},{gpu_list[1]} (port {trainee_port})...")
+        trainee_server = _start_sglang_server(
+            model_path=trainee_model,
+            gpus=f"{gpu_list[0]},{gpu_list[1]}",
+            tp=2,
+            mem_util=args.server_mem_fraction,
+            port=trainee_port,
+            enable_torch_compile=args.server_enable_torch_compile,
+            disable_cuda_graph=args.server_disable_cuda_graph,
+            log_level=args.server_log_level,
+            log_file=trainee_log,
+        )
+        servers_to_cleanup.append(trainee_server)
+        trainee_url = f"http://127.0.0.1:{trainee_port}"
+
     else:
+        # Local opponent: trainee on GPUs 0-1, opponent on GPUs 2-3
         asym_ports = find_free_ports(n=2)
         trainee_port, opponent_port = asym_ports[0], asym_ports[1]
 
-    # Start trainee server
-    trainee_log = round_dir / "sglang_server_trainee.log"
-    print(f"Starting trainee server on GPUs {gpu_list[0]},{gpu_list[1]} (port {trainee_port})...")
-    trainee_server = _start_sglang_server(
-        model_path=trainee_model,
-        gpus=f"{gpu_list[0]},{gpu_list[1]}",
-        tp=2,
-        mem_util=args.server_mem_fraction,
-        port=trainee_port,
-        enable_torch_compile=args.server_enable_torch_compile,
-        disable_cuda_graph=args.server_disable_cuda_graph,
-        log_level=args.server_log_level,
-        log_file=trainee_log,
-    )
-
-    # Only start opponent server if not using OpenAI
-    opponent_server = None
-    if not opponent_is_openai:
+        trainee_log = round_dir / "sglang_server_trainee.log"
         opponent_log = round_dir / "sglang_server_opponent.log"
+
+        print(f"Starting trainee server on GPUs {gpu_list[0]},{gpu_list[1]} (port {trainee_port})...")
+        trainee_server = _start_sglang_server(
+            model_path=trainee_model,
+            gpus=f"{gpu_list[0]},{gpu_list[1]}",
+            tp=2,
+            mem_util=args.server_mem_fraction,
+            port=trainee_port,
+            enable_torch_compile=args.server_enable_torch_compile,
+            disable_cuda_graph=args.server_disable_cuda_graph,
+            log_level=args.server_log_level,
+            log_file=trainee_log,
+        )
+        servers_to_cleanup.append(trainee_server)
+
         print(f"Starting opponent server on GPUs {gpu_list[2]},{gpu_list[3]} (port {opponent_port})...")
         opponent_server = _start_sglang_server(
             model_path=opponent_model,
@@ -275,34 +337,65 @@ def _generate_asymmetric_mode(
             log_level=args.server_log_level,
             log_file=opponent_log,
         )
+        servers_to_cleanup.append(opponent_server)
 
-    trainee_url = f"http://127.0.0.1:{trainee_port}"
-    opponent_url = f"http://127.0.0.1:{opponent_port}" if opponent_port else None
+        trainee_url = f"http://127.0.0.1:{trainee_port}"
+        opponent_url = f"http://127.0.0.1:{opponent_port}"
 
     try:
         # Wait for server(s)
         import threading
         errors = []
 
-        def wait_trainee():
+        if use_dual_trainee:
+            print("Waiting for both trainee servers to become ready...")
+
+            def wait_trainee1():
+                try:
+                    _wait_for_sglang(trainee_url1, trainee_server1, timeout_sec=args.server_wait_seconds, interval_sec=5)
+                    print(f"Trainee server 1 ready on port {trainee_port1}!")
+                except Exception as e:
+                    errors.append(("trainee1", e))
+
+            def wait_trainee2():
+                try:
+                    _wait_for_sglang(trainee_url2, trainee_server2, timeout_sec=args.server_wait_seconds, interval_sec=5)
+                    print(f"Trainee server 2 ready on port {trainee_port2}!")
+                except Exception as e:
+                    errors.append(("trainee2", e))
+
+            t1 = threading.Thread(target=wait_trainee1)
+            t2 = threading.Thread(target=wait_trainee2)
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
+
+        elif opponent_is_openai:
+            print("Waiting for trainee server to become ready...")
             try:
                 _wait_for_sglang(trainee_url, trainee_server, timeout_sec=args.server_wait_seconds, interval_sec=5)
                 print(f"Trainee server ready on port {trainee_port}!")
             except Exception as e:
                 errors.append(("trainee", e))
 
-        def wait_opponent():
-            try:
-                _wait_for_sglang(opponent_url, opponent_server, timeout_sec=args.server_wait_seconds, interval_sec=5)
-                print(f"Opponent server ready on port {opponent_port}!")
-            except Exception as e:
-                errors.append(("opponent", e))
-
-        if opponent_is_openai:
-            print("Waiting for trainee server to become ready...")
-            wait_trainee()
         else:
             print("Waiting for both servers to become ready...")
+
+            def wait_trainee():
+                try:
+                    _wait_for_sglang(trainee_url, trainee_server, timeout_sec=args.server_wait_seconds, interval_sec=5)
+                    print(f"Trainee server ready on port {trainee_port}!")
+                except Exception as e:
+                    errors.append(("trainee", e))
+
+            def wait_opponent():
+                try:
+                    _wait_for_sglang(opponent_url, opponent_server, timeout_sec=args.server_wait_seconds, interval_sec=5)
+                    print(f"Opponent server ready on port {opponent_port}!")
+                except Exception as e:
+                    errors.append(("opponent", e))
+
             t1 = threading.Thread(target=wait_trainee)
             t2 = threading.Thread(target=wait_opponent)
             t1.start()
@@ -318,44 +411,145 @@ def _generate_asymmetric_mode(
         group_size = 8
         out_parquet = round_dir / "train.parquet"
 
-        print(f"Launching asymmetric generation: {args.games_per_round} unique games...")
-        gen_cmd = [
-            python_bin, "scripts/generate_rollouts.py",
-            "--mode", "asymmetric",
-            "--server-url", trainee_url,
-            "--model-id", trainee_model,
-            "--opponent-model-id", opponent_model,
-            "--opponent-instructions", str(shy_prompt_path),
-            "--out", str(out_parquet),
-            "--num-games", str(args.games_per_round),
-            "--max-new-tokens", "8192",
-            "--max-thinking-tokens", "7000",
-            "--group-size", str(group_size),
-            "--temperature", str(getattr(args, 'rollout_temperature', 0.7)),
-            "--top-p", "0.9",
-            "--max-model-len", "32768",
-            "--max-turns", str(getattr(args, 'max_turns', 10)),
-            "--max-retries-per-turn", str(getattr(args, 'max_retries_per_turn', 2)),
-        ]
+        if use_dual_trainee:
+            # Dual-server mode: split games between two trainee servers
+            num_games_per_server = args.games_per_round // 2
+            out1 = round_dir / "train_server1.parquet"
+            out2 = round_dir / "train_server2.parquet"
 
-        # Add opponent connection info based on type
-        if opponent_is_openai:
-            gen_cmd += ["--opponent-player-type", "openai"]
+            print(f"Launching parallel asymmetric generation: {num_games_per_server} unique games per server...")
+
+            base_cmd = [
+                python_bin, "scripts/generate_rollouts.py",
+                "--mode", "asymmetric",
+                "--model-id", trainee_model,
+                "--opponent-model-id", opponent_model,
+                "--opponent-instructions", str(shy_prompt_path),
+                "--opponent-player-type", "openai",
+                "--max-new-tokens", "8192",
+                "--max-thinking-tokens", "7000",
+                "--group-size", str(group_size),
+                "--temperature", str(getattr(args, 'rollout_temperature', 0.7)),
+                "--top-p", "0.9",
+                "--max-model-len", "32768",
+                "--max-turns", str(getattr(args, 'max_turns', 10)),
+                "--max-retries-per-turn", str(getattr(args, 'max_retries_per_turn', 2)),
+            ]
+
+            gen_cmd1 = base_cmd + [
+                "--server-url", trainee_url1,
+                "--out", str(out1),
+                "--num-games", str(num_games_per_server),
+            ]
+
+            gen_cmd2 = base_cmd + [
+                "--server-url", trainee_url2,
+                "--out", str(out2),
+                "--num-games", str(num_games_per_server),
+            ]
+
+            # Run both in parallel
+            proc1 = subprocess.Popen(gen_cmd1)
+            proc2 = subprocess.Popen(gen_cmd2)
+
+            try:
+                ret1 = proc1.wait()
+                ret2 = proc2.wait()
+
+                if ret1 != 0 or ret2 != 0:
+                    if out1.exists() or out2.exists():
+                        print(f"\nGeneration partially failed but found partial results:")
+                        if out1.exists():
+                            print(f"  Server 1 partial results: {out1}")
+                        if out2.exists():
+                            print(f"  Server 2 partial results: {out2}")
+                        print(f"  Merging available partial results...")
+                    else:
+                        raise RuntimeError(f"Generation failed: server1={ret1}, server2={ret2}")
+            except KeyboardInterrupt:
+                print(f"\nInterrupt received during generation. Terminating processes...")
+                proc1.terminate()
+                proc2.terminate()
+                try:
+                    proc1.wait(timeout=10)
+                    proc2.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    proc1.kill()
+                    proc2.kill()
+                print(f"Processes terminated. Checking for partial results...")
+                if not (out1.exists() or out2.exists()):
+                    raise RuntimeError("No partial results found after interrupt")
+
+            # Merge parquets and fix game_ids
+            print("Merging outputs from both servers...")
+            dfs_to_merge = []
+
+            if out1.exists():
+                try:
+                    df1 = pd.read_parquet(str(out1))
+                    dfs_to_merge.append(df1)
+                    print(f"  Server 1: {len(df1)} sequences")
+                except Exception as e:
+                    print(f"  Warning: Could not load server 1 results: {e}")
+
+            if out2.exists():
+                try:
+                    df2 = pd.read_parquet(str(out2))
+                    # Shift server2 game_ids to continue from server1
+                    offset = num_games_per_server * group_size
+                    print(f"  Server 2: {len(df2)} sequences (offsetting game_ids by {offset})")
+                    df2["game_id"] = df2["game_id"] + offset
+                    dfs_to_merge.append(df2)
+                except Exception as e:
+                    print(f"  Warning: Could not load server 2 results: {e}")
+
+            if not dfs_to_merge:
+                raise RuntimeError("No results available from either server")
+
+            merged = pd.concat(dfs_to_merge, ignore_index=True)
+            merged.to_parquet(str(out_parquet))
+            print(f"Merged {len(merged)} total sequences → {out_parquet}")
+
         else:
-            gen_cmd += ["--opponent-server-url", opponent_url]
+            # Single-server mode (either single trainee or trainee+opponent)
+            print(f"Launching asymmetric generation: {args.games_per_round} unique games...")
+            gen_cmd = [
+                python_bin, "scripts/generate_rollouts.py",
+                "--mode", "asymmetric",
+                "--server-url", trainee_url,
+                "--model-id", trainee_model,
+                "--opponent-model-id", opponent_model,
+                "--opponent-instructions", str(shy_prompt_path),
+                "--out", str(out_parquet),
+                "--num-games", str(args.games_per_round),
+                "--max-new-tokens", "8192",
+                "--max-thinking-tokens", "7000",
+                "--group-size", str(group_size),
+                "--temperature", str(getattr(args, 'rollout_temperature', 0.7)),
+                "--top-p", "0.9",
+                "--max-model-len", "32768",
+                "--max-turns", str(getattr(args, 'max_turns', 10)),
+                "--max-retries-per-turn", str(getattr(args, 'max_retries_per_turn', 2)),
+            ]
 
-        # Run generation
-        proc = subprocess.Popen(gen_cmd)
+            # Add opponent connection info based on type
+            if opponent_is_openai:
+                gen_cmd += ["--opponent-player-type", "openai"]
+            else:
+                gen_cmd += ["--opponent-server-url", opponent_url]
 
-        try:
-            ret = proc.wait()
-            if ret != 0:
-                raise RuntimeError(f"generate_rollouts.py exited with code {ret}")
-        except KeyboardInterrupt:
-            print("\n[rollout_pipeline] Caught interrupt, terminating generate_rollouts...")
-            proc.terminate()
-            proc.wait(timeout=10)
-            raise
+            # Run generation
+            proc = subprocess.Popen(gen_cmd)
+
+            try:
+                ret = proc.wait()
+                if ret != 0:
+                    raise RuntimeError(f"generate_rollouts.py exited with code {ret}")
+            except KeyboardInterrupt:
+                print("\n[rollout_pipeline] Caught interrupt, terminating generate_rollouts...")
+                proc.terminate()
+                proc.wait(timeout=10)
+                raise
 
         if not out_parquet.exists():
             raise FileNotFoundError(f"Expected output {out_parquet} not found after generation")
@@ -365,9 +559,8 @@ def _generate_asymmetric_mode(
     finally:
         # Cleanup servers
         print("Stopping servers...")
-        _kill_process_tree(trainee_server)
-        if opponent_server is not None:
-            _kill_process_tree(opponent_server)
+        for server in servers_to_cleanup:
+            _kill_process_tree(server)
         try:
             subprocess.run(["pkill", "-f", "sglang"], check=False)
         except Exception as e:
