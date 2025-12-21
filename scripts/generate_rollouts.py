@@ -767,14 +767,17 @@ def main():
     os.environ["ROLLOUT_LOG_DIR"] = log_dir
     print(f"Generation failure logs will be written to: {log_dir}/generation_failures.log")
 
-    # Validate asymmetric mode arguments
-    if args.mode == "asymmetric":
-        if not args.opponent_model_id or not args.opponent_server_url or not args.opponent_instructions:
-            raise ValueError("Asymmetric mode requires --opponent-model-id, --opponent-server-url, and --opponent-instructions")
-
     # Determine player types for asymmetric mode
     trainee_player_type = args.trainee_player_type if args.trainee_player_type else args.player_type
     opponent_player_type = args.opponent_player_type if args.opponent_player_type else args.player_type
+
+    # Validate asymmetric mode arguments
+    if args.mode == "asymmetric":
+        if not args.opponent_model_id or not args.opponent_instructions:
+            raise ValueError("Asymmetric mode requires --opponent-model-id and --opponent-instructions")
+        # Only require server URL for non-OpenAI opponents
+        if opponent_player_type != "openai" and not args.opponent_server_url:
+            raise ValueError("Asymmetric mode with SGLang opponent requires --opponent-server-url")
 
     # Load instructions
     if args.mode == "selfplay":
@@ -826,7 +829,6 @@ def main():
 
         opponent_cfg = {
             "model_id": args.opponent_model_id,
-            "server_url": args.opponent_server_url,
             "instructions": opponent_instructions,
             "temperature": args.temperature,
             "top_p": args.top_p,
@@ -835,12 +837,15 @@ def main():
             "max_turns": getattr(args, 'max_turns', 10),
             "max_retries_per_turn": getattr(args, 'max_retries_per_turn', 2),
         }
-        # Add OpenAI-specific fields for opponent if using OpenAI
+        # Add connection info based on opponent player type
         if opponent_player_type == "openai":
             if args.openai_api_key_path:
                 opponent_cfg["api_key_path"] = args.openai_api_key_path
             if args.openai_organization:
                 opponent_cfg["organization"] = args.openai_organization
+        else:
+            # SGLang opponent needs server_url
+            opponent_cfg["server_url"] = args.opponent_server_url
 
     # Calculate total games to play: num_games * group_size
     total_games = args.num_games * args.group_size
@@ -858,7 +863,10 @@ def main():
         print(f"Server: {args.server_url}")
     else:
         print(f"Trainee server: {args.server_url}")
-        print(f"Opponent server: {args.opponent_server_url}")
+        if opponent_player_type == "openai":
+            print(f"Opponent: OpenAI API ({args.opponent_model_id})")
+        else:
+            print(f"Opponent server: {args.opponent_server_url}")
     start_time = time.time()
 
     # Create shared queues using Manager

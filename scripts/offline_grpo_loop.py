@@ -999,16 +999,30 @@ def main():
     gpu_list = [g for g in gpu_string.split(",") if g]
     tp = len(gpu_list)
 
+    def is_openai_model(model_id: str) -> bool:
+        """Check if model_id looks like an OpenAI API model."""
+        openai_prefixes = ("gpt-", "o1-", "o3-", "chatgpt-", "text-")
+        return any(model_id.startswith(p) for p in openai_prefixes)
+
     # Handle asymmetric mode (trainee vs shy opponent)
     if args.shy_setup:
         print("=== ASYMMETRIC MODE ENABLED ===")
         print(f"Training against fixed shy opponent: {args.shy_opponent_model}")
         args.opponent_model = args.shy_opponent_model
-        # Asymmetric mode requires 4 GPUs for dual-server setup
-        if len(gpu_list) != 4:
-            raise ValueError(f"Asymmetric mode requires exactly 4 GPUs, but got {len(gpu_list)}")
+        args.opponent_is_openai = is_openai_model(args.shy_opponent_model)
+
+        if args.opponent_is_openai:
+            print(f"Detected OpenAI opponent model: {args.shy_opponent_model}")
+            # OpenAI opponent: only need 2 GPUs for trainee
+            if len(gpu_list) < 2:
+                raise ValueError(f"OpenAI opponent mode requires at least 2 GPUs, but got {len(gpu_list)}")
+        else:
+            # Local opponent: need 4 GPUs (2 for trainee, 2 for opponent)
+            if len(gpu_list) != 4:
+                raise ValueError(f"Local opponent mode requires exactly 4 GPUs, but got {len(gpu_list)}")
     else:
         args.opponent_model = None  # Self-play mode
+        args.opponent_is_openai = False
 
     # If branching is requested, force a new run (disable resume semantics)
     if args.branch_from:

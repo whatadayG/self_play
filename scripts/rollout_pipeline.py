@@ -220,28 +220,33 @@ def _generate_asymmetric_mode(
     opponent_model: str,
     gpu_list: List[str],
     python_bin: str,
-    log_file: Path
+    opponent_is_openai: bool = False,
 ) -> Path:
     """Generate rollouts in asymmetric mode (trainee vs opponent).
 
-    Always uses 2 servers: trainee on GPUs 0-1, opponent on GPUs 2-3.
+    If opponent_is_openai is False: uses 2 servers (trainee on GPUs 0-1, opponent on GPUs 2-3).
+    If opponent_is_openai is True: only launches trainee server (GPUs 0-1), opponent uses OpenAI API.
     """
     print("=== ASYMMETRIC MODE: Trainee vs Opponent ===")
     print(f"Trainee model: {trainee_model}")
     print(f"Opponent model: {opponent_model}")
+    if opponent_is_openai:
+        print("Opponent is an OpenAI API model (no local server needed)")
 
     # Hardcoded path to shy agent prompt
     shy_prompt_path = Path(__file__).parent / "dialop" / "envs" / "data" / "optimization_shy.txt"
 
-    # Find two free ports for asymmetric mode
-    asym_ports = find_free_ports(n=2)
-    trainee_port, opponent_port = asym_ports[0], asym_ports[1]
+    # Find port(s) for asymmetric mode
+    if opponent_is_openai:
+        trainee_port = find_free_ports(n=1)[0]
+        opponent_port = None
+    else:
+        asym_ports = find_free_ports(n=2)
+        trainee_port, opponent_port = asym_ports[0], asym_ports[1]
 
-    # Start both servers with separate log files
+    # Start trainee server
     trainee_log = round_dir / "sglang_server_trainee.log"
-    opponent_log = round_dir / "sglang_server_opponent.log"
-
-    print(f"Starting trainee server on GPUs 0,1 (port {trainee_port})...")
+    print(f"Starting trainee server on GPUs {gpu_list[0]},{gpu_list[1]} (port {trainee_port})...")
     trainee_server = _start_sglang_server(
         model_path=trainee_model,
         gpus=f"{gpu_list[0]},{gpu_list[1]}",
@@ -254,37 +259,29 @@ def _generate_asymmetric_mode(
         log_file=trainee_log,
     )
 
-    print(f"Starting opponent server on GPUs 2,3 (port {opponent_port})...")
-    opponent_server = _start_sglang_server(
-        model_path=opponent_model,
-        gpus=f"{gpu_list[2]},{gpu_list[3]}",
-        tp=2,
-        mem_util=args.server_mem_fraction,
-        port=opponent_port,
-        enable_torch_compile=args.server_enable_torch_compile,
-        disable_cuda_graph=args.server_disable_cuda_graph,
-        log_level=args.server_log_level,
-        log_file=opponent_log,
-    )
+    # Only start opponent server if not using OpenAI
+    opponent_server = None
+    if not opponent_is_openai:
+        opponent_log = round_dir / "sglang_server_opponent.log"
+        print(f"Starting opponent server on GPUs {gpu_list[2]},{gpu_list[3]} (port {opponent_port})...")
+        opponent_server = _start_sglang_server(
+            model_path=opponent_model,
+            gpus=f"{gpu_list[2]},{gpu_list[3]}",
+            tp=2,
+            mem_util=args.server_mem_fraction,
+            port=opponent_port,
+            enable_torch_compile=args.server_enable_torch_compile,
+            disable_cuda_graph=args.server_disable_cuda_graph,
+            log_level=args.server_log_level,
+            log_file=opponent_log,
+        )
 
     trainee_url = f"http://127.0.0.1:{trainee_port}"
-    opponent_url = f"http://127.0.0.1:{opponent_port}"
-
-    with open(log_file, "a") as lf:
-        lf.write(json.dumps({
-            "event": "asymmetric_servers_started",
-            "timestamp": time.time(),
-            "trainee_model": trainee_model,
-            "opponent_model": opponent_model,
-            "trainee_gpus": f"{gpu_list[0]},{gpu_list[1]}",
-            "opponent_gpus": f"{gpu_list[2]},{gpu_list[3]}",
-        }) + "\n")
+    opponent_url = f"http://127.0.0.1:{opponent_port}" if opponent_port else None
 
     try:
-        # Wait for both servers
-        print("Waiting for both servers to become ready...")
+        # Wait for server(s)
         import threading
-
         errors = []
 
         def wait_trainee():
@@ -301,12 +298,17 @@ def _generate_asymmetric_mode(
             except Exception as e:
                 errors.append(("opponent", e))
 
-        t1 = threading.Thread(target=wait_trainee)
-        t2 = threading.Thread(target=wait_opponent)
-        t1.start()
-        t2.start()
-        t1.join()
-        t2.join()
+        if opponent_is_openai:
+            print("Waiting for trainee server to become ready...")
+            wait_trainee()
+        else:
+            print("Waiting for both servers to become ready...")
+            t1 = threading.Thread(target=wait_trainee)
+            t2 = threading.Thread(target=wait_opponent)
+            t1.start()
+            t2.start()
+            t1.join()
+            t2.join()
 
         if errors:
             error_msg = "; ".join([f"{name}: {err}" for name, err in errors])
@@ -322,7 +324,6 @@ def _generate_asymmetric_mode(
             "--mode", "asymmetric",
             "--server-url", trainee_url,
             "--model-id", trainee_model,
-            "--opponent-server-url", opponent_url,
             "--opponent-model-id", opponent_model,
             "--opponent-instructions", str(shy_prompt_path),
             "--out", str(out_parquet),
@@ -336,6 +337,12 @@ def _generate_asymmetric_mode(
             "--max-turns", str(getattr(args, 'max_turns', 10)),
             "--max-retries-per-turn", str(getattr(args, 'max_retries_per_turn', 2)),
         ]
+
+        # Add opponent connection info based on type
+        if opponent_is_openai:
+            gen_cmd += ["--opponent-player-type", "openai"]
+        else:
+            gen_cmd += ["--opponent-server-url", opponent_url]
 
         # Run generation
         proc = subprocess.Popen(gen_cmd)
@@ -359,7 +366,8 @@ def _generate_asymmetric_mode(
         # Cleanup servers
         print("Stopping servers...")
         _kill_process_tree(trainee_server)
-        _kill_process_tree(opponent_server)
+        if opponent_server is not None:
+            _kill_process_tree(opponent_server)
         try:
             subprocess.run(["pkill", "-f", "sglang"], check=False)
         except Exception as e:
@@ -384,24 +392,35 @@ def function_A_start_server_and_generate(
     gpu_list = [g.strip() for g in gpu_string.split(",") if g.strip()]
     num_gpus = len(gpu_list)
 
-    log_file = round_dir / "progress.log"
     test_py = "/home/nickatomlin/georgiazhou/self_play/test_venv/bin/python"
     python_bin = test_py if os.path.exists(test_py) else sys.executable
 
     # Check if asymmetric mode (trainee vs opponent)
     is_asymmetric = hasattr(args, 'opponent_model') and args.opponent_model is not None
+    opponent_is_openai = getattr(args, 'opponent_is_openai', False)
 
-    # Special case: Asymmetric mode with 4 GPUs → always use 2 servers (trainee vs opponent)
-    if is_asymmetric and num_gpus == 4:
-        return _generate_asymmetric_mode(
-            args=args,
-            round_dir=round_dir,
-            trainee_model=current_model,
-            opponent_model=args.opponent_model,
-            gpu_list=gpu_list,
-            python_bin=python_bin,
-            log_file=log_file
-        )
+    # Asymmetric mode: OpenAI opponent needs 2+ GPUs, local opponent needs 4 GPUs
+    if is_asymmetric:
+        if opponent_is_openai and num_gpus >= 2:
+            return _generate_asymmetric_mode(
+                args=args,
+                round_dir=round_dir,
+                trainee_model=current_model,
+                opponent_model=args.opponent_model,
+                gpu_list=gpu_list,
+                python_bin=python_bin,
+                opponent_is_openai=True,
+            )
+        elif not opponent_is_openai and num_gpus == 4:
+            return _generate_asymmetric_mode(
+                args=args,
+                round_dir=round_dir,
+                trainee_model=current_model,
+                opponent_model=args.opponent_model,
+                gpu_list=gpu_list,
+                python_bin=python_bin,
+                opponent_is_openai=False,
+            )
 
     # Special case: 4 GPUs → use 2 servers to avoid cross-bridge all-reduce (if enabled)
     if num_gpus == 4 and args.dual_server:
