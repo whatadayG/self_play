@@ -1164,11 +1164,20 @@ def main():
                 branch_run(src_run=src, dst_run=save_root, rounds_to_link=args.branch_rounds_to_link)
                 # Set start_round to the next round after linked ones
                 start_round = max(start_round, args.branch_rounds_to_link)
-                # Prefer using the last linked round's model as starting model
+                # Use the last linked round's model as starting model
                 if start_round > 0:
-                    prev_model = find_latest_model_from_round(save_root / f"round_{start_round-1:03d}")
+                    prev_round_dir = save_root / f"round_{start_round-1:03d}"
+                    prev_model = find_latest_model_from_round(prev_round_dir)
                     if prev_model:
                         current_model = prev_model
+                    else:
+                        raise RuntimeError(
+                            f"Cannot branch: checkpoint not found for round {start_round-1} "
+                            f"in {prev_round_dir}. The source run's checkpoints may have been "
+                            f"cleaned up. Try branching from an earlier round (e.g., round 5 or 10 "
+                            f"whose checkpoints are preserved), or use --branch-rounds-to-link "
+                            f"to link fewer rounds."
+                        )
             else:
                 print(f"Warning: --branch-from path not found: {src}")
 
