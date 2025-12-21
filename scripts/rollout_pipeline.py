@@ -433,6 +433,7 @@ def _generate_asymmetric_mode(
                 "--max-model-len", "32768",
                 "--max-turns", str(getattr(args, 'max_turns', 10)),
                 "--max-retries-per-turn", str(getattr(args, 'max_retries_per_turn', 2)),
+                "--error-penalty", str(getattr(args, 'error_penalty', 0.0)),
             ]
 
             gen_cmd1 = base_cmd + [
@@ -528,6 +529,7 @@ def _generate_asymmetric_mode(
                 "--max-model-len", "32768",
                 "--max-turns", str(getattr(args, 'max_turns', 10)),
                 "--max-retries-per-turn", str(getattr(args, 'max_retries_per_turn', 2)),
+                "--error-penalty", str(getattr(args, 'error_penalty', 0.0)),
             ]
 
             # Add opponent connection info based on type
@@ -707,6 +709,7 @@ def function_A_start_server_and_generate(
                 "--max-model-len", "32768",
                 "--max-turns", str(getattr(args, 'max_turns', 10)),
                 "--max-retries-per-turn", str(getattr(args, 'max_retries_per_turn', 2)),
+                "--error-penalty", str(getattr(args, 'error_penalty', 0.0)),
             ]
 
             gen_cmd2 = [
@@ -722,6 +725,7 @@ def function_A_start_server_and_generate(
                 "--max-model-len", "32768",
                 "--max-turns", str(getattr(args, 'max_turns', 10)),
                 "--max-retries-per-turn", str(getattr(args, 'max_retries_per_turn', 2)),
+                "--error-penalty", str(getattr(args, 'error_penalty', 0.0)),
             ]
 
             # Run both in parallel
@@ -858,6 +862,8 @@ def function_A_start_server_and_generate(
                 str(getattr(args, 'max_turns', 10)),
                 "--max-retries-per-turn",
                 str(getattr(args, 'max_retries_per_turn', 2)),
+                "--error-penalty",
+                str(getattr(args, 'error_penalty', 0.0)),
             ]
 
             # Run generation with interrupt handling
@@ -1747,6 +1753,7 @@ def main():
     # Game termination settings
     ap.add_argument("--max-turns", type=int, default=10, help="Maximum number of turns per game (default: 10)")
     ap.add_argument("--max-retries-per-turn", type=int, default=2, help="Maximum retries per turn before terminating (default: 2)")
+    ap.add_argument("--error-penalty", type=float, default=0.0, help="Fixed penalty subtracted from normalized reward for each malformed response. Reward clamped to min 0. (default: 0.0)")
     # KL divergence settings
     ap.add_argument("--use-kl", action="store_true", help="Enable KL divergence penalty in reward (disabled by default)")
     ap.add_argument("--reference-model", type=str, default=None, help="Path to reference model for KL divergence computation (required if --use-kl is set)")

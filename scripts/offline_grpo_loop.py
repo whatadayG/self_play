@@ -934,6 +934,7 @@ def main():
     # Game termination settings
     ap.add_argument("--max-turns", type=int, default=10, help="Maximum number of turns per game (default: 10)")
     ap.add_argument("--max-retries-per-turn", type=int, default=3, help="Maximum retries per turn before terminating (default: 3)")
+    ap.add_argument("--error-penalty", type=float, default=0.0, help="Fixed penalty subtracted from normalized reward for each malformed response. Reward clamped to min 0. (default: 0.0)")
 
     # Data filtering settings (EXPERT ITERATION MODE ONLY - GRPO does not filter by quality)
     ap.add_argument("--filter-positive-only", action="store_true", default=True, help="[Expert Iteration only] Train only on positive GRPO-normalized examples (above group mean). Ignored in ppo-grpo mode. (default: enabled for expert-iteration)")
@@ -1240,6 +1241,7 @@ def _run_offline_grpo_loop_inner(args, save_root: Path, current_model: str, star
         f.write(f"Rollout temperature: {args.rollout_temperature}\n")
         f.write(f"Max turns: {args.max_turns}\n")
         f.write(f"Max retries per turn: {args.max_retries_per_turn}\n")
+        f.write(f"Error penalty: {args.error_penalty}\n")
         if args.shy_setup:
             f.write(f"\n=== Asymmetric Mode ===\n")
             f.write(f"Shy setup enabled: True\n")

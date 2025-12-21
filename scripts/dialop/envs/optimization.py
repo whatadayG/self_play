@@ -8,13 +8,15 @@ from dialop.templates import OptimizationPromptTemplate
 
 class OptimizationEnv(DialogueEnv):
 
-    def __init__(self, one_player=False, max_turns=30, max_retries_per_turn=8):
+    def __init__(self, one_player=False, max_turns=30, max_retries_per_turn=8, error_penalty=0.0):
         """Initialize the Optimization environment.
 
         Args:
             one_player: If True, both players see complete table (for debugging)
             max_turns: Maximum number of turns allowed in the game
             max_retries_per_turn: Maximum number of retries allowed per turn
+            error_penalty: Fixed penalty subtracted from normalized reward for each error
+                          (malformed response). Reward is clamped to minimum 0. Default: 0.0
 
         Note: The environment informs agents about turn/retry limits but does NOT
         enforce game termination. The caller (e.g., generate_rollouts.py) is
@@ -26,8 +28,10 @@ class OptimizationEnv(DialogueEnv):
         self.instructions = [instrs, instrs]
         self.max_turns = max_turns
         self.max_retries_per_turn = max_retries_per_turn
+        self.error_penalty = error_penalty
         self.current_turn = 0
         self.current_retry = 0
+        self.total_errors = 0  # Track total errors across the game
 
     def reset(self, game_state=None, seed=None):
         """Reset the environment with a new game.
@@ -47,6 +51,7 @@ class OptimizationEnv(DialogueEnv):
         self.num_msgs = 0
         self.current_turn = 0
         self.current_retry = 0
+        self.total_errors = 0  # Reset error count for new game
         obss = self._init_from_action_log()
 
         # Add initial round counter to the first player's observation
@@ -61,6 +66,7 @@ class OptimizationEnv(DialogueEnv):
     def format_error_msg(self, error_msg: str, player: str, done: bool=False):
         # Increment retry counter when error occurs
         self.current_retry += 1
+        self.total_errors += 1  # Track total errors for penalty calculation
         return {
             "done": done,
             "turn_player": player,
@@ -418,3 +424,20 @@ class OptimizationEnv(DialogueEnv):
             parsed_proposal_indices.append((worker_index, task_index))
 
         return parsed_proposal_indices
+
+    def get_penalized_reward(self, normalized_reward: float) -> float:
+        """Apply error penalty to the normalized reward.
+
+        Args:
+            normalized_reward: The raw normalized reward from the game (0.0 to 1.0)
+
+        Returns:
+            The penalized reward, clamped to minimum 0.0
+        """
+        penalty = self.total_errors * self.error_penalty
+        penalized = normalized_reward - penalty
+        return max(0.0, penalized)
+
+    def get_total_errors(self) -> int:
+        """Return the total number of errors (malformed responses) in this game."""
+        return self.total_errors

@@ -133,7 +133,8 @@ def run_one_game(
     # Pass game limits to environment so agents can see them
     env = OptimizationEnv(
         max_turns=player_cfg.get("max_turns", 30),
-        max_retries_per_turn=player_cfg.get("max_retries_per_turn", 8)
+        max_retries_per_turn=player_cfg.get("max_retries_per_turn", 8),
+        error_penalty=player_cfg.get("error_penalty", 0.0),
     )
 
     # GRPO grouping: compute unique game seed based on group membership
@@ -199,16 +200,20 @@ def run_one_game(
             break
 
     # Build two sequences (one per player's perspective)
+    raw_normalized_reward = obs.get("info", {}).get("score_norm", 0.0) if done else 0.0
+    penalized_reward = env.get_penalized_reward(raw_normalized_reward)
     result = {
         "game_id": game_id,
         "players": {"player-1": p1, "player-2": p2},
         "reward": obs.get("info", {}).get("score", 0.0) if done else 0.0,
-        "normalized_reward": obs.get("info", {}).get("score_norm", 0.0) if done else 0.0,
+        "normalized_reward": penalized_reward,
         "game_info": {
             "num_messages": obs.get("info", {}).get("num_msgs", turn),
             "completed": done,
             "turn_count": turn,
-            "game_normalized_reward": obs.get("info", {}).get("score_norm", 0.0) if done else 0.0,
+            "game_normalized_reward": penalized_reward,
+            "raw_normalized_reward": raw_normalized_reward,
+            "total_errors": env.get_total_errors(),
         },
         "clean_conversation": clean_conversation,
         "full_conversation": full_conversation,
@@ -348,7 +353,8 @@ def run_one_game_vs_opponent(
     # Pass game limits to environment
     env = OptimizationEnv(
         max_turns=trainee_cfg.get("max_turns", 30),
-        max_retries_per_turn=trainee_cfg.get("max_retries_per_turn", 8)
+        max_retries_per_turn=trainee_cfg.get("max_retries_per_turn", 8),
+        error_penalty=trainee_cfg.get("error_penalty", 0.0),
     )
 
     # GRPO grouping: compute unique game seed based on group membership
@@ -419,16 +425,20 @@ def run_one_game_vs_opponent(
 
     # Return result with ONLY trainee player
     trainee_role = "player-1" if trainee_is_p1 else "player-2"
+    raw_normalized_reward = obs.get("info", {}).get("score_norm", 0.0) if done else 0.0
+    penalized_reward = env.get_penalized_reward(raw_normalized_reward)
     result = {
         "game_id": game_id,
         "players": {trainee_role: trainee},  # Only trainee
         "reward": obs.get("info", {}).get("score", 0.0) if done else 0.0,
-        "normalized_reward": obs.get("info", {}).get("score_norm", 0.0) if done else 0.0,
+        "normalized_reward": penalized_reward,
         "game_info": {
             "num_messages": obs.get("info", {}).get("num_msgs", turn),
             "completed": done,
             "turn_count": turn,
-            "game_normalized_reward": obs.get("info", {}).get("score_norm", 0.0) if done else 0.0,
+            "game_normalized_reward": penalized_reward,
+            "raw_normalized_reward": raw_normalized_reward,
+            "total_errors": env.get_total_errors(),
         },
         "clean_conversation": clean_conversation,
         "full_conversation": full_conversation,
@@ -725,6 +735,7 @@ def main():
     # Game termination settings
     ap.add_argument("--max-turns", type=int, default=10, help="Maximum number of turns per game (default: 10)")
     ap.add_argument("--max-retries-per-turn", type=int, default=2, help="Maximum retries per turn before terminating (default: 2)")
+    ap.add_argument("--error-penalty", type=float, default=0.0, help="Fixed penalty subtracted from normalized reward for each malformed response. Reward clamped to min 0. (default: 0.0)")
 
     # Asymmetric mode arguments (trainee vs opponent)
     ap.add_argument("--mode", type=str, choices=["selfplay", "asymmetric"], default="selfplay", help="Training mode: selfplay or asymmetric")
@@ -786,6 +797,7 @@ def main():
             "max_new_tokens": args.max_new_tokens,
             "max_turns": getattr(args, 'max_turns', 10),
             "max_retries_per_turn": getattr(args, 'max_retries_per_turn', 2),
+            "error_penalty": getattr(args, 'error_penalty', 0.0),
         }
         # Add OpenAI-specific fields if using OpenAI player
         if args.player_type == "openai":
@@ -812,6 +824,7 @@ def main():
             "max_new_tokens": args.max_new_tokens,
             "max_turns": getattr(args, 'max_turns', 10),
             "max_retries_per_turn": getattr(args, 'max_retries_per_turn', 2),
+            "error_penalty": getattr(args, 'error_penalty', 0.0),
         }
         # Add OpenAI-specific fields for trainee if using OpenAI
         if trainee_player_type == "openai":
