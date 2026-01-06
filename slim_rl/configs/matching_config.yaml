@@ -1,0 +1,17 @@
+# SLIME Configuration for Paper-Reviewer Matching Game
+# Based on examples/geo3k_vlm_multi_turn/geo3k_vlm_multi_turn_config.yaml
+
+# Multi-turn rollout settings
+max_turns: 20
+rollout_interaction_env_path: slim_rl.src.env_matching
+
+# Custom rollout function (handles Qwen+GPT dialogue)
+custom_generate_function_path: slim_rl.src.rollout:generate
+
+# GPT partner settings
+gpt_model: gpt-4.1
+use_mock_partner: false  # Set to true for testing without API
+
+# Environment settings
+error_penalty: 0.0
+max_retries_per_turn: 3
