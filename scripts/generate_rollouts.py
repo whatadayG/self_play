@@ -49,7 +49,8 @@ def run_one_game(
     game_id: int = 0,
     group_size: int = 8,
     base_seed: int = 42,
-    player_type: str = "sglang"
+    player_type: str = "sglang",
+    lora_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Run a single game between two players.
 
@@ -61,6 +62,7 @@ def run_one_game(
         group_size: Number of replays per unique initial state
         base_seed: Base random seed for game generation
         player_type: Type of player ("sglang" or "openai")
+        lora_name: Optional LoRA adapter name to use for inference
 
     Returns:
         Dict containing game results, players, rewards, etc.
@@ -94,6 +96,7 @@ def run_one_game(
             model_path=model_id,
             config=cfg,
             optional=p1_metadata,
+            lora_name=lora_name,
         )
         p2 = SGLangModelPlayer(
             system_prompt=instr_p2,
@@ -102,6 +105,7 @@ def run_one_game(
             model_path=model_id,
             config=cfg,
             optional=p2_metadata,
+            lora_name=lora_name,
         )
     elif player_type == "openai":
         cfg = OpenAIConfig(
@@ -228,7 +232,8 @@ def create_player_with_prompt(
     model_id: str,
     server_config,  # Can be SGLangConfig or OpenAIConfig
     game_id: int,
-    player_type: str = "sglang"
+    player_type: str = "sglang",
+    lora_name: Optional[str] = None,
 ):
     """Shared logic for creating a player with customized prompt."""
     console = Console() if player_type == "openai" else type("_C", (), {"print": lambda *args, **kwargs: None, "rule": lambda *args, **kwargs: None})()
@@ -243,6 +248,7 @@ def create_player_with_prompt(
             model_path=model_id,
             config=server_config,
             optional=metadata,
+            lora_name=lora_name,
         )
     elif player_type == "openai":
         return OpenAIModelPlayer(
@@ -264,7 +270,9 @@ def run_one_game_vs_opponent(
     base_seed: int = 42,
     trainee_is_p1: bool = True,
     trainee_player_type: str = "sglang",
-    opponent_player_type: str = "sglang"
+    opponent_player_type: str = "sglang",
+    trainee_lora_name: Optional[str] = None,
+    opponent_lora_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Asymmetric mode: trainee vs fixed opponent with different prompts.
@@ -279,6 +287,8 @@ def run_one_game_vs_opponent(
         trainee_is_p1: Whether trainee plays as player 1
         trainee_player_type: Type of trainee player ("sglang" or "openai")
         opponent_player_type: Type of opponent player ("sglang" or "openai")
+        trainee_lora_name: Optional LoRA adapter name for trainee
+        opponent_lora_name: Optional LoRA adapter name for opponent
 
     Returns:
         Dict containing game results with only trainee player data
@@ -333,7 +343,8 @@ def run_one_game_vs_opponent(
         model_id=trainee_cfg["model_id"],
         server_config=trainee_server_cfg,
         game_id=game_id,
-        player_type=trainee_player_type
+        player_type=trainee_player_type,
+        lora_name=trainee_lora_name,
     )
 
     opponent = create_player_with_prompt(
@@ -343,7 +354,8 @@ def run_one_game_vs_opponent(
         model_id=opponent_cfg["model_id"],
         server_config=opponent_server_cfg,
         game_id=game_id,
-        player_type=opponent_player_type
+        player_type=opponent_player_type,
+        lora_name=opponent_lora_name,
     )
 
     # Assign to p1/p2 based on trainee position
@@ -556,6 +568,7 @@ def worker_process(
     process_id: int,
     player_type: str = "sglang",
     output_format: str = "pretokenized",
+    lora_name: Optional[str] = None,
 ):
     """Worker process for self-play mode that runs a thread pool pulling games from shared queue.
 
@@ -572,6 +585,7 @@ def worker_process(
         process_id: ID of this process for seeding
         player_type: Type of player ("sglang" or "openai")
         output_format: Output format ("pretokenized" or "messages")
+        lora_name: Optional LoRA adapter name to use for inference
     """
     # Set unique random seed for this process
     np.random.seed(seed + process_id)
@@ -585,7 +599,7 @@ def worker_process(
                 return  # No more work
 
             try:
-                result = run_one_game(player_cfg, model_id, instructions, game_id, group_size, seed, player_type)
+                result = run_one_game(player_cfg, model_id, instructions, game_id, group_size, seed, player_type, lora_name)
                 if output_format == "messages":
                     rows = process_game_result_messages(result)
                 else:
@@ -639,6 +653,8 @@ def worker_process_asymmetric(
     trainee_player_type: str = "sglang",
     opponent_player_type: str = "sglang",
     output_format: str = "pretokenized",
+    trainee_lora_name: Optional[str] = None,
+    opponent_lora_name: Optional[str] = None,
 ):
     """Worker process for asymmetric mode (trainee vs opponent).
 
@@ -655,6 +671,8 @@ def worker_process_asymmetric(
         trainee_player_type: Type of trainee player ("sglang" or "openai")
         opponent_player_type: Type of opponent player ("sglang" or "openai")
         output_format: Output format ("pretokenized" or "messages")
+        trainee_lora_name: Optional LoRA adapter name for trainee
+        opponent_lora_name: Optional LoRA adapter name for opponent
     """
     # Set unique random seed for this process
     np.random.seed(seed + process_id)
@@ -672,7 +690,8 @@ def worker_process_asymmetric(
                 trainee_is_p1 = (game_id % 2 == 0)
                 result = run_one_game_vs_opponent(
                     trainee_cfg, opponent_cfg, game_id, group_size, seed, trainee_is_p1,
-                    trainee_player_type, opponent_player_type
+                    trainee_player_type, opponent_player_type,
+                    trainee_lora_name, opponent_lora_name
                 )
                 if output_format == "messages":
                     rows = process_game_result_messages(result)
@@ -756,6 +775,14 @@ def main():
                     help="Player type for trainee in asymmetric mode (defaults to --player-type)")
     ap.add_argument("--opponent-player-type", type=str, choices=["sglang", "openai"],
                     help="Player type for opponent in asymmetric mode (defaults to --player-type)")
+
+    # LoRA adapter arguments
+    ap.add_argument("--lora-name", type=str, default=None,
+                    help="LoRA adapter name for inference (must be loaded on SGLang server)")
+    ap.add_argument("--trainee-lora-name", type=str, default=None,
+                    help="LoRA adapter name for trainee in asymmetric mode")
+    ap.add_argument("--opponent-lora-name", type=str, default=None,
+                    help="LoRA adapter name for opponent in asymmetric mode")
 
     args = ap.parse_args()
 
@@ -904,9 +931,13 @@ def main():
                     proc_id,
                     args.player_type,
                     args.output_format,
+                    args.lora_name,
                 )
             )
         else:  # asymmetric
+            # Resolve LoRA names for asymmetric mode
+            trainee_lora = args.trainee_lora_name if args.trainee_lora_name else args.lora_name
+            opponent_lora = args.opponent_lora_name
             p = Process(
                 target=worker_process_asymmetric,
                 args=(
@@ -922,6 +953,8 @@ def main():
                     trainee_player_type,
                     opponent_player_type,
                     args.output_format,
+                    trainee_lora,
+                    opponent_lora,
                 )
             )
         p.start()

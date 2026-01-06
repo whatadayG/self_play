@@ -84,6 +84,8 @@ def _start_sglang_server(
     disable_cuda_graph: bool,
     log_level: str,
     log_file: Optional[Path] = None,
+    enable_lora: bool = False,
+    lora_paths: Optional[dict[str, str]] = None,
 ) -> subprocess.Popen:
     num_gpus = len([g.strip() for g in gpus.split(",") if g.strip()])
     if tp > num_gpus:
@@ -135,6 +137,12 @@ def _start_sglang_server(
         cmd.append("--enable-torch-compile")
     if disable_cuda_graph:
         cmd.append("--disable-cuda-graph")
+    if enable_lora:
+        cmd.append("--enable-lora")
+        # Add LoRA paths if provided (format: name=path name2=path2)
+        if lora_paths:
+            lora_args = [f"{name}={path}" for name, path in lora_paths.items()]
+            cmd.extend(["--lora-paths"] + lora_args)
 
     print("[rollout_pipeline] Launch command:", " ".join(cmd), flush=True)
     print(f"[rollout_pipeline] CUDA_VISIBLE_DEVICES={env.get('CUDA_VISIBLE_DEVICES','')}", flush=True)
@@ -210,6 +218,70 @@ def _wait_for_sglang(server_url: str, server_proc: subprocess.Popen, timeout_sec
 
     print(f"[rollout_pipeline] Timeout after {timeout_sec}s waiting for SGLang server at {base}. Last error: {last_err}", flush=True)
     raise TimeoutError(f"SGLang server at {base} did not become ready within {timeout_sec}s. Last error: {last_err}")
+
+
+def load_lora_adapter(server_url: str, lora_name: str, lora_path: str, timeout: float = 120.0) -> bool:
+    """Dynamically load a LoRA adapter into a running SGLang server.
+
+    Args:
+        server_url: Base URL of the SGLang server (e.g., "http://localhost:30000")
+        lora_name: Name to assign to the adapter (used in requests)
+        lora_path: Path to the adapter directory (contains adapter_model.safetensors)
+        timeout: Request timeout in seconds
+
+    Returns:
+        True if successful, False otherwise
+    """
+    base = server_url.rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3]
+
+    endpoint = f"{base}/load_lora_adapter"
+    payload = {
+        "lora_name": lora_name,
+        "lora_path": lora_path,
+    }
+
+    print(f"[rollout_pipeline] Loading LoRA adapter '{lora_name}' from {lora_path}...", flush=True)
+
+    try:
+        r = requests.post(endpoint, json=payload, timeout=timeout)
+        r.raise_for_status()
+        print(f"[rollout_pipeline] LoRA adapter '{lora_name}' loaded successfully", flush=True)
+        return True
+    except requests.exceptions.RequestException as e:
+        print(f"[rollout_pipeline] ERROR: Failed to load LoRA adapter: {e}", flush=True)
+        return False
+
+
+def unload_lora_adapter(server_url: str, lora_name: str, timeout: float = 30.0) -> bool:
+    """Unload a LoRA adapter from a running SGLang server.
+
+    Args:
+        server_url: Base URL of the SGLang server
+        lora_name: Name of the adapter to unload
+        timeout: Request timeout in seconds
+
+    Returns:
+        True if successful, False otherwise
+    """
+    base = server_url.rstrip("/")
+    if base.endswith("/v1"):
+        base = base[:-3]
+
+    endpoint = f"{base}/unload_lora_adapter"
+    payload = {"lora_name": lora_name}
+
+    print(f"[rollout_pipeline] Unloading LoRA adapter '{lora_name}'...", flush=True)
+
+    try:
+        r = requests.post(endpoint, json=payload, timeout=timeout)
+        r.raise_for_status()
+        print(f"[rollout_pipeline] LoRA adapter '{lora_name}' unloaded successfully", flush=True)
+        return True
+    except requests.exceptions.RequestException as e:
+        print(f"[rollout_pipeline] ERROR: Failed to unload LoRA adapter: {e}", flush=True)
+        return False
 
 
 def _generate_asymmetric_mode(
@@ -572,12 +644,23 @@ def function_A_start_server_and_generate(
     args,
     round_dir: Path,
     current_model: str,
+    enable_lora: bool = False,
+    lora_adapter_path: Optional[str] = None,
+    lora_name: str = "current",
 ) -> Path:
     """Start SGLang server(s), generate rollouts via scripts/generate_rollouts.py, log events, stop server(s).
 
     For self-play with 4 GPUs: Uses 2 servers (TP=2 each) to avoid all-reduce overhead.
     For asymmetric mode: Always uses 2 servers (trainee + opponent).
     For other GPU counts: Uses single server with appropriate TP.
+
+    Args:
+        args: Command line arguments
+        round_dir: Directory for this round
+        current_model: Model path (base model when using LoRA)
+        enable_lora: Whether to enable LoRA support in SGLang
+        lora_adapter_path: Path to LoRA adapter to load (if enable_lora=True)
+        lora_name: Name for the LoRA adapter (default: "current")
 
     Returns path to the raw parquet (train.parquet).
     """

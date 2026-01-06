@@ -42,7 +42,7 @@ import hydra
 import torch
 import torch.distributed
 from omegaconf import DictConfig
-from peft import LoraConfig, TaskType, get_peft_model
+from peft import LoraConfig, PeftModel, TaskType, get_peft_model
 from tensordict import TensorDict
 from torch import nn, optim
 from torch.distributed.device_mesh import DeviceMesh, init_device_mesh
@@ -280,15 +280,32 @@ class FSDPSFTTrainer:
 
             if self.config.model.get("lora_rank", 0) > 0:
                 self.model.enable_input_require_grads()
-                # Convert config to regular Python types before creating PEFT model
-                lora_config = {
-                    "task_type": TaskType.CAUSAL_LM,
-                    "r": self.config.model.lora_rank,
-                    "lora_alpha": self.config.model.lora_alpha,
-                    "target_modules": convert_to_regular_types(self.config.model.target_modules),
-                    "bias": "none",
-                }
-                self.model = get_peft_model(self.model, LoraConfig(**lora_config))
+
+                # Check if we should load an existing adapter or create fresh one
+                lora_adapter_path = self.config.model.get("lora_adapter_path", None)
+
+                if lora_adapter_path:
+                    # Load existing adapter and continue training
+                    print(f"[INFO] Loading existing LoRA adapter from {lora_adapter_path}")
+                    self.model = PeftModel.from_pretrained(
+                        self.model,
+                        lora_adapter_path,
+                        is_trainable=True,  # Enable training mode
+                    )
+                    print(f"[INFO] LoRA adapter loaded successfully")
+                else:
+                    # Create fresh LoRA adapters
+                    # Convert config to regular Python types before creating PEFT model
+                    lora_config = {
+                        "task_type": TaskType.CAUSAL_LM,
+                        "r": self.config.model.lora_rank,
+                        "lora_alpha": self.config.model.lora_alpha,
+                        "target_modules": convert_to_regular_types(self.config.model.target_modules),
+                        "bias": "none",
+                    }
+                    self.model = get_peft_model(self.model, LoraConfig(**lora_config))
+                    print(f"[INFO] Created fresh LoRA adapters (rank={self.config.model.lora_rank})")
+
                 self.model = self.model.to(torch_dtype)
 
         # Disable KV cache to avoid issues with gradient checkpointing and dynamic shapes

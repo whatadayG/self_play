@@ -37,6 +37,7 @@ class SGLangModelPlayer(BaseModelPlayer):
         engine: Optional[Any] = None,
         processing_class: Optional[Any] = None,
         optional: Optional[Dict[str, Any]] = None,
+        lora_name: Optional[str] = None,
     ):
         """Initialize SGLang model player.
 
@@ -48,11 +49,13 @@ class SGLangModelPlayer(BaseModelPlayer):
             config: SGLang configuration
             engine: Optional SGLang AsyncEngine for internal mode
             processing_class: Optional tokenizer/processor for internal mode
+            lora_name: Optional LoRA adapter name to use for inference (must be loaded on server)
         """
         self.config = config or SGLangConfig()
         self.tokenizer = None  # Will be loaded on demand for external mode
         self.engine = engine
         self.processing_class = processing_class
+        self.lora_name = lora_name  # LoRA adapter name for inference requests
         self.optional = optional or {}
         self.last_generation_logprobs = None  # Store logprobs from last generation
         self.all_generated_logprobs: List[List[float]] = []  # Store logprobs per assistant message (one sublist per message)
@@ -175,6 +178,10 @@ class SGLangModelPlayer(BaseModelPlayer):
             "top_logprobs": 1,  # Only need the selected token's logprob
             "rid": rid,  # Include structured request ID for cache tracing
         }
+
+        # Add LoRA adapter if configured (SGLang uses lora_path parameter)
+        if self.lora_name:
+            payload["lora_path"] = self.lora_name
 
         # Use longer timeout to account for queueing at high concurrency
         timeout = 900.0

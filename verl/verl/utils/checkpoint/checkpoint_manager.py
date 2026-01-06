@@ -98,6 +98,14 @@ class BaseCheckpointManager:
         return "hf_model" in self.checkpoint_save_contents
 
     @property
+    def should_save_lora_adapter(self) -> bool:
+        """
+        Returns True if 'lora_adapter' is in checkpoint_save_contents, indicating only the LoRA adapter
+        weights should be saved (much smaller than full model).
+        """
+        return "lora_adapter" in self.checkpoint_save_contents
+
+    @property
     def should_load_model(self) -> bool:
         """
         Returns True if 'model' is in checkpoint_load_contents, indicating the model state should be loaded.

@@ -347,4 +347,95 @@ class FSDPCheckpointManager(BaseCheckpointManager):
             # wait for rank0 to dump hf_model to local
             torch.distributed.barrier()
 
+        if self.should_save_lora_adapter:
+            # Save only LoRA adapter weights (much smaller than full model)
+            # Only rank 0 will save, offload to cpu to avoid OOM
+            state_dict = get_fsdp_full_state_dict(self.model, offload_to_cpu=True, rank0_only=True)
+
+            if self.rank == 0:
+                lora_local_path = os.path.join(local_path, "lora_adapter")
+                os.makedirs(lora_local_path, exist_ok=True)
+
+                # Extract only LoRA weights (lora_A, lora_B) from the state dict
+                lora_state_dict = {}
+                base_model_prefix = "base_model.model."
+
+                for key, tensor in state_dict.items():
+                    # Only save LoRA adapter weights
+                    if ".lora_A." in key or ".lora_B." in key:
+                        # Keep the key as-is for PEFT compatibility
+                        lora_state_dict[key] = tensor
+
+                if not lora_state_dict:
+                    log_with_rank(
+                        f"Warning: No LoRA weights found in model state dict. "
+                        f"Is LoRA enabled? Sample keys: {list(state_dict.keys())[:5]}",
+                        rank=self.rank,
+                        logger=logger,
+                        log_only_rank_0=True,
+                    )
+                else:
+                    # Save LoRA weights
+                    from safetensors.torch import save_file
+                    lora_weights_path = os.path.join(lora_local_path, "adapter_model.safetensors")
+                    save_file(lora_state_dict, lora_weights_path)
+
+                    # Save adapter config for PEFT compatibility
+                    # We need to infer lora_rank and lora_alpha from the weights
+                    sample_lora_a_key = next((k for k in lora_state_dict if ".lora_A." in k), None)
+                    if sample_lora_a_key:
+                        lora_rank = lora_state_dict[sample_lora_a_key].shape[0]
+                    else:
+                        lora_rank = 32  # fallback
+
+                    # Get base model name from config if available
+                    if fsdp_version(self.model) == 1:
+                        unwrap_model = self.model._fsdp_wrapped_module
+                    else:
+                        unwrap_model = self.model
+                    base_model_name = getattr(unwrap_model.config, "name_or_path", "unknown")
+
+                    adapter_config = {
+                        "alpha_pattern": {},
+                        "auto_mapping": None,
+                        "base_model_name_or_path": base_model_name,
+                        "bias": "none",
+                        "fan_in_fan_out": False,
+                        "inference_mode": True,
+                        "init_lora_weights": True,
+                        "layers_pattern": None,
+                        "layers_to_transform": None,
+                        "loftq_config": {},
+                        "lora_alpha": lora_rank,  # Typically same as rank
+                        "lora_dropout": 0.0,
+                        "megatron_config": None,
+                        "megatron_core": "megatron.core",
+                        "modules_to_save": None,
+                        "peft_type": "LORA",
+                        "r": lora_rank,
+                        "rank_pattern": {},
+                        "revision": None,
+                        "target_modules": "all-linear",
+                        "task_type": "CAUSAL_LM",
+                        "use_dora": False,
+                        "use_rslora": False,
+                    }
+
+                    adapter_config_path = os.path.join(lora_local_path, "adapter_config.json")
+                    with open(adapter_config_path, "w") as f:
+                        json.dump(adapter_config, f, indent=2)
+
+                    log_with_rank(
+                        f"Saved LoRA adapter ({len(lora_state_dict)} tensors) to {os.path.abspath(lora_local_path)}",
+                        rank=self.rank,
+                        logger=logger,
+                        log_only_rank_0=True,
+                    )
+
+                del state_dict
+                del lora_state_dict
+
+            # wait for rank0 to dump lora_adapter to local
+            torch.distributed.barrier()
+
         self.previous_saved_paths.append(local_path)

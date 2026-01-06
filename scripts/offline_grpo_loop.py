@@ -12,6 +12,9 @@ import numpy as np
 from typing import Tuple, Optional, Dict, Any
 from dotenv import load_dotenv
 
+# Import LoRA merge functionality
+from scripts.merge_lora_checkpoint import merge_lora_checkpoint
+
 
 class TeeStream:
     """Tee stdout/stderr to a log file while preserving console output."""
@@ -100,6 +103,10 @@ def run_expert_iteration_training(
     entropy_coeff: float = 0.0,  # Disabled to enable Liger fused CE (was 0.001)
     gradient_checkpointing: bool = True,
     liger_fused_linear_ce: bool = True,  # Use Liger's fused linear+CE (memory efficient)
+    use_lora: bool = False,
+    lora_rank: int = 32,
+    lora_alpha: int = 32,
+    lora_adapter_path: Optional[str] = None,
     wb = None,
 ) -> Path:
     """Run Expert Iteration training (filtered behavioral cloning with GRPO-style normalization) and return path to log file.
@@ -109,7 +116,7 @@ def run_expert_iteration_training(
         round_dir: Directory for this round
         train_parquet: Path to training parquet file
         val_parquet: Path to validation parquet file
-        current_model: Model checkpoint to start from
+        current_model: Model checkpoint to start from (base model when using LoRA)
         max_len_arg: Maximum sequence length
         wandb_project: W&B project name
         experiment_name: W&B experiment name
@@ -118,6 +125,10 @@ def run_expert_iteration_training(
         gradient_checkpointing: Enable gradient checkpointing (default: True)
         liger_fused_linear_ce: Use Liger's fused linear+CE kernel (default: True). Set False to use
             standard PyTorch CE while keeping other Liger optimizations (RMSNorm, SwiGLU, RoPE).
+        use_lora: Enable LoRA training (default: False)
+        lora_rank: LoRA rank (default: 32)
+        lora_alpha: LoRA alpha scaling factor (default: 32)
+        lora_adapter_path: Path to existing LoRA adapter to continue training (default: None, creates fresh adapter)
         wb: Optional W&B run object from main loop
 
     Returns:
@@ -142,8 +153,20 @@ def run_expert_iteration_training(
     print(f"  CUDA_VISIBLE_DEVICES={sft_visible}")
     print(f"  Batch config: micro_batch_size_per_gpu={micro_batch_size_per_gpu}, train_batch_size={train_batch_size}, val_batch_size_per_gpu={val_batch_size_per_gpu}")
     print(f"  Effective global batch size: {micro_batch_size_per_gpu * nproc} (per-GPU) * grad_accum_steps → {train_batch_size}")
+    if use_lora:
+        if lora_adapter_path:
+            print(f"  LoRA enabled: loading adapter from {lora_adapter_path}")
+        else:
+            print(f"  LoRA enabled: creating fresh adapter (rank={lora_rank}, alpha={lora_alpha})")
 
     save_path = str(round_dir / "checkpoints")
+
+    # Determine checkpoint save contents based on LoRA mode
+    if use_lora:
+        checkpoint_save_contents = '["lora_adapter"]'
+    else:
+        checkpoint_save_contents = '["hf_model"]'
+
     sft_cmd = [
         "bash", "scripts/sft_qwen/sft_qwen3.sh",
         str(nproc), save_path,
@@ -160,7 +183,7 @@ def run_expert_iteration_training(
         "trainer.save_freq=900",
         "trainer.test_freq=33",
         # "+trainer.val_before_train=true",
-        "trainer.checkpoint.save_contents=[\"hf_model\"]",
+        f"trainer.checkpoint.save_contents=[{checkpoint_save_contents}]",
         f"trainer.entropy_coeff={entropy_coeff}",  # Must be 0 for Liger
         f"data.max_length={max_len_arg}",
         "data.custom_cls.path=verl/verl/utils/dataset/pretokenized_sft_dataset.py",
@@ -172,6 +195,17 @@ def run_expert_iteration_training(
         "+optim.stable_ratio=0.99",
         "+optim.min_lr_ratio=0.1",
     ]
+
+    # Add LoRA config if enabled
+    if use_lora:
+        sft_cmd.extend([
+            f"model.lora_rank={lora_rank}",
+            f"model.lora_alpha={lora_alpha}",
+            "model.target_modules=all-linear",
+        ])
+        # Add adapter path if continuing from existing adapter
+        if lora_adapter_path:
+            sft_cmd.append(f"+model.lora_adapter_path={lora_adapter_path}")
 
     # Setup environment
     sft_env = os.environ.copy()
@@ -210,6 +244,10 @@ def run_ppo_grpo_training(
     clip_ratio: float = 0.2,
     entropy_coeff: float = 0.01,
     gradient_checkpointing: bool = True,
+    use_lora: bool = False,
+    lora_rank: int = 32,
+    lora_alpha: int = 32,
+    lora_adapter_path: Optional[str] = None,
     wb = None,
 ) -> Path:
     """Run PPO/GRPO training using FSDP SFT trainer with PPO loss enabled.
@@ -219,7 +257,7 @@ def run_ppo_grpo_training(
         round_dir: Directory for this round
         train_parquet: Path to training parquet file
         val_parquet: Path to validation parquet file
-        current_model: Model checkpoint to start from
+        current_model: Model checkpoint to start from (base model when using LoRA)
         max_len_arg: Maximum sequence length
         wandb_project: W&B project name
         experiment_name: W&B experiment name
@@ -229,6 +267,10 @@ def run_ppo_grpo_training(
         clip_ratio: PPO clip ratio (default: 0.2)
         entropy_coeff: Entropy coefficient (default: 0.01)
         gradient_checkpointing: Enable gradient checkpointing (default: True)
+        use_lora: Enable LoRA training (default: False)
+        lora_rank: LoRA rank (default: 32)
+        lora_alpha: LoRA alpha scaling factor (default: 32)
+        lora_adapter_path: Path to existing LoRA adapter to continue training (default: None, creates fresh adapter)
         wb: Optional W&B run object from main loop
 
     Returns:
@@ -251,8 +293,19 @@ def run_ppo_grpo_training(
     print(f"  Batch config: micro_batch_size_per_gpu={micro_batch_size_per_gpu}, train_batch_size={train_batch_size}")
     print(f"  Training epochs: {ppo_epochs}, Learning rate: {learning_rate}")
     print(f"  Clip ratio: {clip_ratio}, Entropy coeff: {entropy_coeff}")
+    if use_lora:
+        if lora_adapter_path:
+            print(f"  LoRA enabled: loading adapter from {lora_adapter_path}")
+        else:
+            print(f"  LoRA enabled: creating fresh adapter (rank={lora_rank}, alpha={lora_alpha})")
 
     save_path = str(round_dir / "checkpoints")
+
+    # Determine checkpoint save contents based on LoRA mode
+    if use_lora:
+        checkpoint_save_contents = '["lora_adapter"]'
+    else:
+        checkpoint_save_contents = '["hf_model"]'
 
     # Use same SFT script but with PPO flags enabled
     ppo_cmd = [
@@ -268,7 +321,7 @@ def run_ppo_grpo_training(
         "trainer.save_freq=900",
         "trainer.test_freq=50",
         # "+trainer.val_before_train=true",
-        "trainer.checkpoint.save_contents=[\"hf_model\"]",
+        f"trainer.checkpoint.save_contents=[{checkpoint_save_contents}]",
         f"data.max_length={max_len_arg}",
         "data.custom_cls.path=verl/verl/utils/dataset/pretokenized_sft_dataset.py",
         "data.custom_cls.name=PreTokenizedSFTDataset",
@@ -282,6 +335,17 @@ def run_ppo_grpo_training(
         f"trainer.entropy_coeff={entropy_coeff}",
         f"trainer.group_size={group_size}",
     ]
+
+    # Add LoRA config if enabled
+    if use_lora:
+        ppo_cmd.extend([
+            f"model.lora_rank={lora_rank}",
+            f"model.lora_alpha={lora_alpha}",
+            "model.target_modules=all-linear",
+        ])
+        # Add adapter path if continuing from existing adapter
+        if lora_adapter_path:
+            ppo_cmd.append(f"+model.lora_adapter_path={lora_adapter_path}")
 
     # Setup environment
     ppo_env = os.environ.copy()
@@ -708,21 +772,125 @@ def analyze_run_state(save_root: Path, args=None) -> Tuple[int, str, Optional[st
         return round_num, 'rollout', current_model, state_info
 
 
-def find_latest_model_from_round(round_dir: Path) -> Optional[str]:
-    """Find the latest model from a completed round."""
+def merge_lora_adapter_if_needed(
+    checkpoint_dir: Path,
+    base_model_path: str,
+    lora_rank: int = 32,
+    lora_alpha: int = 32,
+) -> str:
+    """
+    Merge LoRA adapter into base model if adapter exists and not already merged.
+
+    Args:
+        checkpoint_dir: Path to checkpoint directory (e.g., global_step_X)
+        base_model_path: Path to base model (the original model we're fine-tuning)
+        lora_rank: LoRA rank used during training
+        lora_alpha: LoRA alpha used during training
+
+    Returns:
+        Path to merged model (or base model if no adapter found)
+    """
+    lora_adapter_dir = checkpoint_dir / "lora_adapter"
+    merged_dir = checkpoint_dir / "merged"
+
+    # Check if lora_adapter exists
+    if not lora_adapter_dir.exists():
+        # No LoRA adapter, try huggingface dir
+        hf_dir = checkpoint_dir / "huggingface"
+        if hf_dir.is_dir():
+            return str(hf_dir)
+        return str(checkpoint_dir)
+
+    # Check if already merged (look for either single file or sharded index)
+    merged_single = merged_dir / "model.safetensors"
+    merged_index = merged_dir / "model.safetensors.index.json"
+    if merged_dir.exists() and (merged_single.exists() or merged_index.exists()):
+        print(f"  Using cached merged model: {merged_dir}")
+        return str(merged_dir)
+
+    # Need to merge
+    print(f"  Merging LoRA adapter from {lora_adapter_dir}...")
+    print(f"  Base model: {base_model_path}")
+    print(f"  LoRA config: rank={lora_rank}, alpha={lora_alpha}")
+
+    start_time = time.time()
+    merge_lora_checkpoint(
+        checkpoint_path=str(lora_adapter_dir),
+        output_path=str(merged_dir),
+        lora_alpha=lora_alpha,
+        lora_r=lora_rank,
+        base_model_path=base_model_path,
+    )
+    elapsed = time.time() - start_time
+    print(f"  LoRA merge completed in {elapsed:.1f}s")
+
+    return str(merged_dir)
+
+
+def find_latest_adapter_from_round(round_dir: Path) -> Optional[str]:
+    """Find the latest LoRA adapter path from a completed round.
+
+    Returns:
+        Path to lora_adapter directory, or None if not found.
+    """
     checkpoints_dir = round_dir / "checkpoints"
     if not checkpoints_dir.exists():
         return None
-    
+
     # Find the latest checkpoint
     latest = None
     for p in checkpoints_dir.glob("global_step_*"):
         if p.is_dir():
             latest = p if (latest is None or p.stat().st_mtime > latest.stat().st_mtime) else latest
-    
+
     if latest is None:
         return None
-    
+
+    lora_adapter_dir = latest / "lora_adapter"
+    if lora_adapter_dir.exists():
+        return str(lora_adapter_dir)
+
+    return None
+
+
+def find_latest_model_from_round(
+    round_dir: Path,
+    base_model_path: Optional[str] = None,
+    use_lora: bool = False,
+    lora_rank: int = 32,
+    lora_alpha: int = 32,
+) -> Optional[str]:
+    """Find the latest model from a completed round.
+
+    If use_lora is True and a lora_adapter directory exists, merges the adapter
+    into the base model and returns the merged model path.
+
+    NOTE: This function is for backwards compatibility. For LoRA training,
+    prefer using find_latest_adapter_from_round() to avoid merging.
+    """
+    checkpoints_dir = round_dir / "checkpoints"
+    if not checkpoints_dir.exists():
+        return None
+
+    # Find the latest checkpoint
+    latest = None
+    for p in checkpoints_dir.glob("global_step_*"):
+        if p.is_dir():
+            latest = p if (latest is None or p.stat().st_mtime > latest.stat().st_mtime) else latest
+
+    if latest is None:
+        return None
+
+    # Check for LoRA adapter
+    lora_adapter_dir = latest / "lora_adapter"
+    if use_lora and lora_adapter_dir.exists() and base_model_path:
+        return merge_lora_adapter_if_needed(
+            checkpoint_dir=latest,
+            base_model_path=base_model_path,
+            lora_rank=lora_rank,
+            lora_alpha=lora_alpha,
+        )
+
     # Prefer HuggingFace subdirectory
     hf_dir = latest / "huggingface"
     if hf_dir.is_dir():
@@ -965,6 +1133,11 @@ def main():
     # Rollout generation settings
     ap.add_argument("--rollout-temperature", type=float, default=0.7, help="Temperature for sampling during rollout generation (default: 0.7)")
 
+    # LoRA settings
+    ap.add_argument("--use-lora", action="store_true", help="Enable LoRA training (saves only adapter weights, merges on load)")
+    ap.add_argument("--lora-rank", type=int, default=32, help="LoRA rank (default: 32)")
+    ap.add_argument("--lora-alpha", type=int, default=32, help="LoRA alpha scaling factor (default: 32)")
+
     # Asymmetric mode (trainee vs opponent) settings
     ap.add_argument("--shy-setup", action="store_true", help="Enable asymmetric training against fixed 'shy' opponent")
     ap.add_argument("--shy-opponent-model", type=str, default="checkpoints/sft_qwen3_8b/global_step_3600_merged/", help="Path to shy opponent model (only used with --shy-setup)")
@@ -1104,6 +1277,9 @@ def main():
                     entropy_coeff=args.sft_entropy_coeff,
                     gradient_checkpointing=args.sft_gradient_checkpointing,
                     liger_fused_linear_ce=args.liger_fused_linear_ce,
+                    use_lora=args.use_lora,
+                    lora_rank=args.lora_rank,
+                    lora_alpha=args.lora_alpha,
                     wb=None,  # No W&B context in resume
                 )
             else:  # ppo-grpo mode
@@ -1122,11 +1298,20 @@ def main():
                     clip_ratio=args.ppo_clip_ratio,
                     entropy_coeff=args.ppo_entropy_coeff,
                     gradient_checkpointing=args.sft_gradient_checkpointing,
+                    use_lora=args.use_lora,
+                    lora_rank=args.lora_rank,
+                    lora_alpha=args.lora_alpha,
                     wb=None,  # No W&B context in resume
                 )
-            
-            # Update current model
-            latest_model = find_latest_model_from_round(round_dir)
+
+            # Update current model (with LoRA merge if needed)
+            latest_model = find_latest_model_from_round(
+                round_dir,
+                base_model_path=args.model_path if args.use_lora else None,
+                use_lora=args.use_lora,
+                lora_rank=args.lora_rank,
+                lora_alpha=args.lora_alpha,
+            )
             if latest_model:
                 current_model = latest_model
             
@@ -1378,13 +1563,15 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
         # Run training (mode selected by --training-mode flag)
         print(f"Running {args.training_mode} training...")
 
+        # For LoRA training, always use base model + adapter path
+        # current_adapter_path is set from previous round (or None for round 0)
         if args.training_mode == "expert-iteration":
             train_log = run_expert_iteration_training(
                 gpu_string=args.gpus,
                 round_dir=round_dir,
                 train_parquet=train_parquet_for_sft,
                 val_parquet=rollout_stats.val_parquet,
-                current_model=current_model,
+                current_model=args.model_path if args.use_lora else current_model,
                 max_len_arg=max_len_arg,
                 wandb_project=args.wandb_project,
                 experiment_name=f"{save_root.name}_round_{r}",
@@ -1392,6 +1579,10 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
                 entropy_coeff=args.sft_entropy_coeff,
                 gradient_checkpointing=args.sft_gradient_checkpointing,
                 liger_fused_linear_ce=args.liger_fused_linear_ce,
+                use_lora=args.use_lora,
+                lora_rank=args.lora_rank,
+                lora_alpha=args.lora_alpha,
+                lora_adapter_path=current_adapter_path if args.use_lora else None,
                 wb=wb,
             )
         else:  # ppo-grpo mode
@@ -1400,7 +1591,7 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
                 round_dir=round_dir,
                 train_parquet=train_parquet_for_sft,
                 val_parquet=rollout_stats.val_parquet,
-                current_model=current_model,
+                current_model=args.model_path if args.use_lora else current_model,
                 max_len_arg=max_len_arg,
                 wandb_project=args.wandb_project,
                 experiment_name=f"{save_root.name}_round_{r}",
@@ -1410,6 +1601,10 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
                 clip_ratio=args.ppo_clip_ratio,
                 entropy_coeff=args.ppo_entropy_coeff,
                 gradient_checkpointing=args.sft_gradient_checkpointing,
+                use_lora=args.use_lora,
+                lora_rank=args.lora_rank,
+                lora_alpha=args.lora_alpha,
+                lora_adapter_path=current_adapter_path if args.use_lora else None,
                 wb=wb,
             )
 
@@ -1421,7 +1616,7 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
             # Update W&B with training metrics
             log_rollout_to_wandb(wb, r, rollout_stats, training_metrics)
 
-        # Update model path for next round
+        # Update model/adapter path for next round
         save_path = str(round_dir / "checkpoints")
         latest = None
         for p in Path(save_path).glob("global_step_*"):
@@ -1430,15 +1625,26 @@ def run_offline_grpo_loop(args, save_root: Path, current_model: str, start_round
         if latest is None:
             print("Warning: no SFT checkpoint found; keeping current model for next round.")
         else:
-            hf_dir = latest / "huggingface"
-            if hf_dir.is_dir():
-                current_model = str(hf_dir)
+            if args.use_lora:
+                # Update adapter path for next round (no merging needed!)
+                lora_adapter_dir = latest / "lora_adapter"
+                if lora_adapter_dir.exists():
+                    current_adapter_path = str(lora_adapter_dir)
+                    print(f"Updated adapter path for next round: {current_adapter_path}")
+                else:
+                    print(f"Warning: LoRA adapter not found at {lora_adapter_dir}")
             else:
-                print(f"Warning: HF directory not found under {latest}, falling back to checkpoint root")
-                current_model = str(latest)
+                # Standard HuggingFace checkpoint
+                hf_dir = latest / "huggingface"
+                if hf_dir.is_dir():
+                    current_model = str(hf_dir)
+                else:
+                    print(f"Warning: HF directory not found under {latest}, falling back to checkpoint root")
+                    current_model = str(latest)
 
         # Cleanup old checkpoints when round is a multiple of 5
-        if r > 0 and r % 5 == 0:
+        # Skip cleanup when using LoRA (adapters are small, no need to delete)
+        if r > 0 and r % 5 == 0 and not args.use_lora:
             cleanup_old_checkpoints(save_root, r)
             print(f"Cleaned up checkpoints from rounds {r-4} to {r-1}")
 
